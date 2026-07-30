@@ -1,0 +1,15 @@
+# Build output.
+/target/
+
+# dezes writes these next to the file being edited: the annotation sidecar
+# (bookmarks, comments, coloured blocks) and the pre-rename name for it.
+*.dzdb
+*.dz6
+
+# A live configuration is a personal setting, not source. `.dzsrc.example` is the
+# one that belongs in the repository.
+.dzsrc
+.dz6init
+
+# Sample binaries used while testing are usually someone else's executables.
+/test/

@@ -1,0 +1,43 @@
+[package]
+name = "dezes"
+version = "0.8.0"
+edition = "2024"
+description = "Fast terminal hex editor and x86 disassembler"
+license = "GPL-3.0-or-later"
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[[bin]]
+name = "dezes"
+path = "src/main.rs"
+
+[dependencies]
+arboard = { version = "3", default-features = false }
+clap = { version = "4.5.49", features = ["derive"] }
+crossterm = "0.29.0"
+directories-next = "2.0.0"
+encoding_rs = "0.8.35"
+evalexpr = "13.1.*"
+goblin = "0.10.5"
+hex = "0.4.3"
+iced-x86 = "1.21.0"
+memchr = "2.8.0"
+mmap-io = "1.0.0"
+rand = "0.10.1"
+ratatui = "0.30.0"
+regex = "1.11.2"
+serde = { version = "1.0.228", features = ["derive"] }
+shell-words = "1.1.0"
+toml = "1.0.1"
+tui-input = "0.15.0"
+unicode-width = "0.2.2"
+
+[target.'cfg(windows)'.build-dependencies]
+# Compiles assets/dezes.ico and the version fields into the exe's resource section.
+# Pinned: a build script that silently stops working is hard to notice.
+winresource = "=0.1.31"
+
+[profile.release]
+lto = "thin"
