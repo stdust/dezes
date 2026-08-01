@@ -224,3 +224,32 @@ It is designed for reverse engineers, binary analysts, and software translators 
   :set disasm_mem/reg/imm/kw/seg/import/import_fg/comment <color>
                           Disassembly colors, #rrggbb or a name
 ```
+
+---
+
+## 👥 Credits & Acknowledgements
+
+### THIS BUILD
+- **Lead developer**: `stdust`
+- Disassembly view, assembler, PE section tools, wildcard pattern search/replace, xref and string-reference scans, header field editing, dialogs, and theming.
+- Context hint line with Ctrl/Alt pages, interface languages.
+
+### ORIGINAL WORK
+This is a **MODIFIED** build, not an official release.  
+Modified in 2026 by **stdust**. Please report issues with this build to stdust, not to the original authors.
+
+It is based on **dz6** by Mente Binaria and contributors:
+- **Fernando Merces (merces)** - original author
+- yeggor, sergiogarciadev, param-jasani
+- [https://github.com/mentebinaria/dz6](https://github.com/mentebinaria/dz6)
+- [https://menteb.in/dz6](https://menteb.in/dz6)
+
+*Thank you for releasing dz6 as free software.*
+
+---
+
+## 📄 License
+
+**GPL-3.0-or-later**  
+This program comes with **ABSOLUTELY NO WARRANTY**.  
+You may redistribute it under the terms of the GNU General Public License version 3 or later. The full text is in the `COPYING` file shipped with the source.
