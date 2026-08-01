@@ -1,266 +1,56 @@
-![dz6](assets/dz6_banner.png)
+# Dezes
 
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12656/badge)](https://www.bestpractices.dev/projects/12656)
+**Dezes** is an advanced, high-performance TUI (Terminal User Interface) **Win32 PE Disassembler, Hex Editor, and Software Localization Tool** built in Rust.
 
-# dz6
+It is designed for reverse engineers, binary analysts, and software translators to disassemble x86/x64 executables, edit binary structures, and translate program strings smoothly across multiple encodings.
 
-Fast Vim-inspired hex editor for the terminal
+---
 
-## Features
+## ✨ Key Features
 
-- Fast, even when editing large files
-- Runs in the terminal / Text User Interface (TUI)
-- Vim-like key bindings
-- Configurable options
-- Edit in hex or ASCII
-- String list with regex filtering
-- Multiple smart ways to navigate through a file
-- Find strings and hex bytes
-- Add comments and bookmarks
-- Mark blocks with colors
-- Cross-platform
-- Open source
+- 🔍 **PE Binary Disassembler & Analyzer**
+  - Full support for PE32 (32-bit) and PE64 (64-bit) Windows executables.
+  - Interactive Assembly editing (`F3`), Cross-References / Xref (`Ctrl+R`), and String References (`F5`).
 
-## Demo
+- 🌐 **Software Localization & Translation Suite**
+  - **String Scanning (`F6`)**: Multi-encoding string scanning supporting **ASCII**, **UTF-8**, **CP949 (Korean 2-byte ANSI)**, **CP936 (Simplified Chinese)**, and **UTF-16LE**.
+  - **In-place String Edit (`F4`)**: Direct string replacement with live encoding budget checks. Defaults to CP949 for immediate Korean translation without text corruption. Cycle target encodings on the fly via `Alt+E`.
+  - **Seamless Navigation**: Switch between String Reference (`F5`) and String Scan (`F6`) while preserving search query, filter state, and matching cursor offsets.
 
-[![asciicast](https://asciinema.org/a/801539.svg)](https://asciinema.org/a/801539)
+- 🛠️ **Full-Featured Hex Editor**
+  - Instant navigation, block selection, multi-row copying (`Ctrl+C` for single line, `Ctrl+Shift+C` for all rows), undo/redo history, and built-in hexadecimal calculator.
 
-## Installation
+---
 
-### Rust package manager (all operating systems)
+## 🚀 Building & Running
 
-Follow the instructions [here](https://rust-lang.org/tools/install/) to install **cargo**. Then, open up
-a terminal and type
+### Prerequisites
+- [Rust](https://www.rust-lang.org/) (cargo / rustc)
 
-    cargo install dz6
-
-### Arch Linux (via AUR)
-
-    yay -S dz6
-
-### BigLinux
-
-    pacman -S dz6
-
-### FreeBSD
-
-    pkg install dz6
-
-### Windows
-
-If you have [WinGet](https://learn.microsoft.com/en-us/windows/package-manager/), install dz6 with
-
-    winget install mentebinaria.dz6
-
-[Scoop](https://scoop.sh/) users can also
-
-    scoop install dz6
-
-Alternatively, download the [release](https://github.com/mentebinaria/dz6/releases) package for your system.
-
-### macOS
-
-[Homebrew](https://brew.sh/) users can
-
-    brew install dz6
-
-### From the sources
-
-If you want to test the most recent, but still under development, version of dz6, you'll need [Cargo](https://rustup.rs/) and git, then you can
-
-    git clone https://github.com/mentebinaria/dz6.git
-    cd dz6
-    cargo install --path .
-
-## Usage
-
+### Build Release Binary
+```bash
+cargo build --release
 ```
-Usage: dz6 [OPTIONS] <FILE>
+The optimized executable will be generated at: `target/release/dezes.exe`
 
-Arguments:
-  <FILE>  File to open
+---
 
-Options:
-  -o, --offset <OFFSET>  Initial cursor offset (hex default; `t` suffix = decimal) [default: 0]
-  -r, --readonly         Set read-only mode
-  -h, --help             Print help
-  -V, --version          Print version
-```
+## ⌨️ Shortcuts & Keybindings
 
-Once you load a file in **dz6**, you can use the commands below.
+| Key | Description |
+|---|---|
+| `F6` | Open String Scan Dialog |
+| `F5` | Open String Reference Dialog (Seamless switch with `F6`) |
+| `F4` | Edit / Replace Selected String (Inside String Scan) |
+| `Alt+E` | Cycle Target Encoding inside String Edit (`CP949` ➔ `CP936` ➔ `UTF-16LE` ➔ `ASCII` ➔ `UTF-8`) |
+| `Ctrl+C` | Copy selected single row / line |
+| `Ctrl+Shift+C` | Copy all filtered rows / lines |
+| `Ctrl+R` | Open Cross-References (Xref) Dialog |
+| `F8` | Program Info (About Dezes) |
+| `F1` | Help Dialog |
 
-### Global key bindings
+---
 
-| Key     | Action           | Tips                      |
-| ------- | ---------------- | ------------------------- |
-| `Enter` | Switch views     | Currently Hex and Text    |
-| `Alt+l` | Open log window  |                           |
-| `:`     | Open command bar | See [Commands](#commands) |
+## 📄 License
 
-#### Commands
-
-| Command          | Action                                                           | Parameters                | Tips/Examples                                                                                     |
-| ---------------- | ---------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------- |
-| `<number>`       | Go to offset                                                     |                           | hex default; `t` suffix = decimal; `+` prefix = incremental jump; `-` prefix = decremental jump   |
-| `cmt`            | Add `<comment>` to `<offset>`                                    | `<offset>` `<comment>`    | `cmt 1000 "my comment"` (comment at offset 0x1000; offset obeys the same rules above)             |
-| `sel`            | Select `<length>` bytes from `<offset>`                          | `<offset>` `<length>`     | `sel 40 10t` (select 10 bytes from offset 0x40)                                                   |
-| `set byteline`   | Set the number of bytes per line                                 | `<number>` or `auto`      | `set byteline 8` (default is 16; `auto` enables automatic setting based on screen width)          |
-| `set ctrlchar`   | Set the character shown in the ASCII dump for non-graphic values | `<char>`                  | `set ctrlchar " "` would set a blankspace (default: `.`)                                          |
-| `set db`         | Turn on database file saving/loading (default)                   |                           | A database file with a `.dz6` extension will be used to store bookmarks and comments for the file |
-| `set nodb`       | Turn off database file saving/loading                            |                           |                                                                                                   |
-| `set dimzero`    | Dim (gray out) null bytes only (default)                         |                           |                                                                                                   |
-| `set dimctrl`    | Dim all control characters                                       |                           | All non-graphic characters will be dimmed                                                         |
-| `set nodim`      | Turn off byte dimming                                            |                           |                                                                                                   |
-| `set theme`      | Set the theme                                                    | `dark` or `light`         | `set theme light` (default: `dark`)                                                               |
-| `set view`       | Changes the current view                                         | `text`, `hex` or `header` | `set view header` (default: `hex`)                                                                |
-| `set wrapscan`   | Enable search results wrap                                       |                           |                                                                                                   |
-| `set nowrapscan` | Disable search results wrap                                      |                           |                                                                                                   |
-| `w`              | Write changes to file                                            |                           |                                                                                                   |
-| `wq` or `x`      | Write changes to file and quit                                   |                           |                                                                                                   |
-| `q`              | Quit without saving changes                                      |                           | In replace mode, `T` (truncate) is an exception because it modifies the file immediately.         |
-
-If you need permanent settings, create a `$HOME/.dz6init` file containing any of the commands above, one per line. dz6 will load that at startup.
-
-### Hex view
-
-This is the main view you would expect from a hex editor. It displays file offsets alongside the file contents in a hexadecimal dump that you can navigate, search, edit, and more.
-
-| Key                     | Action                                                                             | Tips                                                              |
-| ----------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| Arrow keys              | Navigation                                                                         | Vim-like `h`, `j`, `k`, `l` also work                             |
-| `w` `d` `q`             | Advance by a word (2 bytes), a dword (4 bytes), or a qword (8 bytes), respectively | Use the capital letters `W`, `D`, and `Q` to move backwards       |
-| `o`                     | Go to the next other byte (the one that differs from the byte under the cursor)    | `O` goes backwards                                                |
-| `Home` or `0`           | Set the cursor to the beginning of the current line                                |                                                                   |
-| `End` or `$`            | Set the cursor to the end of the current line                                      |                                                                   |
-| `Ctrl+Home` or `g`      | Go to the first offset                                                             |                                                                   |
-| `Ctrl+End` or `G`       | Go to the last offset in the file                                                  |                                                                   |
-| `Ctrl+f` or `Page Down` | Move down one page                                                                 |                                                                   |
-| `Ctrl+b`or `Page Up`    | Move up one page                                                                   |                                                                   |
-| `r`                     | Enter [replace mode](#hex-replace-mode)                                            |                                                                   |
-| `z`                     | Set the byte under the cursor zero                                                 |                                                                   |
-| `~`                     | Change case if applicable                                                          | Only works with bytes within the ASCII alphabetic range           |
-| `Ctrl+a`                | Increment byte under the cursor                                                    |                                                                   |
-| `Ctrl+x`                | Decrement byte under the cursor                                                    |                                                                   |
-| `v`                     | Enter [select mode](#hex-selection-mode)                                           |                                                                   |
-| `u`                     | Undo the last change made to the buffer                                            | Use it _before_ writing to the file (`:w`)                        |
-| `/`                     | Search (forward)                                                                   | Search the entire file. `Tab` cycles between ASCII and hex search |
-| `n`                     | Search next (forward)                                                              |                                                                   |
-| `?`                     | Search (backward)                                                                  | Search the entire file. `Tab` cycles between ASCII and hex search |
-| `N`                     | Search next (backward)                                                             |                                                                   |
-| `s`                     | Open [Strings](#strings) window                                                    |                                                                   |
-| `Backspace`             | Go to the previously visited offset                                                | This is useful after a Go to command, for example                 |
-| `+`                     | Add current offset to bookmarks                                                    |                                                                   |
-| `-`                     | Go to the last added bookmark                                                      |                                                                   |
-| `Alt+1..8`              | Go to bookmark                                                                     |                                                                   |
-| `Alt+-`                 | Remove the last added bookmark                                                     | The cursor must be at the bookmarked offset                       |
-| `Alt+0`                 | Clear bookmarks                                                                    |                                                                   |
-| `Alt+h`                 | Toggle byte highlight                                                              |                                                                   |
-| `;`                     | Add a comment to the selected offset                                               |                                                                   |
-| `Ant+n`                 | Open [Names](#names) window. Added comments will be there.                         |                                                                   |
-| `=`                     | Open [Calculator](#calculator)                                                     |                                                                   |
-
-#### Hex selection mode
-
-| Key        | Action                           | Tips                                                                             |
-| ---------- | -------------------------------- | -------------------------------------------------------------------------------- |
-| Arrow keys | Navigation                       | Vim-like `h`, `j`, `k`, `l` also work                                            |
-| `~`        | Change case if applicable        | Only works with bytes within the ASCII alphabetic range                          |
-| `n`        | Fill selected bytes with NOPs    | This puts dz6 in replace mode; press `Enter` to save the buffer; `Esc` to cancel |
-| `z`        | Fill selected bytes with zeroes  | Same as above                                                                    |
-| `y`        | Copy bytes to system's clipboard | There is no paste command yet                                                    |
-| `Alt+m`    | Mark a block with a random color | `Alt+m` again to pick another color. `[` and `]` to navigate to block boundaries |
-| `Esc`      | Go back to normal mode           |                                                                                  |
-
-#### Hex replace mode
-
-| Key         | Action                                                     | Tips                                                     |
-| ----------- | ---------------------------------------------------------- | -------------------------------------------------------- |
-| Arrow keys  | Navigation                                                 |                                                          |
-| `Backspace` | The same as navigating left                                |                                                          |
-| `~`         | Change case if applicable                                  | Only works with bytes within the ASCII alphabetic range  |
-| `z`         | Set byte to zero                                           |                                                          |
-| `Ctrl+a`    | Increment byte                                             |                                                          |
-| `Ctrl+x`    | Decrement byte                                             |                                                          |
-| `Esc`       | Go back to normal mode                                     | Changes are saved to buffer, but not written to file yet |
-| `Tab`       | Cycle through hex and ASCII dump to edit the file in ASCII |                                                          |
-| `t`         | Remove all bytes after the the selected offset             | Be aware this can't be undone                            |
-| `T`         | Remove all bytes before the the selected offset            | Be aware this can't be undone                            |
-
-#### Names
-
-| Key         | Action                                           | Tips         |
-| ----------- | ------------------------------------------------ | ------------ |
-| Arrow keys  | Navigation                                       | Up/Down only |
-| `f`         | Filter names using a regular expression          |              |
-| `D`         | Delete all names                                 |              |
-| `Esc`       | Close                                            |              |
-| `End`       | Select the last item shown                       |              |
-| `Ctrl+End`  | Select the last item on the list                 |              |
-| `Home`      | Select the first item shown                      |              |
-| `Ctrl+Home` | Select the first item on the list                |              |
-| `Page Down` | Go down one page                                 |              |
-| `Page Up`   | Go up one page                                   |              |
-| `Enter`     | Follow the name in hex dump and close the window |              |
-
-#### Strings
-
-| Key         | Action                                             | Tips                           |
-| ----------- | -------------------------------------------------- | ------------------------------ |
-| Arrow keys  | Navigation                                         | Up/Down only                   |
-| `f`         | Filter strings using a regular expression          |                                |
-| `R`         | Re-read strings from file                          | Useful if you changed the file |
-| `Esc`       | Close                                              |                                |
-| `End`       | Select the last item shown                         |                                |
-| `Ctrl+End`  | Select the last item on the list                   |                                |
-| `Home`      | Select the first item shown                        |                                |
-| `Ctrl+Home` | Select the first item on the list                  |                                |
-| `Page Down` | Go down one page                                   |                                |
-| `Page Up`   | Go up one page                                     |                                |
-| `Enter`     | Follow the string in hex dump and close the window |                                |
-
-#### Calculator
-
-64-bit calculator. Default base is decimal, but you can prefix hex numbers with 0x. Pre-defined variables:
-
-| Variable | Value                       | Length                                                    |
-| -------- | --------------------------- | --------------------------------------------------------- |
-| `@x`     | Signed value under cursor   | `x` is `b` (byte), `w` (word), `d` (dword) or `q` (qword) |
-| `@X`     | Unsigned value under cursor | `X` is `B` (byte), `W` (word), `D` (dword) or `Q` (qword) |
-| `@o`     | Current offset              | dword on 32-bit systems; qword on 64                      |
-| `@O`     | Previously visited offset   | same as above                                             |
-
-Use the up and down arrow keys to navigate through the history.
-
-### Text view
-
-> This view is a work in progress.
-
-The Text view displays the file as plain text. This can be useful even when editing binary files, as it lets you quickly inspect large blocks of text contained within them.
-
-| Key | Action                         |
-| --- | ------------------------------ |
-| `e` | Open encoding selection dialog |
-
-### Header view
-
-> This view is a work in progress.
-
-The header view is a new view (expected in v0.8.0) available for executable files. It parses the executable headers and shows them in a nice way.
-
-| Key        | Action     | Tips                                  |
-| ---------- | ---------- | ------------------------------------- |
-| Arrow keys | Navigation | Vim-like `h`, `j`, `k`, `l` also work |
-
-## FAQ
-
-**1. I'm on a Mac. How am I supposed to use `Alt` key?!**
-
-iTerm2 users: go to `Settings → Profiles → (your profile) → Keys` and set the `Left Option key` to `Esc+`. This will make the `Option` key work like `Alt`.
-
-**2. Do all Vim commands work in dz6?**
-
-No. Some key bindings behave similarly, but dz6 is not meant to be 100% compatible with Vim. For example, `o` in dz6 moves to the next other byte, while the same key in Vim opens a new line below the current one.
-
-**3. Is dz6 stable yet?**
-
-No. Stability is expected only at v1.0.0. Until then, breaking changes are expected.
+Distributed under the terms of the GNU General Public License (GPL).
