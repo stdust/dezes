@@ -19,6 +19,16 @@ It is designed for reverse engineers, binary analysts, and software translators 
 
 ---
 
+## 📸 Screenshots
+
+![Dezes Screenshot 1](assets/01.png)
+
+![Dezes Screenshot 2](assets/02.png)
+
+![Dezes Screenshot 3](assets/03.png)
+
+---
+
 ## ⌨️ Shortcuts & Keybindings Reference
 
 ### GLOBAL (any view)
