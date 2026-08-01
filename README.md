@@ -1,8 +1,8 @@
 # Dezes
 
-**Dezes** is an advanced, high-performance TUI (Terminal User Interface) **Win32 PE Disassembler, Hex Editor, and Software Localization Tool** built in Rust.
+**Dezes** is an advanced, high-performance TUI (Terminal User Interface) **Win32 PE Disassembler and Hex Editor** built in Rust.
 
-It is designed for reverse engineers, binary analysts, and software translators to disassemble x86/x64 executables, edit binary structures, and translate program strings smoothly across multiple encodings.
+It is designed for reverse engineers and binary analysts to disassemble x86/x64 executables, edit binary structures, and inspect program data efficiently.
 
 ---
 
@@ -12,10 +12,15 @@ It is designed for reverse engineers, binary analysts, and software translators 
   - Full support for PE32 (32-bit) and PE64 (64-bit) Windows executables.
   - Interactive Assembly editing (`F3`), Cross-References / Xref (`Ctrl+R`), and String References (`F5`).
 
-- 🌐 **Software Localization & Translation Suite**
-  - **String Scanning (`F6`)**: Multi-encoding string scanning supporting **ASCII**, **UTF-8**, **CP949 (Korean 2-byte ANSI)**, **CP936 (Simplified Chinese)**, and **UTF-16LE**.
-  - **In-place String Edit (`F4`)**: Direct string replacement with live encoding budget checks. Defaults to CP949 for immediate Korean translation without text corruption. Cycle target encodings on the fly via `Alt+E`.
-  - **Seamless Navigation**: Switch between String Reference (`F5`) and String Scan (`F6`) while preserving search query, filter state, and matching cursor offsets.
+- ⚡ **High Performance & Low Footprint**
+  - Instant loading and smooth navigation, even with multi-gigabyte files.
+  - Efficient memory consumption built with Rust's zero-cost abstractions.
+
+- 🎨 **Flexible Theming & Visual Customization**
+  - Built-in dark and light themes, custom syntax highlighting, and color block marking (`Alt+M`).
+
+- ⌨️ **Vim-Inspired Modal Workflows**
+  - Fast, intuitive keyboard-driven navigation (`h/j/k/l`, `w/d/q`), command line (`:`), and comprehensive search/replace patterns.
 
 ---
 
