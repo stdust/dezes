@@ -12,15 +12,16 @@ It is designed for reverse engineers and binary analysts to disassemble x86/x64 
   - Full support for PE32 (32-bit) and PE64 (64-bit) Windows executables.
   - Interactive Assembly editing (`F3`), Cross-References / Xref (`Ctrl+R`), and String References (`F5`).
 
+- 🛠️ **Advanced Hex Editing & Data Manipulation**
+  - Full-featured hexadecimal byte editor with multi-column decoding views (`ASCII`, `UTF-8`, `CP949`, `CP936`, `UTF-16LE`).
+  - In-place byte modification (`F2`), block selection, copy/paste (`Ctrl+C`), wildcard hex pattern search & replace (`Ctrl+H`), and multi-level Undo/Redo history (`Ctrl+Z` / `Ctrl+Y`).
+
 - ⚡ **High Performance & Low Footprint**
   - Instant loading and smooth navigation, even with multi-gigabyte files.
   - Efficient memory consumption built with Rust's zero-cost abstractions.
 
 - 🎨 **Flexible Theming & Visual Customization**
   - Built-in dark and light themes, custom syntax highlighting, and color block marking (`Alt+M`).
-
-- ⌨️ **Vim-Inspired Modal Workflows**
-  - Fast, intuitive keyboard-driven navigation (`h/j/k/l`, `w/d/q`), command line (`:`), and comprehensive search/replace patterns.
 
 ---
 
