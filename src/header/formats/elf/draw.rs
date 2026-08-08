@@ -171,7 +171,7 @@ fn draw_program_header(app: &mut App, frame: &mut Frame, area: Rect) {
 
         for phdr in phdrs {
             rows.push(Row::new(vec![
-                Cell::new(pt_to_str(phdr.p_type).to_string()),
+                Cell::new(format!("{}", pt_to_str(phdr.p_type))),
                 Cell::new(format!("{:08X}", phdr.p_offset)),
                 Cell::new(format!("{:08X}", phdr.p_filesz)),
                 Cell::new(format!("{:08X}", phdr.p_vaddr)),
@@ -212,14 +212,20 @@ fn draw_section_header(app: &mut App, frame: &mut Frame, area: Rect) {
         for (i, section) in elf.sections.iter().enumerate() {
             let mut name_cell = Cell::default();
             if let Some(strtab) = strtab {
-                let bytes: Vec<u8> = buf
-                    .iter()
-                    .skip(strtab.sh_offset as usize + section.sh_name)
-                    .take_while(|b| **b != 0)
-                    .copied()
-                    .collect();
-
-                let name = String::from_utf8(bytes).unwrap_or_default();
+                // Direct slice + `position`. The previous
+                // `buf.iter().skip(offset).take_while(..)` stepped the iterator
+                // `offset` times - i.e. it walked most of the file once per
+                // section, on every frame - and built a throwaway Vec<u8>.
+                let start = (strtab.sh_offset as usize).saturating_add(section.sh_name);
+                let name = buf
+                    .get(start..)
+                    .map(|tail| {
+                        let end = tail.iter().position(|b| *b == 0).unwrap_or(tail.len());
+                        std::str::from_utf8(&tail[..end])
+                            .map(str::to_owned)
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
                 name_cell = Cell::new(name);
             }
 
@@ -227,7 +233,7 @@ fn draw_section_header(app: &mut App, frame: &mut Frame, area: Rect) {
                 Cell::new(format!("{:X}", i)),
                 name_cell,
                 Cell::new(format!("{:08X}", section.sh_name)),
-                Cell::new(sht_to_str(section.sh_type).to_string()),
+                Cell::new(format!("{}", sht_to_str(section.sh_type))),
                 Cell::new(format!("{:08X}", section.sh_flags)),
                 Cell::new(format!("{:08X}", section.sh_addr)),
                 Cell::new(format!("{:08X}", section.sh_offset)),
@@ -273,9 +279,9 @@ fn draw_symbols(app: &mut App, frame: &mut Frame, area: Rect) {
 
             rows.push(Row::new(vec![
                 Cell::new(name),
-                Cell::new(bind_to_str(symbol.st_bind())),
-                Cell::new(type_to_str(symbol.st_type())),
-                Cell::new(visibility_to_str(symbol.st_visibility())),
+                Cell::new(format!("{}", bind_to_str(symbol.st_bind()))),
+                Cell::new(format!("{}", type_to_str(symbol.st_type()))),
+                Cell::new(format!("{}", visibility_to_str(symbol.st_visibility()))),
                 Cell::new(format!("{:08X}", symbol.st_shndx)),
                 Cell::new(format!("{:08X}", symbol.st_value)),
                 Cell::new(format!("{:08X}", symbol.st_size)),
@@ -283,13 +289,13 @@ fn draw_symbols(app: &mut App, frame: &mut Frame, area: Rect) {
         }
 
         let widths = [
-            Constraint::Fill(1),    // Name
-            Constraint::Length(6),  // Bind
-            Constraint::Length(6),  // Type
+            Constraint::Fill(1), // Name
+            Constraint::Length(6), // Bind
+            Constraint::Length(6), // Type
             Constraint::Length(10), // Visibility
-            Constraint::Length(8),  // SecHdrIdx
-            Constraint::Length(8),  // Value
-            Constraint::Length(8),  // Size
+            Constraint::Length(8), // SecHdrIdx
+            Constraint::Length(8), // Value
+            Constraint::Length(8), // Size
         ];
         let symbol_table = Table::new(rows, widths)
             .column_spacing(1)

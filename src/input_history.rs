@@ -1,5 +1,5 @@
 use crate::config::CMD_INPUT_HIST_SIZE;
-use std::collections::VecDeque; // VecDeque seems better
+use std::collections::VecDeque;
 use tui_input::Input;
 
 #[derive(Default)]
@@ -7,6 +7,8 @@ pub struct InputHistory {
     pub input: Input,
     pub history: VecDeque<String>,
     pub history_index: Option<usize>,
+    pub cursor_pos: usize,
+    pub selection_anchor: Option<usize>,
 }
 
 impl InputHistory {
@@ -14,7 +16,6 @@ impl InputHistory {
         if entry.trim().is_empty() {
             return;
         }
-        // O(n) but n=50 max, avoids extra allocations?
         if self.history.contains(&entry) {
             return;
         }
@@ -23,6 +24,13 @@ impl InputHistory {
         }
         self.history.push_back(entry);
         self.history_index = None;
+        self.cursor_pos = 0;
+        self.selection_anchor = None;
+    }
+
+    #[allow(dead_code)]
+    pub fn reset_selection(&mut self) {
+        self.selection_anchor = None;
     }
 
     pub fn up(&mut self) {
@@ -36,7 +44,10 @@ impl InputHistory {
             Some(i) => i - 1,
         };
         self.history_index = Some(new_index);
-        self.input = Input::new(self.history[new_index].clone());
+        let text = self.history[new_index].clone();
+        self.cursor_pos = text.chars().count();
+        self.selection_anchor = None;
+        self.input = Input::new(text);
     }
 
     pub fn down(&mut self) {
@@ -48,11 +59,16 @@ impl InputHistory {
             None => {}
             Some(i) if i >= len - 1 => {
                 self.history_index = None;
+                self.cursor_pos = 0;
+                self.selection_anchor = None;
                 self.input = Input::default();
             }
             Some(i) => {
                 self.history_index = Some(i + 1);
-                self.input = Input::new(self.history[i + 1].clone());
+                let text = self.history[i + 1].clone();
+                self.cursor_pos = text.chars().count();
+                self.selection_anchor = None;
+                self.input = Input::new(text);
             }
         }
     }

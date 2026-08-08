@@ -2,7 +2,7 @@ use std::io::Result;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use crate::{app::App, editor::AppView};
+use crate::app::App;
 
 const NUMBER_OF_TABS: usize = 4;
 
@@ -24,7 +24,7 @@ fn tab_prev(app: &mut App) {
 
 fn tab_elf_header_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down => {
             if app
                 .header_view
                 .elf_state
@@ -43,7 +43,7 @@ fn tab_elf_header_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                     .select_next();
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        KeyCode::Up => {
             if let Some(idx) = app.header_view.elf_state.elf_header_table_state.selected() {
                 if idx == 0 {
                     app.header_view
@@ -66,9 +66,11 @@ fn tab_elf_header_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
+use crate::editor::AppView;
+
 fn tab_program_headers_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down => {
             if app
                 .header_view
                 .elf_state
@@ -79,7 +81,7 @@ fn tab_program_headers_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.header_view
                     .elf_state
                     .program_header_table_state
-                    .select_cell(Some((0, 5)));
+                    .select_cell(Some((0, 1)));
             } else {
                 app.header_view
                     .elf_state
@@ -87,7 +89,7 @@ fn tab_program_headers_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                     .select_next();
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        KeyCode::Up => {
             if let Some(idx) = app
                 .header_view
                 .elf_state
@@ -107,40 +109,7 @@ fn tab_program_headers_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 }
             }
         }
-        KeyCode::Left | KeyCode::Char('h') => {
-            if app
-                .header_view
-                .elf_state
-                .program_header_table_state
-                .selected()
-                .is_none()
-            {
-                tab_prev(app);
-            } else {
-                app.header_view
-                    .elf_state
-                    .program_header_table_state
-                    .select_previous_column();
-            }
-        }
-        KeyCode::Right | KeyCode::Char('l') => {
-            if app
-                .header_view
-                .elf_state
-                .program_header_table_state
-                .selected()
-                .is_none()
-            {
-                tab_next(app);
-            } else {
-                app.header_view
-                    .elf_state
-                    .program_header_table_state
-                    .select_next_column();
-            }
-        }
-        // follow
-        // TODO: follow only when a PhysAddr field is selected
+        // Jump to selected ELF program header offset in Hex view on 'f'
         KeyCode::Char('f') => {
             if let Some(idx) = app
                 .header_view
@@ -148,14 +117,17 @@ fn tab_program_headers_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 .program_header_table_state
                 .selected()
             {
-                // if we're here, the ELF should be valid (hopefully)
-                let elf = app.header_view.elf.as_ref().unwrap();
-                if let Some(phdr) = elf.phdrs.get(idx) {
-                    let ofs = phdr.p_offset;
-                    app.goto(ofs as usize);
-                    app.editor_view = AppView::Hex;
+                if let Some(elf) = app.header_view.elf.as_ref() {
+                    if let Some(phdr) = elf.phdrs.get(idx) {
+                        let ofs = phdr.p_offset;
+                        app.goto(ofs as usize);
+                        app.editor_view = AppView::Hex;
+                    }
                 }
             }
+        }
+        KeyCode::Char('G') => {
+            // goto
         }
         _ => {}
     }
@@ -164,7 +136,7 @@ fn tab_program_headers_events(app: &mut App, key: KeyEvent) -> Result<bool> {
 
 fn tab_sections_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down => {
             if app
                 .header_view
                 .elf_state
@@ -180,7 +152,7 @@ fn tab_sections_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.header_view.elf_state.sections_table_state.select_next();
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        KeyCode::Up => {
             if let Some(idx) = app.header_view.elf_state.sections_table_state.selected() {
                 if idx == 0 {
                     app.header_view.elf_state.sections_table_state.select(None);
@@ -189,6 +161,23 @@ fn tab_sections_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                         .elf_state
                         .sections_table_state
                         .select_previous();
+                }
+            }
+        }
+        // Jump to selected ELF section offset in Hex view on 'f'
+        KeyCode::Char('f') => {
+            if let Some(idx) = app
+                .header_view
+                .elf_state
+                .sections_table_state
+                .selected()
+            {
+                if let Some(elf) = app.header_view.elf.as_ref() {
+                    if let Some(sec) = elf.sections.get(idx) {
+                        let ofs = sec.sh_offset;
+                        app.goto(ofs as usize);
+                        app.editor_view = AppView::Hex;
+                    }
                 }
             }
         }
@@ -202,7 +191,7 @@ fn tab_sections_events(app: &mut App, key: KeyEvent) -> Result<bool> {
 
 fn tab_symbols_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down => {
             if app
                 .header_view
                 .elf_state
@@ -218,7 +207,7 @@ fn tab_symbols_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.header_view.elf_state.symbols_table_state.select_next();
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        KeyCode::Up => {
             if let Some(idx) = app.header_view.elf_state.symbols_table_state.selected() {
                 if idx == 0 {
                     app.header_view.elf_state.symbols_table_state.select(None);
@@ -227,6 +216,23 @@ fn tab_symbols_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                         .elf_state
                         .symbols_table_state
                         .select_previous();
+                }
+            }
+        }
+        // Jump to selected ELF symbol offset in Hex view on 'f'
+        KeyCode::Char('f') => {
+            if let Some(idx) = app
+                .header_view
+                .elf_state
+                .symbols_table_state
+                .selected()
+            {
+                if let Some(elf) = app.header_view.elf.as_ref() {
+                    if let Some(sym) = elf.symtab.get(idx) {
+                        let ofs = sym.st_value as usize;
+                        app.goto(ofs);
+                        app.editor_view = AppView::Hex;
+                    }
                 }
             }
         }
@@ -240,10 +246,10 @@ fn tab_symbols_events(app: &mut App, key: KeyEvent) -> Result<bool> {
 
 pub fn view_header_elf_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
-        KeyCode::Tab => {
+        KeyCode::Tab | KeyCode::Right => {
             tab_next(app);
         }
-        KeyCode::BackTab => {
+        KeyCode::BackTab | KeyCode::Left => {
             tab_prev(app);
         }
         _ => (),
