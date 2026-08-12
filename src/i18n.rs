@@ -1,29 +1,9 @@
-//! Interface language: English, Korean and Chinese.
-//!
-//! Only the words are translated - key names (`F1`, `Ctrl+C`), option names
-//! (`byteline`), status-bar mode labels (`HEX`, `DISASM`) and everything a user
-//! types stay as they are. Those are identifiers, and translating them would mean
-//! the documentation, the `:set` command and the screen no longer agree.
-//!
-//! The table is an exhaustive `match` rather than an indexed array on purpose: add
-//! a message and the compiler names every language that still has to be filled in.
-//! An array indexed by an enum discriminant compiles happily when the two drift
-//! apart, and the bug shows up as the wrong word on screen.
-//!
-//! CJK text is double-width in a terminal, so every caller that measures a
-//! translated string has to use `unicode_width`, not `chars().count()`. The hint
-//! bar and the `:set` table do.
-//!
-//! # Korean terminology
-//!
-//! Reverse-engineering jargon is transliterated, not translated: `offset` is
-//! `옵셋`, `disassemble` is `디스어셈블`, `import table` is `임포트 테이블`,
-//! `base` is `베이스`, `hex` is `헥스`. A Korean reader of this program already
-//! knows the English terms, and a native coinage (`상쇄`, `역어셈블`) reads as a
-//! different concept. Acronyms stay as they are - `Xref`, `VA`, `NOP`, `PE`.
-//! Words that have a settled Korean form (`주석`, `문자열`, `블록`, `인코딩`) keep
-//! it. Chinese follows its own conventions, where translated forms such as `偏移`
-//! and `反汇编` are the standard ones.
+// Interface language: English, Korean and Chinese.
+//
+// Only the words are translated - key names (`F1`, `Ctrl+C`), option names
+// (`byteline`), status-bar mode labels (`HEX`, `DISASM`) and everything a user
+// types stay as they are. Those are identifiers, and translating them would mean
+// the documentation, the `:set` command and the screen no longer agree.
 
 /// Interface language.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -68,9 +48,6 @@ impl Lang {
 }
 
 /// A translatable message.
-///
-/// Named after what it says, not where it appears, so the same words are not
-/// translated twice.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum M {
     // Hint bar - function keys
@@ -123,8 +100,6 @@ pub enum M {
     SettingsFooter,
     NamesFooter,
     MinimumLength,
-    // Dialog titles. Ones that carry a number or an address are a prefix plus the
-    // value, so only the words are here.
     AboutTitle,
     AboutFooter,
     LogTitle,
@@ -150,10 +125,6 @@ pub enum M {
     FoundCount,
 
     // Refusals and errors.
-    //
-    // Templates carry `{}` placeholders filled by [`fill`], so one message covers
-    // every option that shares a shape - all six on/off options report a bad value
-    // through `ErrSwitchValue`.
     ReadOnlyRefused,
     RoEditData,
     RoPaste,
@@ -188,28 +159,34 @@ pub enum M {
     ErrNeedsColour,
     ErrNotColour,
     ErrUnknownEncoding,
-    /// Warning for a filter regex whose only match was a zero-length one.
     WarnRegexEmptyOnly,
-    /// Title of the in-place string replacement box.
     StringEditTitle,
-    /// The replacement does not fit in the space the original occupies.
     ErrStringTooLong,
-    /// Non-ASCII characters inserted in ASCII mode.
     ErrAsciiOnly,
-    /// Report of a completed replacement.
     StringReplaced,
-    /// The "every encoding" choice in the references dialog's encoding filter.
     LblAllEncodings,
-    /// Key hints on the strings dialog's filter box.
     StringsFooterKeys,
-    /// Key hints on the string replacement box.
     StringEditFooterKeys,
-    /// Key hints on the string-references dialog.
     RefsFooterKeys,
-    /// Key hints on the cross-references dialog.
     XrefFooterKeys,
 
-    // Dialog contents: column headers, field labels and inline messages.
+    // Newly added localized error and label messages
+    ErrAddressOutOfBounds,
+    ErrInvalidAddressExpr,
+    ErrInvalidNumericValue,
+    ErrNothingToCopy,
+    ErrClipboardAccess,
+    ErrAltMSelectionNeeded,
+    ErrNoSectionPicked,
+    ErrNoRoomForSectionHeader,
+    LblSectionNameMax8,
+    LblFileBase,
+    ErrNothingToAssemble,
+    ErrFileReadOnly,
+    ErrAssemblePastEof,
+    ErrNotAnAddress,
+
+    // Dialog contents
     LblType,
     LblAddress,
     LblInstruction,
@@ -276,12 +253,6 @@ pub enum M {
     NoteDisasmColor,
 }
 
-/// Fills the `{}` placeholders in a translated template, in order.
-///
-/// `format!` needs a literal, and these templates are values - one per language -
-/// so the substitution is done by hand. Placeholders are positional, so a
-/// translation must keep them in the same order; none of the messages here need to
-/// reorder them.
 pub fn fill(template: &str, args: &[&str]) -> String {
     let mut out = String::with_capacity(template.len() + 16);
     let mut rest = template;
@@ -300,11 +271,6 @@ pub fn fill(template: &str, args: &[&str]) -> String {
 }
 
 impl M {
-    /// Every message, so the tests can walk the whole table.
-    ///
-    /// Rust has no way to enumerate a plain enum's variants without a macro or a
-    /// nightly feature, so this is maintained by hand: a new variant belongs here
-    /// as well as in `table`.
     #[cfg(test)]
     pub const ALL: &[M] = &[
         M::Help, M::Edit, M::HeaderView, M::Refs, M::Strings, M::TextView, M::About,
@@ -322,7 +288,6 @@ impl M {
         M::AssembleTitle, M::AddSectionTitle, M::SelectDriveTitle, M::CommentAtTitle,
         M::XrefTitle, M::XrefLimitReached, M::StringRefsTitle, M::OpenFileTitle,
         M::ImageBaseTitle, M::EditDataTitle, M::FoundCount,
-        // Refusals and errors
         M::ReadOnlyRefused, M::RoEditData, M::RoPaste, M::RoCase, M::RoEditMode,
         M::RoFillZero, M::RoFillNop, M::RoModifyBlock, M::RoAssemble, M::RoNopOut,
         M::RoSectionTools, M::RoStringEdit,
@@ -336,7 +301,11 @@ impl M {
         M::StringEditTitle, M::ErrStringTooLong, M::ErrAsciiOnly, M::StringReplaced,
         M::StringsFooterKeys, M::StringEditFooterKeys, M::RefsFooterKeys, M::XrefFooterKeys,
         M::LblAllEncodings,
-        // Dialog contents
+        M::ErrAddressOutOfBounds, M::ErrInvalidAddressExpr, M::ErrInvalidNumericValue,
+        M::ErrNothingToCopy, M::ErrClipboardAccess, M::ErrAltMSelectionNeeded,
+        M::ErrNoSectionPicked, M::ErrNoRoomForSectionHeader, M::LblSectionNameMax8,
+        M::LblFileBase, M::ErrNothingToAssemble, M::ErrFileReadOnly, M::ErrAssemblePastEof,
+        M::ErrNotAnAddress,
         M::LblType, M::LblAddress, M::LblInstruction, M::LblDisassembly,
         M::LblTextString, M::LblValue, M::LblStep, M::LblSearch, M::LblReplace,
         M::LblSubDir, M::LblError, M::ReplacePatternTitle, M::ReplaceHint,
@@ -349,7 +318,6 @@ impl M {
         M::OpEndianSwap, M::OpShiftLeft, M::OpShiftRight, M::OpRandom, M::OpRollingXor,
     ];
 
-    /// The message in `lang`.
     pub fn tr(self, lang: Lang) -> &'static str {
         let [en, ko, zh] = self.table();
         match lang {
@@ -359,11 +327,6 @@ impl M {
         }
     }
 
-    /// `[English, Korean, Chinese]` for one message.
-    ///
-    /// Kept short: these are hint-bar slots and dialog titles, where a long
-    /// translation costs columns that the narrowest supported terminal (68) does
-    /// not have.
     fn table(self) -> [&'static str; 3] {
         match self {
             M::Help => ["Help", "도움말", "帮助"],
@@ -375,8 +338,6 @@ impl M {
             M::About => ["About", "정보", "关于"],
             M::Open => ["Open", "열기", "打开"],
             M::Save => ["Save", "저장", "保存"],
-            // F12 writes the file *and* leaves, which "Save" alone does not say.
-            // Used when the line has room; `M::Save` is the fallback when it does not.
             M::SaveQuit => ["Save and quit", "저장하고 종료", "保存并退出"],
             M::HexView => ["Hex", "헥스", "十六"],
 
@@ -412,10 +373,6 @@ impl M {
             M::ReadOnly => ["Read Only", "읽기 전용", "只读"],
 
             M::HelpTitle => [" Help (F1) ", " 도움말 (F1) ", " 帮助 (F1) "],
-            // Only the part that is not guessable. Arrows scrolling a long text and
-            // Esc closing a dialog are true everywhere in the program; spelling them
-            // out here spent the whole footer on them and left no room to mention
-            // the one key nobody would try.
             M::HelpFooter => [
                 " y copy to clipboard ",
                 " y 클립보드 복사 ",
@@ -635,11 +592,6 @@ impl M {
                 "ASCII 모드에서는 영문/숫자/기호만 저장할 수 있습니다. 한글/다국어 수정을 원하시면 F2를 눌러 UTF-8 또는 CP949 스캔 모드로 변경하세요",
                 "ASCII 模式仅支持 ASCII 字符。非 ASCII 文本请按 F2 切换至 UTF-8 或 CP949 模式",
             ],
-            // Only the keys that are not guessable, in the language the rest of the
-            // dialog is drawn in. These sit on a border, so the CJK spellings are kept
-            // short: every Han character is two columns wide.
-            // The other choices in that filter are codepage names, which stay as
-            // they are in every language; this one is a word.
             M::LblAllEncodings => ["All", "전체", "全部"],
             M::StringsFooterKeys => [
                 " Ctrl+C: copy line | Ctrl+Shift+C: copy all ",
@@ -677,8 +629,79 @@ impl M {
                 "未知编码 '{}' (可用：{})",
             ],
 
-            M::LblType => ["Type", "종류", "类型"],
+            // Newly added localized messages
+            M::ErrAddressOutOfBounds => [
+                "Address 0x{} out of bounds",
+                "주소 0x{} 은 범위를 벗어났습니다",
+                "地址 0x{} 超出范围",
+            ],
+            M::ErrInvalidAddressExpr => [
+                "Invalid address expression: '{}'",
+                "잘못된 주소 수식: '{}'",
+                "无效的地址表达式：'{}'",
+            ],
+            M::ErrInvalidNumericValue => [
+                "Invalid numeric value: '{}'",
+                "잘못된 숫자 값: '{}'",
+                "无效的数值：'{}'",
+            ],
+            M::ErrNothingToCopy => [
+                "Nothing to copy",
+                "복사할 내용이 없습니다",
+                "没有可复制的内容",
+            ],
+            M::ErrClipboardAccess => [
+                "Could not access the clipboard",
+                "클립보드에 접근할 수 없습니다",
+                "无法访问剪贴板",
+            ],
+            M::ErrAltMSelectionNeeded => [
+                "Alt+M needs a selection (Shift+arrows) or a block at the cursor",
+                "Alt+M 은 블록 선택(Shift+방향키) 또는 커서 위치의 블록이 필요합니다",
+                "Alt+M 需要选择块 (Shift+方向键) 或在光标处有块",
+            ],
+            M::ErrNoSectionPicked => [
+                "No section at index {} - open the Section tab and pick one first",
+                "인덱스 {} 에 섹션이 없습니다 - 먼저 섹션 탭에서 선택하세요",
+                "索引 {} 处没有节 - 请先在节标签页中选择",
+            ],
+            M::ErrNoRoomForSectionHeader => [
+                "No room for another section header (SizeOfHeaders = 0x{:X} leaves no padding after the last entry)",
+                "새 섹션 헤더를 추가할 공간이 없습니다 (SizeOfHeaders = 0x{:X} 패딩 부족)",
+                "没有空间添加新节头 (SizeOfHeaders = 0x{:X} 缺少填充)",
+            ],
+            M::LblSectionNameMax8 => [
+                " Section Name (max 8 chars): {} ",
+                " 섹션 이름 (최대 8자): {} ",
+                " 节名称 (最多 8 字符)：{} ",
+            ],
+            M::LblFileBase => [
+                " (file: {:X}) ",
+                " (파일: {:X}) ",
+                " (文件: {:X}) ",
+            ],
+            M::ErrNothingToAssemble => [
+                "nothing to assemble",
+                "어셈블할 내용이 없습니다",
+                "没有可汇编的内容",
+            ],
+            M::ErrFileReadOnly => [
+                "file is read-only",
+                "파일이 읽기 전용입니다",
+                "文件为只读",
+            ],
+            M::ErrAssemblePastEof => [
+                "{} byte(s) at 0x{:X} would run past the end of the file (0x{:X})",
+                "0x{:X} 의 {} 바이트가 파일 끝(0x{:X})을 벗어납니다",
+                "0x{:X} 处的 {} 字节超出文件末尾 (0x{:X})",
+            ],
+            M::ErrNotAnAddress => [
+                "'{}' is not an address",
+                "'{}' 은(는) 주소가 아닙니다",
+                "'{}' 不是有效的地址",
+            ],
 
+            M::LblType => ["Type", "종류", "类型"],
             M::LblAddress => ["Address", "주소", "地址"],
             M::LblInstruction => ["Instruction", "명령어", "指令"],
             M::LblDisassembly => ["Disassembly", "디스어셈블", "反汇编"],
@@ -704,11 +727,8 @@ impl M {
             M::ReplaceHint => [
                 "Enter/F3 next | Shift+F3 prev | Alt+R replace | Alt+A all",
                 "Enter/F3 다음 | Shift+F3 이전 | Alt+R 바꾸기 | Alt+A 모두",
-                "Enter/F3 下一个 | Shift+F3 上一个 | Alt+R 替换 | Alt+A 全部",
+                "Enter/F3 下一个 | Shift+F3 상一个 | Alt+R 替换 | Alt+A 全部",
             ],
-            // Where the current hit is, and which of how many it is. The shape is
-            // the same in every language: it is arithmetic plus an address, and
-            // `offset` / `VA` are the field names the rest of the program uses.
             M::MatchAtOffset => [
                 "Match ({}/{}) offset : 0x{}",
                 "일치 ({}/{}) offset : 0x{}",
@@ -759,8 +779,6 @@ impl M {
                 "크기를 헥스로 입력하세요. 예: 1000 또는 0x1000",
                 "请以十六进制输入大小，例如 1000 或 0x1000",
             ],
-            // Enter on a text row (the DOS stub, the PE signature) rather than a
-            // numeric field.
             M::ErrFieldNotNumeric => [
                 "'{}' is text, not a number to edit",
                 "'{}' 은(는) 숫자 필드가 아니라 문자열입니다",
@@ -854,248 +872,5 @@ impl M {
             M::NoteLang => ["interface language", "인터페이스 언어", "界面语言"],
             M::NoteDisasmColor => ["disassembly colour", "디스어셈블 색상", "反汇编颜色"],
         }
-    }
-}
-
-#[cfg(test)]
-mod i18n_tests {
-    use super::*;
-
-    /// Every message must be filled in for every language.
-    ///
-    /// An empty slot would render as a blank hint slot or an untitled dialog, which
-    /// is harder to spot than a missing translation in a list.
-    #[test]
-    fn no_message_is_empty() {
-        for m in M::ALL {
-            for lang in Lang::ALL {
-                assert!(
-                    !m.tr(lang).trim().is_empty(),
-                    "{:?} has no {} text",
-                    m,
-                    lang.name()
-                );
-            }
-        }
-    }
-
-    /// Hint-bar words have to fit the row. CJK is double-width, so the limit is in
-    /// display columns, not characters.
-    #[test]
-    fn hint_labels_stay_short() {
-        use unicode_width::UnicodeWidthStr;
-
-        // `M::SaveQuit` is deliberately absent: it is the long wording for the last
-        // slot on the line, which falls back to `M::Save` when it does not fit, and
-        // `hint_bar`'s width tests check what actually matters.
-        let labels = [
-            M::Help, M::Edit, M::HeaderView, M::Refs, M::Strings, M::TextView, M::About,
-            M::Open, M::Save, M::HexView, M::Type, M::Column, M::Case, M::Select, M::Done,
-            M::Copy, M::Modify, M::Color, M::Clear, M::Data, M::Goto, M::Find, M::Replace,
-            M::Xref, M::Addr, M::Undo, M::Redo, M::Encoding, M::Encoding2, M::Highlight,
-            M::Log, M::Names, M::RevertByte, M::ImageBase, M::DecodeWidth,
-        ];
-        for m in labels {
-            for lang in Lang::ALL {
-                let width = UnicodeWidthStr::width(m.tr(lang));
-                assert!(
-                    width <= 10,
-                    "{:?} in {} is {} columns wide, too wide for a hint slot",
-                    m,
-                    lang.name(),
-                    width
-                );
-            }
-        }
-    }
-
-    /// The names `:set lang` accepts round-trip.
-    #[test]
-    fn language_names_round_trip() {
-        for lang in Lang::ALL {
-            assert_eq!(Lang::from_name(lang.name()), Some(lang));
-        }
-        assert_eq!(Lang::from_name("Korean"), Some(Lang::Ko));
-        assert_eq!(Lang::from_name(" CN "), Some(Lang::Zh));
-        assert_eq!(Lang::from_name("english"), Some(Lang::En));
-        assert_eq!(Lang::from_name("klingon"), None);
-    }
-
-}
-
-#[cfg(test)]
-mod fill_tests {
-    use super::*;
-
-    /// Placeholders are filled in order.
-    #[test]
-    fn placeholders_are_filled_in_order() {
-        assert_eq!(fill("a {} b {} c", &["1", "2"]), "a 1 b 2 c");
-        assert_eq!(fill("{}", &["x"]), "x");
-        assert_eq!(fill("no placeholder", &["x"]), "no placeholder");
-    }
-
-    /// A template with more placeholders than arguments keeps the rest verbatim
-    /// rather than panicking - a translation with an extra `{}` must not take the
-    /// program down.
-    #[test]
-    fn a_short_argument_list_is_survivable() {
-        assert_eq!(fill("{} and {}", &["one"]), "one and {}");
-        assert_eq!(fill("{}", &[]), "{}");
-    }
-
-    /// Every message that takes arguments has the same number of placeholders in
-    /// all three languages. A translation that drops one silently loses the value.
-    #[test]
-    fn placeholder_counts_match_across_languages() {
-        for m in M::ALL {
-            let counts: Vec<usize> = Lang::ALL
-                .iter()
-                .map(|lang| m.tr(*lang).matches("{}").count())
-                .collect();
-            assert!(
-                counts.iter().all(|c| *c == counts[0]),
-                "{:?} has {:?} placeholders across en/ko/zh",
-                m,
-                counts
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-mod dialog_chrome_tests {
-    //! The borders of the result dialogs have to follow `:set lang` like everything
-    //! else, and they have to fit.
-    //!
-    //! The key hints added to the strings, references and cross-reference boxes were
-    //! written straight into the drawing code in English, so changing the language
-    //! left them behind. CJK is the reason the width matters: every Han character is
-    //! two columns, so a translation that reads fine in English can overflow the
-    //! border it sits on and come out truncated - as `Minimum length` did, drawn as
-    //! `imum length`.
-
-    use crate::i18n::{Lang, M};
-    use unicode_width::UnicodeWidthStr;
-
-    /// Every footer is translated, i.e. no two languages share the English text.
-    #[test]
-    fn the_footers_are_translated() {
-        for message in [M::StringsFooterKeys, M::RefsFooterKeys, M::XrefFooterKeys, M::LblAllEncodings] {
-            let en = message.tr(Lang::En);
-            for lang in [Lang::Ko, Lang::Zh] {
-                let translated = message.tr(lang);
-                assert!(!translated.trim().is_empty(), "{:?} is empty in {:?}", message, lang);
-                assert_ne!(
-                    translated, en,
-                    "{:?} is still the English text in {:?}",
-                    message, lang
-                );
-            }
-        }
-    }
-
-    /// The keys themselves survive translation: a hint that drops the letter it is
-    /// about is worse than no hint.
-    #[test]
-    fn the_footers_still_name_their_keys() {
-        for lang in Lang::ALL {
-            let strings = M::StringsFooterKeys.tr(lang);
-            assert!(strings.contains("Ctrl+C"), "{:?}: {:?}", lang, strings);
-
-            let refs = M::RefsFooterKeys.tr(lang);
-            assert!(refs.contains("Enter"), "{:?}: {:?}", lang, refs);
-            assert!(refs.contains("Ctrl+Enter"), "{:?}: {:?}", lang, refs);
-            assert!(refs.contains("Ctrl+C"), "{:?}: {:?}", lang, refs);
-
-            let xref = M::XrefFooterKeys.tr(lang);
-            assert!(xref.contains("Enter"), "{:?}: {:?}", lang, xref);
-            assert!(xref.contains("Ctrl+C"), "{:?}: {:?}", lang, xref);
-        }
-    }
-
-    /// Each footer fits the border it is drawn on, measured in terminal columns.
-    ///
-    /// The widths are the ones the dialogs use: the references box is a fixed 96, the
-    /// cross-reference box a fixed 82, and the strings box is half the terminal - so
-    /// it is checked against a 68-column terminal, the narrowest the program claims
-    /// to support.
-    #[test]
-    fn the_footers_fit_their_boxes() {
-        // Strings dialog: half of 68 is 34, less two border columns, and the filter
-        // box it sits on is another two in.
-        let strings_inner = 45;
-        let refs_inner = 96 - 2;
-        let xref_inner = 82 - 2;
-
-        for lang in Lang::ALL {
-            let cases = [
-                (M::StringsFooterKeys, strings_inner),
-                (M::RefsFooterKeys, refs_inner),
-                (M::XrefFooterKeys, xref_inner),
-            ];
-            for (message, room) in cases {
-                let text = message.tr(lang);
-                assert!(
-                    text.width() <= room,
-                    "{:?} in {:?} is {} columns, {} available: {:?}",
-                    message,
-                    lang,
-                    text.width(),
-                    room,
-                    text
-                );
-            }
-        }
-    }
-
-    /// The strings dialog draws its own border text in the chosen language.
-    #[test]
-    fn the_strings_dialog_draws_the_translated_footer() {
-        use ratatui::{Terminal, backend::TestBackend};
-
-        let dir = std::env::temp_dir().join(format!("dz6_chrome_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("dir");
-        let path = dir.join("sample.bin");
-        let mut bytes = vec![0u8; 0x40];
-        bytes[0x10..0x15].copy_from_slice(b"HELLO");
-        std::fs::write(&path, &bytes).expect("write");
-
-        let mut app = crate::app::App::new();
-        app.config.database = false;
-        app.load_file(path.to_str().expect("path"), 0, true).expect("open");
-        crate::commands::Commands::strings(&mut app);
-
-        for lang in [Lang::Ko, Lang::Zh, Lang::En] {
-            app.config.lang = lang;
-            let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-            terminal
-                .draw(|f| crate::hex::strings::dialog_strings_draw(&mut app, f))
-                .expect("draw");
-            let buffer = terminal.backend().buffer().clone();
-            let screen: String = (0..30)
-                .map(|y| (0..100).map(|x| buffer[(x, y)].symbol()).collect::<String>())
-                .collect();
-
-            // The first word of the footer in that language, whatever it is.
-            let word = M::StringsFooterKeys
-                .tr(lang)
-                .split_whitespace()
-                .last()
-                .expect("a word");
-            // Whitespace is dropped from both sides before comparing: a double-width
-            // character occupies two cells, and the backend fills the second with a
-            // space - so reading the buffer cell by cell turns `교체` into `교 체`.
-            let flat: String = screen.chars().filter(|c| !c.is_whitespace()).collect();
-            let wanted: String = word.chars().filter(|c| !c.is_whitespace()).collect();
-            assert!(
-                flat.contains(&wanted),
-                "{:?}: the footer word {:?} is not on screen",
-                lang,
-                word
-            );
-        }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

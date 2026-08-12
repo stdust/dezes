@@ -38,23 +38,23 @@ impl Default for DisasmTheme {
     /// rather than something arbitrary.
     fn default() -> Self {
         Self {
-            name: "dark".to_string(),
-        
+            name: "disasm".to_string(),
+
             call_bg: Color::Rgb(0, 255, 255),        // #00FFFF
             call_fg: Color::Rgb(0, 0, 0),            // #000000
             jmp_bg: Color::Rgb(255, 255, 0),        // #FFFF00
-            jmp_fg: Color::Rgb(0, 0, 0),            // #000000
+            jmp_fg: Color::Rgb(255, 0, 0),          // #FF0000
             jcc_bg: Color::Rgb(255, 255, 0),        // #FFFF00
             jcc_fg: Color::Rgb(255, 0, 0),          // #FF0000
             push_pop_fg: Color::Rgb(0, 0, 255),      // #0000FF
             ret_bg: Color::Rgb(0, 255, 255),         // #00FFFF
             ret_fg: Color::Rgb(0, 0, 0),            // #000000
-            register_fg: Color::Rgb(0, 0x83, 0),     // #008300
-            memory_op_fg: Color::Rgb(0, 0, 0x80),    // #000080
+            register_fg: Color::Rgb(0, 0x99, 0),     // #009900
+            memory_op_fg: Color::Rgb(0x3B, 0x4A, 0x5A), // #3B4A5A
             immediate_fg: Color::Rgb(128, 128, 0),   // #808000
             keyword_fg: Color::Rgb(180, 0, 180),     // #B400B4
             comment_fg: Color::Rgb(0, 128, 128),     // #008080
-            segment_fg: Color::Rgb(255, 0, 255),     // #FF00FF
+            segment_fg: Color::Rgb(0xCC, 0, 0xCC),     // #CC00CC
             import_bg: Color::Rgb(255, 255, 0),      // #FFFF00
             import_fg: Color::Rgb(0, 0, 0),          // #000000
         }
@@ -335,7 +335,7 @@ fn legacy_disasm_theme_dir(base: &std::path::Path) -> PathBuf {
 
 /// Built-in preset names. `gray` is accepted as an alias of `grey` so these line
 /// up with the main theme files, which are named `gray.theme`.
-pub const DISASM_PRESETS: [&str; 3] = ["dark", "light", "grey"];
+pub const DISASM_PRESETS: [&str; 4] = ["disasm", "dark", "light", "grey"];
 
 /// Built-in definition for a preset name, used both to write the initial files
 /// and as the fallback when the file has been deleted.
@@ -361,7 +361,7 @@ pub fn disasm_preset(name: &str) -> Option<DisasmTheme> {
         // An earlier version desaturated these for the near-black #1E1E1E hex
         // background. That is still available as `grey`/`light`, but the bright
         // scheme is what CALL/JMP blocks are recognisable as.
-        "dark" => DisasmTheme::default(),
+        "disasm" | "dark" => DisasmTheme::default(),
         // For the #EEEEEE background. Foregrounds are darkened rather than
         // brightened, since on a light background it is the text that has to
         // carry the contrast.
@@ -646,7 +646,7 @@ mod disasm_theme_tests {
     fn the_memory_operand_colour_is_navy() {
         assert_eq!(
             color_to_hex_str(DisasmTheme::default().memory_op_fg),
-            "#000080"
+            "#3B4A5A"
         );
     }
 
@@ -747,7 +747,7 @@ register_fg = #123456
     /// Built-in presets stand in for theme files that predate the merge.
     #[test]
     fn preset_names_resolve_without_any_file() {
-        for name in ["dark", "light", "grey", "gray"] {
+        for name in ["disasm", "dark", "light", "grey", "gray"] {
             assert!(
                 resolve_disasm_theme(name).is_some(),
                 "'{}' must resolve from the built-in presets alone",

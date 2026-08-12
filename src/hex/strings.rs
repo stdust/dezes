@@ -5,23 +5,14 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph},
 };
 
-
 use std::io::Result;
 
 use crate::{app::App, commands::Commands, editor::UIState, util::center_widget};
 
 use regex::{Regex, RegexBuilder};
 
-/// Rows the Home/End keys move by. The dialog shows 30 strings at a time, so a
-/// step of 29 keeps one row of overlap.
 const STRINGS_PAGE_STEP: usize = 29;
 
-/// Which encoding a scan decodes byte runs as.
-///
-/// One encoding at a time rather than the Refs dialog's "All": merging the four
-/// scans would list the ASCII fragments around every Korean string a second
-/// time, and the `maximum_strings_to_show` cap would be spent on whichever scan
-/// ran first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StringEncoding {
     #[default]
@@ -33,11 +24,6 @@ pub enum StringEncoding {
 }
 
 impl StringEncoding {
-    /// The codec to encode a replacement string with.
-    ///
-    /// The same one the scan decoded the row with, so what is typed goes back as the
-    /// same kind of bytes it came from - a CP949 row is written as CP949, a wide row
-    /// as UTF-16LE.
     pub fn codec(&self) -> &'static encoding_rs::Encoding {
         match self {
             Self::Ascii => encoding_rs::UTF_8,
@@ -81,17 +67,8 @@ impl StringEncoding {
 
 pub struct FoundString {
     pub offset: usize,
-    /// Length in *bytes*, i.e. how much of the file the string occupies. Not the
-    /// same as the character count for CP949/CP936/UTF-16, which is what the
-    /// minimum-length filter compares against.
     pub size: usize,
-    /// The string's text on its own, kept so [`FoundString::set_address`] can
-    /// re-render `display` against a different address space without having to
-    /// re-scan the file.
     pub content: String,
-    /// `"0000ABCD  text"` as shown in the list, formatted once when the string is
-    /// found (or when the address mode changes) instead of on every frame the
-    /// dialog is open.
     pub display: String,
 }
 
@@ -105,9 +82,6 @@ impl FoundString {
         }
     }
 
-    /// Re-renders the list row with `addr` as the leading address, so the
-    /// Disassembly view can list virtual addresses while the Hex view lists
-    /// file offsets.
     pub fn set_address(&mut self, addr: u64) {
         self.display = format!("{addr:08X}  {}", self.content);
     }
@@ -116,8 +90,6 @@ impl FoundString {
 pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
     let dialog_style = app.config.theme.dialog;
 
-    // Same rect as before the filter row was added, so the dialog stays where
-    // users expect it.
     let width = frame.area().width / 2;
     let height = frame.area().height / 2 + 4;
     let dialog_area = center_widget(width, height, frame.area());
@@ -154,15 +126,11 @@ pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),    // the list
-            Constraint::Length(3), // the filter box
+            Constraint::Min(1),
+            Constraint::Length(3),
         ])
         .split(inner);
 
-    // Only the rows that are on screen are turned into widgets. Building one per
-    // match was fine at the old 3,000-string cap and is not at 100,000: a
-    // `ListItem` per match, every frame, is exactly the kind of per-frame
-    // allocation the slow-frame log was put in to find.
     let visible = chunks[0].height as usize;
     let total = app.hex_view.strings_filtered.len();
     let selected = app.list_state.selected().unwrap_or(0).min(total.saturating_sub(1));
@@ -191,21 +159,12 @@ pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
         .highlight_style(app.config.theme.highlight)
         .repeat_highlight_symbol(true);
 
-    // The widget only knows about the window, so the highlight is addressed
-    // relative to it while `app.list_state` keeps the absolute index.
     let mut window_state = ratatui::widgets::ListState::default();
     if total > 0 {
         window_state.select(Some(selected - start));
     }
     frame.render_stateful_widget(list, chunks[0], &mut window_state);
 
-    // Nothing passed the filter, and the pattern is one that can only ever match an
-    // empty string: say so where the rows would be.
-    //
-    // The command bar was not enough. It is cleared on the next key press, so
-    // switching encoding with F2 - which re-scans and logs `52 found` - wiped the
-    // explanation and left a blank list next to a log line saying there were 52
-    // strings. This text stays until the pattern changes.
     if total == 0 && matches_the_empty_string(app.hex_view.strings_regex_input.value()) {
         let notice = ratatui::widgets::Paragraph::new(
             crate::i18n::M::WarnRegexEmptyOnly.tr(app.config.lang),
@@ -216,7 +175,6 @@ pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
         frame.render_widget(notice, chunks[0]);
     }
 
-    // Paging keys need the height of the list, which only the draw knows.
     app.hex_view.strings_page_rows = visible;
 
     let focus = app.hex_view.strings_focus_filter;
@@ -235,9 +193,6 @@ pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
 
     let filter_block = Block::default()
         .title(filter_title)
-        // The dialog's own bottom border is taken by the minimum length, and at half
-        // the terminal width all three hints together overflowed it - the label came
-        // out as "imum length". This border was empty.
         .title_bottom(crate::i18n::M::StringsFooterKeys.tr(app.config.lang))
         .borders(Borders::ALL)
         .border_style(border_style)
@@ -260,18 +215,6 @@ pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
     }
 }
 
-/// Rebuilds the visible subset from the regex box.
-///
-/// The filter runs over the already-scanned list, so typing is instant on a 27 MB
-/// binary, and a pattern that matches nothing costs nothing - the scanned list is
-/// untouched, so deleting a character brings the rows straight back.
-
-/// True when `pattern` is not empty but still matches an empty string.
-///
-/// `[一-龥]*?` is the one that started this: `*?` is "zero or more, lazily", and
-/// zero matches at the front of every row, so a Chinese search returned all 30,895
-/// strings including the English ones. The pattern is doing exactly what it says;
-/// what was missing was anything on screen admitting it.
 pub fn matches_the_empty_string(pattern: &str) -> bool {
     let pattern = pattern.trim();
     if pattern.is_empty() {
@@ -304,8 +247,6 @@ pub fn update_strings_filter(app: &mut App) {
         } else if let Some(re) = &compiled {
             crate::util::has_nonempty_match(re, &s.content)
         } else {
-            // Not a valid regex (yet) - treat it as a literal so the list keeps
-            // narrowing while a pattern is half-typed.
             s.content.to_lowercase().contains(&lower)
         };
         if keep {
@@ -335,11 +276,9 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
             };
 
             if is_double_click {
-                // First click already selected the correct row — just open edit.
                 app.last_left_click = None;
                 open_string_edit(app);
             } else {
-                // Single click: move selection to the clicked row.
                 let total = app.hex_view.strings_filtered.len();
                 if total > 0 {
                     let height = (app.screen.height / 2 + 4).min(app.screen.height);
@@ -414,17 +353,10 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
             };
             Commands::rescan_strings(app);
         }
-        // The list keeps the arrows and the paging keys in both focus modes: the
-        // regex box is one line, so it has no use for them.
-        //
-        // Moved by hand rather than with `ListState::select_next` and friends:
-        // those know nothing about how long the list is, so they walked the
-        // selection past the end and Enter then indexed nothing.
         KeyCode::Down => move_selection(app, 1),
         KeyCode::Up => move_selection(app, -1),
         KeyCode::PageDown => move_selection(app, page_step(app)),
         KeyCode::PageUp => move_selection(app, -page_step(app)),
-        // Shift+arrows and Shift+Home/End belong to the box, not to the list.
         KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End if focus => {
             crate::text_field::handle_key(app, strings_filter_field, event);
         }
@@ -442,17 +374,6 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
                 move_selection(app, page_step(app));
             }
         }
-        // Enter in the box accepts the filter and hands the arrows back to the
-        // list, so the results can be walked immediately.
-        //
-        // It used to install the pattern as a *scan-time* filter and re-scan. That
-        // was there to make the 3,000-string cap apply to matching strings rather
-        // than to the first 3,000 in the file; with the cap at 100,000 and the whole
-        // file scanned, it bought nothing and cost this: a pattern that matches
-        // nothing - `([一-龥]*?){1,}`, say, which is zero characters however many
-        // times it repeats - emptied `app.strings` itself. The title then read
-        // `(0 / 0)`, and because the scan-time pattern stayed set, every later
-        // keystroke filtered an empty list. The window never recovered.
         KeyCode::Enter if focus => {
             app.hex_view.strings_focus_filter = false;
         }
@@ -480,9 +401,6 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
                 let size = found.size;
                 app.last_result = Some(UIState::DialogStrings);
                 app.goto(offset);
-                // Highlight the string that was jumped to, the way the Find
-                // dialog highlights its match: on a large file an 8-character
-                // string is otherwise impossible to pick out of the dump.
                 app.hex_view.selection.start = offset;
                 app.hex_view.selection.end = (offset + size.saturating_sub(1))
                     .min(app.file_info.size.saturating_sub(1))
@@ -510,9 +428,7 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
         KeyCode::Char('f') | KeyCode::Char('/') if !focus => {
             app.hex_view.strings_focus_filter = true;
         }
-        // Replace the selected string in place (F4).
         KeyCode::F(4) => open_string_edit(app),
-        // Switch to F5 String Reference dialog while preserving state & matching cursor (F5).
         KeyCode::F(5) => {
             app.hex_view.strings_focus_filter = false;
             app.dialog_2nd_renderer = None;
@@ -546,12 +462,6 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
                 }
             }
         }
-        // `y` the selected row, `Y` everything the filter left. Tab-separated, so a
-        // narrowed list pastes into a spreadsheet as an address column and a text
-        // column - which is how a translation list gets started.
-        //
-        // `c` too: the help, About and Log panels all take either, and which one a
-        // person reaches for depends on whether they think "yank" or "copy".
         KeyCode::Char('c') | KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT) => {
             let (text, count) = filtered_rows_as_tsv(app);
             app.copy_to_clipboard(text, format!("{} string(s)", count));
@@ -580,7 +490,6 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
     Ok(false)
 }
 
-/// The strings dialog's regex box and its selection anchor.
 fn strings_filter_field(app: &mut App) -> (&mut tui_input::Input, &mut Option<usize>) {
     (
         &mut app.hex_view.strings_regex_input,
@@ -588,33 +497,18 @@ fn strings_filter_field(app: &mut App) -> (&mut tui_input::Input, &mut Option<us
     )
 }
 
-/// The in-place string replacement box.
-///
-/// Opened with `e` on a row of the F6 list. The whole point is the byte budget: a
-/// translated string has to fit exactly where the original sits, because moving it
-/// would mean fixing up every pointer to it. So the box knows how many bytes it is
-/// allowed and refuses anything longer instead of writing past the end of the string
-/// into whatever follows.
 #[derive(Default)]
 pub struct StringEdit {
-    /// File offset of the first byte of the string being replaced.
     pub offset: usize,
-    /// Bytes the original occupies, i.e. the budget.
     pub budget: usize,
-    /// Index into `App::strings` of the row being edited, so it can be relabelled
-    /// without a re-scan.
     pub row: usize,
-    /// Encoding the replacement is written in - the one the row was scanned with.
     pub encoding: StringEncoding,
     pub input: tui_input::Input,
-    /// Character a Shift-selection started from, or `None`.
     pub anchor: Option<usize>,
-    /// Why the last attempt was refused, shown under the box.
     pub error: Option<String>,
     pub return_state: Option<UIState>,
 }
 
-/// The replacement box and its selection anchor.
 fn string_edit_field(app: &mut App) -> (&mut tui_input::Input, &mut Option<usize>) {
     (
         &mut app.hex_view.string_edit.input,
@@ -622,11 +516,6 @@ fn string_edit_field(app: &mut App) -> (&mut tui_input::Input, &mut Option<usize
     )
 }
 
-/// Opens the replacement box for the selected row.
-///
-/// Refuses a read-only file up front rather than letting the user type a translation
-/// and then dropping it: the write goes through `record_edit`, which a read-only file
-/// cannot accept.
 pub fn open_string_edit(app: &mut App) {
     if app.file_info.is_read_only {
         app.read_only_error(crate::i18n::M::RoStringEdit);
@@ -658,8 +547,6 @@ pub fn open_string_edit(app: &mut App) {
         budget: found.size,
         row,
         encoding: initial_encoding,
-        // Pre-filled with the original, cursor at the end, whole text selected:
-        // typing immediately replaces the whole string, while navigation keeps the text.
         input: tui_input::Input::new(found.content.clone()).with_cursor(cursor),
         anchor: Some(0),
         error: None,
@@ -669,10 +556,6 @@ pub fn open_string_edit(app: &mut App) {
     app.dialog_2nd_renderer = Some(dialog_string_edit_draw);
 }
 
-/// Writes the replacement, or reports why it will not fit.
-///
-/// Padding is `00` rather than spaces: the string is C-terminated where it sits, so
-/// a shorter replacement has to end the string, not merely blank the tail.
 fn commit_string_edit(app: &mut App) {
     if app.file_info.is_read_only {
         app.read_only_error(crate::i18n::M::RoStringEdit);
@@ -702,9 +585,6 @@ fn commit_string_edit(app: &mut App) {
         return;
     }
 
-    // Through `record_edit`, so the bytes land in the same staged map as every other
-    // edit: the hex view marks them, undo and Alt+F3 revert them, and `:w` is what
-    // writes them.
     for (i, byte) in bytes.iter().enumerate() {
         crate::hex::edit::record_edit(app, offset + i, *byte);
     }
@@ -713,8 +593,6 @@ fn commit_string_edit(app: &mut App) {
         crate::hex::edit::record_edit(app, offset + i, 0);
     }
 
-    // Relabel the row in place. A re-scan would read the file rather than the staged
-    // edits and put the old text straight back.
     let row = app.hex_view.string_edit.row;
     let use_va = app.editor_view == crate::editor::AppView::Disasm || app.hex_view.show_va;
     let addr = if use_va { app.get_va(offset) } else { offset as u64 };
@@ -749,10 +627,6 @@ fn commit_string_edit(app: &mut App) {
 pub fn dialog_string_edit_draw(app: &mut App, frame: &mut Frame) {
     let edit = &app.hex_view.string_edit;
     let width = 64.min(frame.area().width.saturating_sub(4)).max(28);
-    // Tall enough for the refusal to be read: it names both byte counts and what the
-    // rule is, which wraps to two or three lines in a box this wide. Sized to the
-    // wrap instead of a fixed row, because a truncated explanation is no better than
-    // none.
     let error_rows = match &edit.error {
         None => 0,
         Some(error) => {
@@ -830,8 +704,6 @@ pub fn dialog_string_edit_events(app: &mut App, event: &Event) -> Result<bool> {
         }
         _ => {
             if crate::text_field::handle_key(app, string_edit_field, event) {
-                // A refusal is about the text that was refused, so it goes as soon as
-                // the text changes.
                 app.hex_view.string_edit.error = None;
             }
         }
@@ -839,26 +711,12 @@ pub fn dialog_string_edit_events(app: &mut App, event: &Event) -> Result<bool> {
     Ok(false)
 }
 
-/// One list row as `address<TAB>text`.
-///
-/// The address is the one the list is showing - a virtual address in the Disasm
-/// view or in VA mode, a file offset otherwise - so what is pasted matches what
-/// was on screen. Neither field can contain a tab: every scanner rejects control
-/// bytes.
 fn row_as_tsv(app: &App, s: &FoundString) -> String {
     let use_va = app.editor_view == crate::editor::AppView::Disasm || app.hex_view.show_va;
     let addr = if use_va { app.get_va(s.offset) } else { s.offset as u64 };
     format!("{:08X}\t{}", addr, s.content)
 }
 
-/// Every row the filter left, and how many there are.
-///
-/// Split out from the key handler so what gets copied can be checked without
-/// touching the real clipboard - which is a shared OS resource that parallel tests
-/// fight over, and is missing entirely on a bare TTY.
-///
-/// CRLF line endings: this is going to a Windows clipboard, and a spreadsheet
-/// pasting LF-only text puts the lot in one cell.
 fn filtered_rows_as_tsv(app: &App) -> (String, usize) {
     let rows: Vec<String> = app
         .hex_view
@@ -870,7 +728,6 @@ fn filtered_rows_as_tsv(app: &App) -> (String, usize) {
     (rows.join("\r\n"), rows.len())
 }
 
-/// Rows one PageUp/PageDown covers: a screenful less one row of overlap.
 fn page_step(app: &App) -> isize {
     let rows = app.hex_view.strings_page_rows;
     if rows < 2 {
@@ -880,7 +737,6 @@ fn page_step(app: &App) -> isize {
     }
 }
 
-/// Moves the highlight by `delta`, clamped to the filtered list.
 fn move_selection(app: &mut App, delta: isize) {
     let len = app.hex_view.strings_filtered.len();
     if len == 0 {
@@ -891,7 +747,6 @@ fn move_selection(app: &mut App, delta: isize) {
     let next = current.saturating_add(delta).clamp(0, len as isize - 1);
     app.list_state.select(Some(next as usize));
 }
-
 
 impl Commands {
     pub fn strings(app: &mut App) {
@@ -906,11 +761,6 @@ impl Commands {
         }
     }
 
-    /// Re-runs the scan and reports the outcome.
-    ///
-    /// Every setting on this dialog (encoding, minimum length, the regex when it
-    /// is applied at scan time) needs the same four steps, and a scan that finds
-    /// nothing used to leave an empty list with no explanation.
     pub fn rescan_strings(app: &mut App) {
         Commands::load_strings(app, true);
         Commands::refresh_string_addresses(app);
@@ -924,9 +774,6 @@ impl Commands {
                 app.hex_view.strings_encoding.as_str()
             ),
         );
-        // Nothing in the interface sets `string_regex` any more, but if something
-        // ever does and it cannot match, the count above is a bare zero with no
-        // reason attached - which is exactly how the `(0 / 0)` title read.
         if app.strings.is_empty() && matches_the_empty_string(&app.string_regex) {
             let message = crate::i18n::M::WarnRegexEmptyOnly.tr(app.config.lang).to_string();
             app.status_error = Some(message.clone());
@@ -934,13 +781,6 @@ impl Commands {
         }
     }
 
-    /// Relabels every row of the strings list with the address space the
-    /// current view thinks in: virtual addresses in the Disassembly view (or
-    /// when the Hex view is in VA mode), file offsets otherwise.
-    ///
-    /// Done once when the dialog opens rather than per frame, and `strings` is
-    /// moved out first because `get_va` needs to borrow `app` immutably while
-    /// the list is being mutated.
     pub fn refresh_string_addresses(app: &mut App) {
         let use_va = app.editor_view == crate::editor::AppView::Disasm || app.hex_view.show_va;
 
@@ -953,7 +793,6 @@ impl Commands {
     }
 
     pub fn load_strings(app: &mut App, force_read: bool) {
-        // If the string list is already filled, just reuse it
         if force_read {
             app.strings.clear();
         }
@@ -962,9 +801,6 @@ impl Commands {
             return;
         }
 
-        // `None` means "no filter". It used to be an empty `Regex`, which under the
-        // old `is_match` rule matched everything and under the new one would match
-        // nothing at all - the scan would come back empty on every file.
         let re = if app.string_regex.trim().is_empty() {
             None
         } else {
@@ -979,13 +815,6 @@ impl Commands {
         let cap = app.config.maximum_strings_to_show;
         let encoding = app.hex_view.strings_encoding;
 
-        // Where to look. The multi-byte scans only run over the sections that do
-        // not hold code, because that is where the last of their false positives
-        // come from: `48 8B` is a perfectly good CP936 character, and a stretch of
-        // x64 between two zero words is a perfectly good UTF-16 string. Files with
-        // no section table (raw dumps, non-PE) are scanned whole, and the ASCII
-        // scan always is - a 4-character printable run means something wherever it
-        // sits.
         let buf_len = app.file_info.get_buffer_ref().len();
         let ranges: Vec<std::ops::Range<usize>> = if encoding == StringEncoding::Ascii {
             vec![0..buf_len]
@@ -1026,10 +855,6 @@ fn is_cjk(c: char) -> bool {
     ('\u{4E00}'..='\u{9FFF}').contains(&c)
 }
 
-/// Whether a candidate string passes the scan-time regex.
-///
-/// `None` is no filter at all. A non-empty match is required, for the reason in
-/// `util::has_nonempty_match`.
 fn accepts(re: Option<&Regex>, text: &str) -> bool {
     match re {
         None => true,
@@ -1037,33 +862,17 @@ fn accepts(re: Option<&Regex>, text: &str) -> bool {
     }
 }
 
-/// True for a byte that can appear inside a single-byte printable run.
 fn is_ascii_text(b: u8) -> bool {
     b.is_ascii_graphic() || b == b' '
 }
 
-/// A double-byte codepage, narrowed to the byte pairs real text actually uses.
-///
-/// Deciding "is this a Chinese string?" by whether GBK can decode it does not
-/// work: GBK assigns almost the whole 0x81..0xFE lead space, so a stretch of x64
-/// machine code decodes without a single error. On a Korean binary containing no
-/// Chinese at all, that test reported 11,586 strings. Restricting the pairs to
-/// the GB2312 / KS X 1001 blocks below is what separates text from code, because
-/// code bytes only rarely land two valid pairs in a row inside them.
 struct Dbcs {
     enc: &'static encoding_rs::Encoding,
-    /// Valid lead byte of a pair.
     lead_ok: fn(u8) -> bool,
-    /// Valid trail byte of a pair.
     trail_ok: fn(u8) -> bool,
-    /// A character of the script being looked for.
     is_target: fn(char) -> bool,
 }
 
-/// GB2312 hanzi (lead 0xB0..0xF7) plus the fullwidth punctuation and alphabet
-/// rows (0xA1..0xA9). GBK's extension blocks are deliberately left out: they hold
-/// rare characters that almost never appear in shipped strings, and they are
-/// where machine code lands.
 fn gbk_lead(b: u8) -> bool {
     (0xA1..=0xA9).contains(&b) || (0xB0..=0xF7).contains(&b)
 }
@@ -1072,9 +881,6 @@ fn gbk_trail(b: u8) -> bool {
     (0xA1..=0xFE).contains(&b)
 }
 
-/// KS X 1001 precomposed Hangul (lead 0xB0..0xC8) plus the punctuation rows.
-/// The CP949 extension area (0x81..0xA0) and the hanja rows are excluded for the
-/// same reason.
 fn euckr_lead(b: u8) -> bool {
     (0xA1..=0xA2).contains(&b) || (0xB0..=0xC8).contains(&b)
 }
@@ -1083,16 +889,8 @@ fn euckr_trail(b: u8) -> bool {
     (0xA1..=0xFE).contains(&b)
 }
 
-/// How many script characters have to sit next to each other for a run to count
-/// as text.
-///
-/// A single stray pair is what machine code produces; words in either language
-/// are two or more characters. This one rule removes most of what was left after
-/// the byte ranges above, and unlike a "at least half the characters" ratio it
-/// still accepts a mixed string such as `Copyright (C) 2011 北京公司`.
 const MIN_SCRIPT_RUN: usize = 2;
 
-/// Longest streak of `is_target` characters in `text`.
 fn longest_script_run(text: &str, is_target: fn(char) -> bool) -> usize {
     let mut best = 0usize;
     let mut current = 0usize;
@@ -1107,14 +905,12 @@ fn longest_script_run(text: &str, is_target: fn(char) -> bool) -> usize {
     best
 }
 
-/// True for filler such as `CC CC CC CC`, which GBK decodes as the same hanzi
-/// over and over. Three or more is padding, not text; two is left alone because
-/// Chinese does have real doubled words.
 fn is_one_char_repeated(text: &str) -> bool {
     let mut chars = text.chars();
     let Some(first) = chars.next() else { return false };
     text.chars().count() >= 3 && chars.all(|c| c == first)
 }
+
 fn scan_dbcs(
     buffer: &[u8],
     range: std::ops::Range<usize>,
@@ -1130,8 +926,6 @@ fn scan_dbcs(
     while i < len {
         let start = i;
 
-        // Walk as far as the codepage stays valid: printable single bytes, or a
-        // lead/trail pair from the restricted blocks.
         let mut end = i;
         while end < len {
             let b = buffer[end];
@@ -1154,9 +948,6 @@ fn scan_dbcs(
         }
 
         let run = &buffer[start..end];
-        // A C string ends in a NUL. Machine code that happens to decode ends at
-        // whatever byte broke the run, so this alone throws out most of what the
-        // byte ranges let through.
         let terminated = end == buffer.len() || buffer[end] == 0;
         let (cow, had_errors) = cp.enc.decode_without_bom_handling(run);
         if !had_errors && terminated {
@@ -1176,6 +967,7 @@ fn scan_dbcs(
         i = end;
     }
 }
+
 fn scan_ascii(buffer: &[u8], min: usize, cap: usize, re: Option<&Regex>, out: &mut Vec<FoundString>) {
     let mut siz = 0usize;
     let mut candidate = String::new();
@@ -1227,10 +1019,13 @@ fn scan_utf8(
             } else {
                 let remaining = &buffer[end..len];
                 if let Ok(valid_str) = std::str::from_utf8(remaining) {
-                    let first_char = valid_str.chars().next().unwrap();
-                    let char_len = first_char.len_utf8();
-                    if !first_char.is_control() {
-                        end += char_len;
+                    if let Some(first_char) = valid_str.chars().next() {
+                        let char_len = first_char.len_utf8();
+                        if !first_char.is_control() {
+                            end += char_len;
+                        } else {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -1239,10 +1034,11 @@ fn scan_utf8(
                     for char_bytes in 2..=4 {
                         if end + char_bytes <= len {
                             if let Ok(s) = std::str::from_utf8(&buffer[end..end + char_bytes]) {
-                                let c = s.chars().next().unwrap();
-                                if !c.is_control() {
-                                    valid_len = char_bytes;
-                                    break;
+                                if let Some(c) = s.chars().next() {
+                                    if !c.is_control() {
+                                        valid_len = char_bytes;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -1291,41 +1087,25 @@ const CP936: Dbcs = Dbcs {
     trail_ok: gbk_trail,
     is_target: is_cjk,
 };
-/// True for a UTF-16 code unit worth showing.
-///
-/// A whitelist of blocks rather than "anything above U+009F": two random bytes
-/// land in the CJK block a third of the time, so the loose test reported 54,552
-/// wide strings in a binary that has a few hundred. Surrogates never reach here
-/// because `char::from_u32` rejects them.
+
 fn is_wide_text(c: char) -> bool {
     if c.is_control() {
         return false;
     }
     matches!(c as u32,
-        0x20..=0x7E          // ASCII printable
-        | 0xA0..=0x24F       // Latin-1 supplement, Latin Extended-A/B
-        | 0x370..=0x3FF      // Greek
-        | 0x400..=0x4FF      // Cyrillic
-        | 0x2010..=0x203A    // general punctuation
-        | 0x20A0..=0x20BF    // currency symbols
-        | 0x3000..=0x30FF    // CJK punctuation, Hiragana, Katakana
-        | 0x4E00..=0x9FFF    // CJK unified ideographs
-        | 0xAC00..=0xD7A3    // Hangul syllables
-        | 0xFF01..=0xFF60    // fullwidth forms
+        0x20..=0x7E
+        | 0xA0..=0x24F
+        | 0x370..=0x3FF
+        | 0x400..=0x4FF
+        | 0x2010..=0x203A
+        | 0x20A0..=0x20BF
+        | 0x3000..=0x30FF
+        | 0x4E00..=0x9FFF
+        | 0xAC00..=0xD7A3
+        | 0xFF01..=0xFF60
     )
 }
 
-/// True when every non-ASCII character in `text` is a pair of printable ASCII
-/// bytes.
-///
-/// That is the signature of single-byte text being read two bytes at a time:
-/// `CollectExceptionInfo` comes back as `佃敬硅散瑰潩`, and on a real binary this
-/// was every one of the 331 hits a Chinese search returned. Real CJK does not
-/// look like this for long, because the low byte of a hanzi is arbitrary - the
-/// chance that three in a row are all printable is under one in a hundred - and
-/// Hangul cannot look like it at all, since U+AC00..U+D7A3 puts 0xAC..0xD7 in the
-/// high byte. Three characters is where it starts being applied, so a short real
-/// string is never judged by it.
 fn looks_like_single_byte_text(text: &str) -> bool {
     let mut wide = 0usize;
     let mut ascii_pairs = 0usize;
@@ -1344,15 +1124,6 @@ fn looks_like_single_byte_text(text: &str) -> bool {
     wide >= 3 && ascii_pairs == wide
 }
 
-/// Scans 2-byte-aligned UTF-16LE runs.
-///
-/// Only the even alignment is scanned: compilers emit wide literals aligned, and
-/// scanning both parities would double the work to report each string twice.
-///
-/// Both ends have to be NUL: a wide literal is NUL-terminated, and the unit
-/// before it is the previous literal's terminator or alignment padding. Without
-/// that pair of checks this mode is unusable on an executable, because a run of
-/// machine code decodes into perfectly printable-looking ideographs.
 fn scan_utf16(
     buffer: &[u8],
     range: std::ops::Range<usize>,
@@ -1362,8 +1133,6 @@ fn scan_utf16(
     out: &mut Vec<FoundString>,
 ) {
     let len = range.end.min(buffer.len());
-    // Code units are read at even file offsets, so a section starting on an odd
-    // one is entered one byte later rather than knocked out of step.
     let mut i = (range.start + (range.start & 1)).min(len);
     let mut text = String::new();
 
@@ -1383,7 +1152,6 @@ fn scan_utf16(
         }
 
         if i == start {
-            // Nothing printable here; step over the offending unit.
             i += 2;
             continue;
         }
@@ -1405,10 +1173,10 @@ fn scan_utf16(
             }
         }
 
-        // Step past the terminator that ended the run.
         i += 2;
     }
 }
+
 #[cfg(test)]
 mod strings_scan_tests {
     use super::*;
@@ -1423,8 +1191,6 @@ mod strings_scan_tests {
         encoding_rs::EUC_KR.encode(text).0.into_owned()
     }
 
-    /// The Korean scan must not turn into a second ASCII scan: a run only counts
-    /// when it decodes cleanly *and* contains Hangul.
     #[test]
     fn cp949_scan_keeps_korean_and_drops_plain_ascii() {
         let mut buffer = vec![0u8; 0x60];
@@ -1441,8 +1207,6 @@ mod strings_scan_tests {
         assert_eq!(out[0].size, korean.len(), "size is the byte length, not the char count");
     }
 
-    /// Minimum length is a character count, so a 4-character Korean string (8
-    /// bytes) is judged as 4.
     #[test]
     fn minimum_length_counts_characters_not_bytes() {
         let mut buffer = vec![0u8; 0x40];
@@ -1459,8 +1223,6 @@ mod strings_scan_tests {
         assert_eq!(out.len(), 1, "2 characters must pass a minimum of 2");
     }
 
-    /// UTF-16LE text is invisible to the ASCII scan, which is the whole reason
-    /// for the encoding switch.
     #[test]
     fn utf16_scan_finds_what_the_ascii_scan_cannot() {
         let mut buffer = vec![0u8; 0x40];
@@ -1479,7 +1241,6 @@ mod strings_scan_tests {
         assert_eq!(out[0].size, 10);
     }
 
-    /// The cap is honoured so a scan of a large file cannot grow without bound.
     #[test]
     fn scan_stops_at_the_cap() {
         let mut buffer = Vec::new();
@@ -1492,7 +1253,6 @@ mod strings_scan_tests {
     }
 
     fn app_with(bytes: &[u8], name: &str) -> (std::path::PathBuf, App) {
-        // The pid keeps parallel test binaries off each other's fixtures.
         let dir = std::env::temp_dir().join(format!("dz6_strings_{}_{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("dir");
@@ -1515,9 +1275,6 @@ mod strings_scan_tests {
         let _ = dialog_strings_events(app, &Event::Key(key));
     }
 
-    /// The selected row is an index into the *filtered* list. Enter used to index
-    /// `app.strings` with it directly, which jumped to the wrong string as soon
-    /// as anything was typed in the filter box.
     #[test]
     fn enter_maps_the_selection_through_the_filter() {
         let mut bytes = vec![0u8; 0x40];
@@ -1540,8 +1297,6 @@ mod strings_scan_tests {
         assert_eq!(offset, 0x20, "Enter must jump to the filtered row, not to strings[0]");
     }
 
-    /// Switching the encoding re-scans, and the list that comes back is the one
-    /// for the new encoding.
     #[test]
     fn f2_switches_the_encoding_and_rescans() {
         let mut bytes = vec![0u8; 0x60];
@@ -1554,10 +1309,10 @@ mod strings_scan_tests {
         assert_eq!(app.hex_view.strings_encoding, StringEncoding::Ascii);
         assert!(app.strings.iter().any(|s| s.content == "license"));
 
-        press(&mut app, KeyCode::F(2)); // Ascii -> Utf8
+        press(&mut app, KeyCode::F(2));
         assert_eq!(app.hex_view.strings_encoding, StringEncoding::Utf8);
 
-        press(&mut app, KeyCode::F(2)); // Utf8 -> Cp949
+        press(&mut app, KeyCode::F(2));
 
         let encoding = app.hex_view.strings_encoding;
         let contents: Vec<String> = app.strings.iter().map(|s| s.content.clone()).collect();
@@ -1600,8 +1355,6 @@ mod strings_scan_tests {
         assert_eq!(app.hex_view.string_edit.encoding, StringEncoding::Cp949);
     }
 
-    /// Typing in the regex box must not be swallowed by the list bindings: '+'
-    /// and 'f' are list shortcuts, and both are legal regex input.
     #[test]
     fn typing_in_the_filter_box_is_not_a_list_shortcut() {
         let mut bytes = vec![0u8; 0x40];
@@ -1616,7 +1369,6 @@ mod strings_scan_tests {
 
         press(&mut app, KeyCode::Char('f'));
         press(&mut app, KeyCode::Char('+'));
-        // The copy keys are list shortcuts too, and both are legal regex input.
         press(&mut app, KeyCode::Char('y'));
         press(&mut app, KeyCode::Char('Y'));
 
@@ -1637,15 +1389,8 @@ mod dbcs_false_positive_tests {
         Regex::new(".*").unwrap()
     }
 
-    /// x64 machine code must not be reported as Chinese.
-    ///
-    /// This is the bug this whole set of rules exists for: GBK assigns nearly the
-    /// whole lead-byte space, so `decode_without_bom_handling` accepts a stretch
-    /// of code without a single error. Measured on a 2.6 MB Korean binary that
-    /// contains exactly one Chinese string, the old test reported 11,586 of them.
     #[test]
     fn cp936_ignores_x64_code_that_decodes_cleanly() {
-        // mov rcx,rbx / mov bl,dl / mov rdx,rbx, then the MSVC 0xCC filler.
         let mut buffer = vec![
             0x48, 0x8B, 0xCB, 0x48, 0x8A, 0xDA, 0x48, 0x8B, 0xD3, 0x00,
         ];
@@ -1662,9 +1407,6 @@ mod dbcs_false_positive_tests {
         );
     }
 
-    /// `CC CC CC CC` decodes as the same hanzi four times over. It is stack
-    /// filler, and it was the single most common false positive left after the
-    /// byte ranges were narrowed.
     #[test]
     fn repeated_filler_is_not_a_string() {
         let mut buffer = vec![0x00];
@@ -1676,7 +1418,6 @@ mod dbcs_false_positive_tests {
         assert!(out.is_empty(), "0xCC filler must not be reported");
     }
 
-    /// A run that does not end in a NUL is not a C string.
     #[test]
     fn dbcs_requires_a_nul_terminator() {
         let korean = encoding_rs::EUC_KR.encode("한글문자").0.into_owned();
@@ -1689,14 +1430,12 @@ mod dbcs_false_positive_tests {
 
         let mut unterminated = vec![0u8; 0x20];
         unterminated[0x10..0x10 + korean.len()].copy_from_slice(&korean);
-        unterminated[0x10 + korean.len()] = 0x01; // not printable, not a NUL
+        unterminated[0x10 + korean.len()] = 0x01;
         let mut out = Vec::new();
         scan_dbcs(&unterminated, 0..unterminated.len(), &CP949, 3, 100, Some(&any()), &mut out);
         assert!(out.is_empty(), "a run cut off by a control byte is not text");
     }
 
-    /// A lone valid pair inside ASCII is what code produces; a word is two or
-    /// more characters.
     #[test]
     fn a_single_stray_character_is_not_a_word() {
         let single = encoding_rs::GBK.encode("镜").0.into_owned();
@@ -1709,8 +1448,6 @@ mod dbcs_false_positive_tests {
         assert!(out.is_empty(), "one hanzi among ASCII is not enough");
     }
 
-    /// A real mixed string still comes through, so the rules above did not just
-    /// turn the mode off.
     #[test]
     fn a_real_mixed_string_survives_every_rule() {
         let text = "AutoEye(乾坤镜)";
@@ -1726,8 +1463,6 @@ mod dbcs_false_positive_tests {
         assert_eq!(out[0].offset, 0x10);
     }
 
-    /// The scan only covers the ranges it is given, which is how the multi-byte
-    /// modes stay out of the code sections.
     #[test]
     fn scan_honours_the_range_it_is_given() {
         let korean = encoding_rs::EUC_KR.encode("한글문자").0.into_owned();
@@ -1741,13 +1476,9 @@ mod dbcs_false_positive_tests {
         assert_eq!(out[0].offset, 0x40);
     }
 
-    /// UTF-16 units outside the blocks real text uses are rejected. Two arbitrary
-    /// bytes land in the CJK block a third of the time, so without this the mode
-    /// reported 54,552 strings in the same 2.6 MB binary.
     #[test]
     fn utf16_rejects_units_outside_the_text_blocks() {
         let mut buffer = vec![0u8; 0x40];
-        // U+0EBA is unassigned Lao - a pair of bytes, not text.
         for k in 0..5 {
             buffer[0x10 + k * 2] = 0xBA;
             buffer[0x11 + k * 2] = 0x0E;
@@ -1762,8 +1493,6 @@ mod dbcs_false_positive_tests {
         );
     }
 
-    /// A wide literal has a NUL on both sides: its own terminator, and the
-    /// previous literal's terminator or the alignment padding in front of it.
     #[test]
     fn utf16_requires_a_nul_on_both_sides() {
         let wide: Vec<u8> = "Hello".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
@@ -1775,7 +1504,6 @@ mod dbcs_false_positive_tests {
         assert_eq!(out.len(), 1, "a padded wide literal is text");
 
         let mut crowded = vec![0u8; 0x40];
-        // A control unit, so it ends the run rather than joining it.
         crowded[0x0E] = 0x01;
         crowded[0x10..0x10 + wide.len()].copy_from_slice(&wide);
         let mut out = Vec::new();
@@ -1788,7 +1516,6 @@ mod scan_reach_tests {
     use super::*;
     use crate::app::App;
 
-    /// Wide literals, one after another, with `tail` last.
     fn wide_file(count: usize, tail: &str) -> Vec<u8> {
         let mut buffer = vec![0u8, 0u8];
         for i in 0..count {
@@ -1817,13 +1544,6 @@ mod scan_reach_tests {
         (dir, app)
     }
 
-    /// The scan has to reach the end of the file.
-    ///
-    /// `maximum_strings_to_show` was 3,000 and it stops the *scan*, not the
-    /// display: on a 2.6 MB binary the sweep gave up 12% in, so a filter regex
-    /// that was perfectly correct - `[가-힣]`, say - matched nothing at all,
-    /// because the strings it was looking for had never been collected. Nothing
-    /// on screen said so either; the list simply came back empty.
     #[test]
     fn a_string_past_the_old_cap_is_still_found() {
         let bytes = wide_file(4000, "한글 파일 이름");
@@ -1849,11 +1569,6 @@ mod scan_reach_tests {
         assert_eq!(hits, vec!["한글 파일 이름".to_string()], "the late string was not reachable");
     }
 
-    /// A selection far down a long list has to be on screen.
-    ///
-    /// The list is windowed now - only the visible rows are turned into widgets -
-    /// so the window has to follow the selection rather than always starting at
-    /// row zero.
     #[test]
     fn the_window_follows_the_selection() {
         use ratatui::{Terminal, backend::TestBackend};
@@ -1890,7 +1605,6 @@ mod scan_reach_tests {
         );
     }
 
-    /// The arrows and the paging keys stop at both ends of the filtered list.
     #[test]
     fn the_selection_stays_inside_the_list() {
         let bytes = wide_file(3, "tail");
@@ -1933,12 +1647,6 @@ mod utf16_width_tests {
         text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
     }
 
-    /// Single-byte text read two bytes at a time is not a wide string.
-    ///
-    /// `CollectExceptionInfo` sits in the packed metadata of a managed binary as
-    /// plain ASCII. Read at 2-byte width it decodes to `佃敬硅散瑰潩`, and a
-    /// Chinese search on a real 2.6 MB executable returned 331 of these against a
-    /// single genuine hit.
     #[test]
     fn utf16_ignores_single_byte_text_read_at_the_wrong_width() {
         let mut buffer = vec![0u8, 0u8];
@@ -1954,7 +1662,6 @@ mod utf16_width_tests {
         );
     }
 
-    /// Real Chinese UI text still comes through.
     #[test]
     fn real_chinese_wide_strings_survive() {
         for text in ["文件属性错误", "反编译失败", "AutoEye(乾坤镜) 2.0.0.1000"] {
@@ -1969,9 +1676,6 @@ mod utf16_width_tests {
         }
     }
 
-    /// Korean is never judged by that rule: U+AC00..U+D7A3 puts 0xAC..0xD7 in the
-    /// high byte, which is outside printable ASCII, so a Hangul string can never
-    /// look like misread single-byte text.
     #[test]
     fn korean_wide_strings_are_unaffected() {
         for text in ["파일크기", "한글 파일 이름"] {
@@ -1986,11 +1690,8 @@ mod utf16_width_tests {
         assert!(!looks_like_single_byte_text("파일크기"));
     }
 
-    /// Two characters is below the threshold, so a short real string is never
-    /// judged by the rule even if both its bytes happen to be printable.
     #[test]
     fn the_rule_needs_three_characters() {
-        // 版 is U+7248 and 本 is U+672C - every byte printable ASCII.
         assert!(!looks_like_single_byte_text("版本"));
         assert!(looks_like_single_byte_text("佃敬硅"));
     }
@@ -2024,7 +1725,6 @@ mod copy_tests {
         let _ = dialog_strings_events(app, &Event::Key(key));
     }
 
-    /// A row is `address<TAB>text`, with the address the list is actually showing.
     #[test]
     fn a_row_is_tab_separated_and_uses_the_displayed_address() {
         let mut bytes = vec![0u8; 0x40];
@@ -2035,7 +1735,6 @@ mod copy_tests {
         let found = &app.strings[0];
         assert_eq!(row_as_tsv(&app, found), "00000010\tHELLO");
 
-        // VA mode has to change what is copied, the same way it changes the list.
         app.hex_view.show_va = true;
         let va = app.get_va(found.offset);
         assert_eq!(row_as_tsv(&app, found), format!("{:08X}\tHELLO", va));
@@ -2043,7 +1742,6 @@ mod copy_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `y` copies one row, `Y` copies what the filter left - not the whole scan.
     #[test]
     fn y_copies_one_row_and_shift_y_copies_the_filtered_list() {
         let mut bytes = vec![0u8; 0x80];
@@ -2054,22 +1752,17 @@ mod copy_tests {
         Commands::strings(&mut app);
         assert_eq!(app.strings.len(), 3);
 
-        // What `Y` hands to the clipboard. Checked here rather than by reading the
-        // clipboard back: it is a shared OS resource, and parallel tests fighting
-        // over it turned this into a coin flip.
         let (text, count) = filtered_rows_as_tsv(&app);
         assert_eq!(count, 3);
         assert_eq!(text.lines().count(), 3);
         assert!(text.starts_with("00000010\tHELLO"), "got {:?}", text);
 
-        // Narrow the list: Y must follow the filter.
         app.hex_view.strings_regex_input = tui_input::Input::new("^WORLD".to_string());
         update_strings_filter(&mut app);
         let (text, count) = filtered_rows_as_tsv(&app);
         assert_eq!(count, 2, "Y must copy the filtered rows");
         assert!(!text.contains("HELLO"), "got {:?}", text);
 
-        // And both keys report without closing the dialog.
         app.logs.clear();
         app.logs.clear();
         let key_c = KeyEvent { code: KeyCode::Char('c'), modifiers: KeyModifiers::CONTROL, kind: KeyEventKind::Press, state: KeyEventState::NONE };
@@ -2146,17 +1839,12 @@ mod filter_box_tests {
         bytes
     }
 
-    /// With the box focused, Shift+Left blocks text instead of touching the list,
-    /// and Home/End move the cursor instead of paging.
     #[test]
     fn the_filter_box_owns_the_movement_keys_while_focused() {
         let (dir, mut app) = app_with(&sample(), "owns_keys");
         Commands::strings(&mut app);
         app.list_state.select(Some(1));
 
-        // Set the pattern outright rather than typing it: a half-typed `[` matches
-        // nothing, which empties the list and legitimately resets the selection -
-        // that is not what this test is about.
         app.hex_view.strings_regex_input = tui_input::Input::new("[a-z]".to_string()).with_cursor(5);
         update_strings_filter(&mut app);
         app.list_state.select(Some(1));
@@ -2173,7 +1861,6 @@ mod filter_box_tests {
         assert_eq!(cursor, 0, "and move the cursor to the front");
         assert_eq!(selected, Some(1), "the list must not have moved");
 
-        // Plain End is the box's too while it has focus, not a page of the list.
         press(&mut app, KeyCode::End, KeyModifiers::NONE);
         let after = app.list_state.selected();
         let cursor = app.hex_view.strings_regex_input.cursor();
@@ -2185,7 +1872,6 @@ mod filter_box_tests {
         assert_eq!(after, Some(1));
     }
 
-    /// Typing over the block replaces the whole pattern, which is the point.
     #[test]
     fn a_block_is_replaced_by_the_next_character() {
         let (dir, mut app) = app_with(&sample(), "replace");
@@ -2207,7 +1893,6 @@ mod filter_box_tests {
         assert_eq!(rows, 1, "the filter has to be re-run after the replacement");
     }
 
-    /// Without focus the paging keys still belong to the list.
     #[test]
     fn the_list_keeps_the_paging_keys_when_the_box_is_not_focused() {
         let (dir, mut app) = app_with(&sample(), "list_keys");
@@ -2226,24 +1911,16 @@ mod filter_box_tests {
         assert!(value.is_empty(), "the box must not have been typed into");
     }
 
-    /// A match has to be non-empty, so `*` no longer means "everything".
-    ///
-    /// `([一-龥]*?)` used to pass all 30,895 rows including the English ones, because
-    /// `is_match` counts the zero-length match every engine finds at position 0. It
-    /// now selects nothing - which is what the pattern really says - and the command
-    /// bar explains it. The greedy form is the one that works.
     #[test]
     fn an_empty_match_no_longer_counts() {
         let (dir, mut app) = app_with(&sample(), "nonempty");
         Commands::strings(&mut app);
         app.hex_view.strings_focus_filter = true;
 
-        // Lazy: only ever matches nothing.
         app.hex_view.strings_regex_input = tui_input::Input::new("(WORLD)*?".to_string());
         update_strings_filter(&mut app);
         assert_eq!(app.hex_view.strings_filtered.len(), 0, "a zero-length match is not a hit");
 
-        // Greedy: matches the rows that actually contain it, and no others.
         app.hex_view.strings_regex_input = tui_input::Input::new("(WORLD)*".to_string());
         update_strings_filter(&mut app);
         let rows: Vec<String> = app
@@ -2257,10 +1934,6 @@ mod filter_box_tests {
         assert_eq!(rows, vec!["WORLD!!".to_string(), "WORLDWIDE".to_string()]);
     }
 
-    /// An empty scan-time pattern still means "no filter".
-    ///
-    /// It used to be compiled to an empty `Regex`, which under the new rule matches
-    /// nothing at all - every scan would have come back empty.
     #[test]
     fn an_empty_scan_pattern_is_not_a_filter() {
         let (dir, mut app) = app_with(&sample(), "empty_scan");
@@ -2271,13 +1944,6 @@ mod filter_box_tests {
         assert_eq!(count, 3, "an empty pattern must not filter anything out");
     }
 
-    /// A pattern that matches nothing must not empty the *scan*.
-    ///
-    /// Enter in the box used to install the pattern as a scan-time filter and
-    /// re-scan. `([一-龥]*?){1,}` matches zero characters however many times it
-    /// repeats, so the scan came back empty: the title read `(0 / 0)`, and since the
-    /// pattern stayed installed, every later keystroke filtered an empty list. The
-    /// window could not recover without being closed and reopened.
     #[test]
     fn the_filter_box_cannot_empty_the_scan() {
         let (dir, mut app) = app_with(&sample(), "no_poison");
@@ -2299,8 +1965,6 @@ mod filter_box_tests {
             "Enter should hand the arrows back to the list"
         );
 
-        // And the rows come straight back when the pattern is fixed - the point of
-        // filtering the scanned list rather than re-scanning.
         app.hex_view.strings_regex_input = tui_input::Input::new("WORLD".to_string());
         update_strings_filter(&mut app);
         let rows = app.hex_view.strings_filtered.len();
@@ -2308,11 +1972,6 @@ mod filter_box_tests {
         assert_eq!(rows, 2, "the list did not recover");
     }
 
-    /// A pattern that can only match nothing says so where the rows would be.
-    ///
-    /// The command bar was not enough: it is cleared on the next key press, so F2
-    /// (switch encoding) wiped the explanation and left a blank list next to a log
-    /// line reporting 52 strings found.
     #[test]
     fn a_pattern_that_matches_nothing_is_reported() {
         use ratatui::{Terminal, backend::TestBackend};
@@ -2338,28 +1997,22 @@ mod filter_box_tests {
                 .collect()
         };
 
-        // A pattern whose only match is the empty one.
         app.hex_view.strings_regex_input = tui_input::Input::new("([一-龥]*?){4,}".to_string());
         update_strings_filter(&mut app);
         assert_eq!(app.hex_view.strings_filtered.len(), 0);
         let screen = render(&mut app);
-        // A fragment that survives the wrap: the notice is spread over three lines at
-        // this width, so anything longer straddles a line break.
         assert!(
             screen.contains("only ever matched an"),
             "no explanation where the rows would be:\n{}",
             screen
         );
 
-        // A pattern that simply has no hits says nothing extra: the count in the
-        // title already covers it.
         app.hex_view.strings_regex_input = tui_input::Input::new("ZZZZ".to_string());
         update_strings_filter(&mut app);
         assert_eq!(app.hex_view.strings_filtered.len(), 0);
         let screen = render(&mut app);
         assert!(!screen.contains("only ever matched an"), "the notice is not about this case");
 
-        // And with rows on screen there is nothing to explain.
         app.hex_view.strings_regex_input = tui_input::Input::new("WORLD".to_string());
         update_strings_filter(&mut app);
         let screen = render(&mut app);
@@ -2374,7 +2027,6 @@ mod string_edit_tests {
     use crate::app::App;
     use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
 
-    /// A writable fixture: the write path is the whole point here.
     fn app_with(bytes: &[u8], name: &str) -> (std::path::PathBuf, App) {
         let dir = std::env::temp_dir().join(format!("dz6_sedit_{}_{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2390,7 +2042,7 @@ mod string_edit_tests {
 
     fn sample() -> Vec<u8> {
         let mut bytes = vec![0u8; 0x60];
-        bytes[0x10..0x1B].copy_from_slice(b"Hello world"); // 11 bytes
+        bytes[0x10..0x1B].copy_from_slice(b"Hello world");
         bytes[0x30..0x35].copy_from_slice(b"Short");
         bytes
     }
@@ -2418,7 +2070,6 @@ mod string_edit_tests {
             .copied()
     }
 
-    /// `e` opens the box pre-filled, and knows how many bytes it may use.
     #[test]
     fn e_opens_the_box_with_the_budget() {
         let (dir, mut app) = app_with(&sample(), "open");
@@ -2434,8 +2085,6 @@ mod string_edit_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A shorter replacement is padded with 00, because the string ends where it
-    /// sits - blanking the tail with spaces would leave the old length behind.
     #[test]
     fn a_shorter_replacement_is_padded_with_nul() {
         let (dir, mut app) = app_with(&sample(), "shorter");
@@ -2443,7 +2092,6 @@ mod string_edit_tests {
         app.list_state.select(Some(0));
         press(&mut app, KeyCode::F(4));
 
-        // Select everything and type the replacement.
         press_edit(&mut app, KeyCode::Home);
         let key = KeyEvent {
             code: KeyCode::End,
@@ -2464,14 +2112,11 @@ mod string_edit_tests {
         }
         assert_eq!(byte_at(&app, 0x1B), None, "the write ran past the budget");
 
-        // The row is relabelled without a re-scan, which would read the file and put
-        // the old text straight back.
         assert_eq!(app.strings[0].content, "Bye");
         assert!(app.strings[0].display.contains("Bye"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A replacement that does not fit is refused, and says by how much.
     #[test]
     fn a_longer_replacement_is_refused() {
         let (dir, mut app) = app_with(&sample(), "longer");
@@ -2487,16 +2132,13 @@ mod string_edit_tests {
         let error = app.hex_view.string_edit.error.clone().expect("no reason given");
         assert!(error.contains("11"), "the budget is not named: {:?}", error);
 
-        // The refusal is about the text that was refused, so it goes when it changes.
         press_edit(&mut app, KeyCode::Backspace);
         assert!(app.hex_view.string_edit.error.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The budget is in bytes, not characters: a CP949 row is written as CP949.
     #[test]
     fn the_budget_counts_bytes_in_the_rows_encoding() {
-        // Twelve bytes of EUC-KR Korean, so the row is six characters wide.
         let korean = encoding_rs::EUC_KR.encode("한글문자입니").0.into_owned();
         assert_eq!(korean.len(), 12);
         let mut bytes = vec![0u8; 0x40];
@@ -2509,14 +2151,11 @@ mod string_edit_tests {
         press(&mut app, KeyCode::F(4));
         assert_eq!(app.hex_view.string_edit.budget, 12);
 
-        // Seven Korean characters is fourteen bytes: too long, even though the
-        // original was six characters and this is only one more.
         app.hex_view.string_edit.input = tui_input::Input::new("한글문자입니다".to_string());
         press_edit(&mut app, KeyCode::Enter);
         assert!(app.hex_view.string_edit.error.is_some(), "14 bytes should not fit in 12");
         assert!(app.hex_view.changed_bytes.is_empty());
 
-        // Five characters is ten bytes, and the remaining two are zeroed.
         app.hex_view.string_edit.error = None;
         app.hex_view.string_edit.input = tui_input::Input::new("한글문자입".to_string());
         press_edit(&mut app, KeyCode::Enter);
@@ -2530,7 +2169,6 @@ mod string_edit_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A wide row is written back as UTF-16LE, not as UTF-8.
     #[test]
     fn a_utf16_row_is_written_as_utf16() {
         let wide: Vec<u8> = "Hello".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
@@ -2557,7 +2195,6 @@ mod string_edit_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A read-only file refuses before the user types anything.
     #[test]
     fn a_read_only_file_refuses_up_front() {
         let (dir, mut app) = app_with(&sample(), "readonly");
@@ -2573,7 +2210,6 @@ mod string_edit_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Esc leaves the file alone.
     #[test]
     fn esc_writes_nothing() {
         let (dir, mut app) = app_with(&sample(), "esc");
@@ -2590,7 +2226,6 @@ mod string_edit_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The written bytes are staged like any other edit, so undo reaches them.
     #[test]
     fn the_edit_is_undoable() {
         let (dir, mut app) = app_with(&sample(), "undo");
@@ -2609,4 +2244,3 @@ mod string_edit_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
-

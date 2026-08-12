@@ -1,0 +1,20 @@
+# DZ6 Disassembly Theme File - dd1 (IDA Pro / x64dbg Screenshot Style)
+name = disasm
+
+call_bg = #00FFFF
+call_fg = #000000
+jmp_bg = #FFFF00
+jmp_fg = #FF0000
+jcc_bg = #FFFF00
+jcc_fg = #FF0000
+push_pop_fg = #0000FF
+ret_bg = #00FFFF
+ret_fg = #000000
+register_fg = #009900
+memory_op_fg = #3B4A5A  
+immediate_fg = #808000
+keyword_fg = #B400B4
+comment_fg = #008080
+segment_fg = #CC00CC
+import_bg = #FFFF00
+import_fg = #000000

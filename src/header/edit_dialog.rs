@@ -25,7 +25,10 @@ pub fn draw_header_edit_dialog(app: &mut App, frame: &mut Frame) {
 
     let is_name_field = app.header_view.edit_name.ends_with(".Name");
     let title_str = if is_name_field {
-        format!(" Section Name (max 8 chars): {} ", app.header_view.edit_name)
+        crate::i18n::fill(
+            crate::i18n::M::LblSectionNameMax8.tr(app.config.lang),
+            &[&app.header_view.edit_name],
+        )
     } else {
         format!(" {} ", app.header_view.edit_name)
     };
@@ -127,15 +130,6 @@ pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<
                 let size = app.header_view.edit_size;
 
                 // Refuse to stage bytes outside the file.
-                //
-                // `edit_offset` is derived from header fields read out of the file
-                // itself - a section entry's position is computed from
-                // `dos_header.pe_pointer` (`e_lfanew`) and
-                // `size_of_optional_header`. A corrupt or hostile value there put
-                // this write arbitrarily far past EOF, and since `changed_bytes`
-                // accepts any offset, `:w` would seek to it and grow the file by
-                // that much: an `e_lfanew` of 0x7FFF0000 turned one Enter into a
-                // 2 GB file.
                 let span = if app.header_view.edit_name.ends_with(".Name") {
                     8
                 } else {
@@ -208,17 +202,16 @@ pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<
                         app.goto_input = tui_input::Input::default();
                         app.goto_selection_all = false;
                     } else {
-                        app.error(format!("Invalid numeric value: '{}'", input_str));
+                        let msg = crate::i18n::fill(
+                            crate::i18n::M::ErrInvalidNumericValue.tr(app.config.lang),
+                            &[&input_str],
+                        );
+                        app.error(msg);
                     }
                 }
             }
             _ => {
-                // Any other key (arrows, Home/End, ...) just moves within the
-                // value, so the block selection is dismissed.
                 app.goto_selection_all = false;
-                // Shift+arrows, Shift+Home/End and Ctrl+C/X/V over the block, via
-                // the shared text-field handling. The anchor is the Goto dialog's,
-                // because this box borrows the Goto dialog's input.
                 if app.header_view.edit_name.ends_with(".Name") {
                     let val_before = app.goto_input.value().to_string();
                     crate::text_field::handle_key(app, header_edit_field, event);
@@ -261,12 +254,6 @@ mod header_edit_bounds_tests {
         let _ = super::handle_dialog_header_edit_events(app, &press(KeyCode::Enter));
     }
 
-    /// A field offset outside the file must be refused, not staged.
-    ///
-    /// `edit_offset` is computed from header fields read out of the file, so a
-    /// corrupt `e_lfanew` could point it far past EOF. `changed_bytes` accepts any
-    /// offset, so `:w` would then seek there and grow the file to match - an
-    /// offset of 0x7FFF0000 meant a 2 GB file from one Enter.
     #[test]
     fn offset_past_eof_is_refused() {
         let Some(mut app) = loaded_app() else { return };
@@ -282,13 +269,12 @@ mod header_edit_bounds_tests {
         );
     }
 
-    /// The same guard has to cover a field that merely straddles the end.
     #[test]
     fn edit_crossing_eof_is_refused() {
         let Some(mut app) = loaded_app() else { return };
         let len = app.file_info.buffer_len();
         app.header_view.edit_name = "Fake.Field".to_string();
-        app.header_view.edit_offset = len - 2; // 4-byte field, only 2 bytes left
+        app.header_view.edit_offset = len - 2;
         app.header_view.edit_size = 4;
 
         commit(&mut app, "0x11223344");
@@ -299,7 +285,6 @@ mod header_edit_bounds_tests {
         );
     }
 
-    /// An offset that would overflow when the span is added must not wrap.
     #[test]
     fn offset_near_usize_max_does_not_wrap() {
         let Some(mut app) = loaded_app() else { return };
@@ -312,8 +297,6 @@ mod header_edit_bounds_tests {
         assert!(app.hex_view.changed_bytes.is_empty());
     }
 
-    /// A legitimate in-bounds edit must still work, so the guard isn't just
-    /// disabling the feature.
     #[test]
     fn in_bounds_edit_is_still_applied() {
         let Some(mut app) = loaded_app() else { return };
@@ -323,20 +306,18 @@ mod header_edit_bounds_tests {
 
         commit(&mut app, "0x11223344");
 
-        // Little-endian, four bytes at 0x40.
         assert_eq!(app.hex_view.changed_bytes.get(&0x40).copied(), Some(0x44));
         assert_eq!(app.hex_view.changed_bytes.get(&0x41).copied(), Some(0x33));
         assert_eq!(app.hex_view.changed_bytes.get(&0x42).copied(), Some(0x22));
         assert_eq!(app.hex_view.changed_bytes.get(&0x43).copied(), Some(0x11));
     }
 
-    /// The 8-byte section-name path goes through the same check.
     #[test]
     fn section_name_past_eof_is_refused() {
         let Some(mut app) = loaded_app() else { return };
         let len = app.file_info.buffer_len();
         app.header_view.edit_name = "Section.Name".to_string();
-        app.header_view.edit_offset = len - 4; // needs 8 bytes, only 4 left
+        app.header_view.edit_offset = len - 4;
         app.header_view.edit_size = 8;
 
         commit(&mut app, ".text");

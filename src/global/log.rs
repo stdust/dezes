@@ -9,43 +9,26 @@ use crate::util::center_widget;
 use crate::{app::App, editor::UIState};
 
 /// Maximum log lines kept in memory.
-///
-/// An unbounded `Vec<String>` grew for the whole session, and `dialog_log_draw`
-/// joins the lot into one String per frame while the window is open.
 const MAX_LOG_LINES: usize = 1000;
 
 impl App {
     pub fn log(&mut self, text: String) {
         if self.logs.len() >= MAX_LOG_LINES {
-            // Drop the oldest quarter at once rather than shifting the whole Vec
-            // on every single push.
             self.logs.drain(0..MAX_LOG_LINES / 4);
         }
         self.logs.push(text)
     }
 
-    /// Shows `text` in the command bar until the next key press, beeps, and keeps
-    /// a copy in the log.
-    ///
-    /// The log alone was not enough for a refused key: it is only visible with the
-    /// Log dialog (Alt+L) open, so a shortcut that silently did nothing looked like
-    /// a bug rather than a restriction.
     pub fn error(&mut self, text: String) {
         crate::beep!();
         self.log(text.clone());
         self.status_error = Some(text);
     }
 
-    /// Puts `text` on the clipboard and says what happened.
-    ///
-    /// `label` completes "Copied ... to clipboard", e.g. `"82 rows"`. Every result
-    /// list needs the same four lines, and the clipboard can be missing outright
-    /// (a bare TTY has no session to talk to) - a copy key that silently does
-    /// nothing is indistinguishable from a key that is not bound, which is the
-    /// state the three result dialogs were in.
     pub fn copy_to_clipboard(&mut self, text: String, label: String) {
         if text.is_empty() {
-            self.error("Nothing to copy".to_string());
+            let msg = M::ErrNothingToCopy.tr(self.config.lang).to_string();
+            self.error(msg);
             return;
         }
         let copied = self
@@ -57,15 +40,11 @@ impl App {
         if copied {
             self.log(format!("Copied {} to clipboard", label));
         } else {
-            self.error("Could not access the clipboard".to_string());
+            let msg = M::ErrClipboardAccess.tr(self.config.lang).to_string();
+            self.error(msg);
         }
     }
 
-    /// Standard refusal for a shortcut a read-only file does not allow.
-    ///
-    /// `action` completes "cannot ...", e.g. [`M::RoEditData`]. Both halves are
-    /// translated, so the sentence reads properly in every language rather than
-    /// having an English tail.
     pub fn read_only_error(&mut self, action: crate::i18n::M) {
         let lang = self.config.lang;
         let message = crate::i18n::fill(
@@ -96,7 +75,6 @@ pub fn dialog_log_draw(app: &mut App, frame: &mut Frame) {
         )
         .scroll(app.log_scroll_offset);
 
-    // `- 5` underflows on a terminal narrower/shorter than 5 cells.
     let width = frame.area().width.saturating_sub(5);
     let height = frame.area().height.saturating_sub(5);
     let dialog_area = center_widget(width, height, frame.area());
@@ -107,16 +85,10 @@ pub fn dialog_log_draw(app: &mut App, frame: &mut Frame) {
 
 pub fn dialog_log_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
-        // close log dialog
         KeyCode::Esc => {
             app.dialog_renderer = None;
             app.state = UIState::Normal;
         }
-        // Copies the whole log, like `y` on the About box, for pasting into a bug
-        // report: the interesting lines are usually the ones scrolled off.
-        //
-        // `c` as well as `y`: every other panel that copies takes both, and which
-        // one a person reaches for depends on whether they think "yank" or "copy".
         KeyCode::Char('c') | KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             let text = app.logs.join("\n");
             let copied = app
@@ -128,14 +100,10 @@ pub fn dialog_log_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             if copied {
                 App::log(app, "Copied the log to clipboard".to_string());
             } else {
-                app.error("Could not access the clipboard".to_string());
+                let msg = M::ErrClipboardAccess.tr(app.config.lang).to_string();
+                app.error(msg);
             }
         }
-        // Empties the log.
-        //
-        // Diagnostics accumulate: by the time something interesting happens there
-        // can be a thousand lines of slow-frame reports above it. Clearing first and
-        // then reproducing the problem gives a log that is all signal.
         KeyCode::Delete => {
             let had = app.logs.len();
             app.logs.clear();
@@ -196,7 +164,6 @@ mod tests {
         );
     }
 
-    /// Delete empties the log, so a problem can be reproduced against a clean one.
     #[test]
     fn delete_clears_the_log() {
         let mut app = app_with(&[0x41]);
@@ -212,15 +179,12 @@ mod tests {
         )
         .unwrap();
 
-        // One line remains: the report of the clearing itself, which says how much
-        // went. An empty window would leave no sign that the key did anything.
         assert_eq!(app.logs.len(), 1, "logs: {:?}", app.logs);
         assert!(app.logs[0].contains("cleared"), "got: {:?}", app.logs[0]);
         assert_eq!(app.log_scroll_offset, (0, 0), "the scroll has to go back to the top");
         assert!(app.state == UIState::DialogLog, "clearing closed the window");
     }
 
-    /// `c` copies as well as `y`, matching every other panel that copies.
     #[test]
     fn c_copies_like_y() {
         let mut app = app_with(&[0x41]);
@@ -234,7 +198,6 @@ mod tests {
                 KeyEvent::new(key, ratatui::crossterm::event::KeyModifiers::CONTROL),
             )
             .unwrap();
-            // Either outcome is reported; a machine without a clipboard still logs.
             assert!(
                 app.logs.len() > before,
                 "{:?} did not report anything",
@@ -250,7 +213,6 @@ mod tests {
         }
     }
 
-    /// The footer names both of the keys that are not guessable.
     #[test]
     fn the_footer_lists_copy_and_clear() {
         for lang in crate::i18n::Lang::ALL {

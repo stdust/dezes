@@ -30,7 +30,6 @@ fn get_reg_size(reg: Register) -> RegSize {
     }
 }
 
-/// Parse register name into iced_x86::Register
 fn parse_reg(s: &str) -> Option<Register> {
     match s.trim().to_lowercase().as_str() {
         "rax" => Some(Register::RAX),
@@ -89,17 +88,10 @@ fn parse_reg(s: &str) -> Option<Register> {
     }
 }
 
-/// Helper to encode an iced_x86 Instruction using iced_x86::Encoder
 fn encode_instruction(instr: &Instruction, bitness: u32) -> Option<Vec<u8>> {
     encode_instruction_at(instr, bitness, 0)
 }
 
-/// Encodes at a specific instruction pointer.
-///
-/// Only matters for operands the encoder has to resolve against the
-/// instruction's own address - in practice RIP-relative memory. Everything else
-/// encodes identically at any IP, which is why the plain `encode_instruction`
-/// wrapper above is still fine for the register-only forms.
 fn encode_instruction_at(instr: &Instruction, bitness: u32, ip: u64) -> Option<Vec<u8>> {
     let mut encoder = Encoder::new(bitness);
     if encoder.encode(instr, ip).is_ok() {
@@ -109,17 +101,6 @@ fn encode_instruction_at(instr: &Instruction, bitness: u32, ip: u64) -> Option<V
     }
 }
 
-/// Parses a numeric operand.
-///
-/// Uses the same rule as the rest of dz6 (see `util::parse_offset`, which backs
-/// `:goto` and `:cmt`): **hexadecimal by default**, with an optional `0x` prefix
-/// or `h` suffix, and a trailing `t` for decimal. A leading `-` is accepted.
-///
-/// Previously each operand did `from_str_radix(.., 16).or_else(|_| s.parse())`.
-/// Because every decimal digit is also a hex digit, the decimal arm was
-/// unreachable for any value that parsed at all - so `push 10` assembled as
-/// `0x10` while looking like it might mean ten, and there was no way to write a
-/// decimal operand. Returning `i128` lets callers range-check before narrowing.
 fn parse_imm(text: &str) -> Option<i128> {
     let s = text.trim();
     let (negative, s) = match s.strip_prefix('-') {
@@ -130,8 +111,6 @@ fn parse_imm(text: &str) -> Option<i128> {
         return None;
     }
 
-    // `t` is not a hex digit, so the suffix can never be mistaken for part of the
-    // number itself.
     let magnitude = if let Some(decimal) = s.strip_suffix('t').or_else(|| s.strip_suffix('T')) {
         let decimal = decimal.trim();
         if decimal.is_empty() || !decimal.bytes().all(|b| b.is_ascii_digit()) {
@@ -156,11 +135,6 @@ fn parse_imm(text: &str) -> Option<i128> {
     Some(if negative { -magnitude } else { magnitude })
 }
 
-/// Narrows a parsed immediate to `BITS`, accepting either the signed or the
-/// unsigned interpretation of that width.
-///
-/// `mov eax, FFFFFFFF` and `mov eax, -1` both have to work, so a plain
-/// `i32::try_from` is too strict.
 fn fit_imm(value: i128, bits: u32) -> Option<i64> {
     let unsigned_max = (1i128 << bits) - 1;
     let signed_min = -(1i128 << (bits - 1));
@@ -173,23 +147,10 @@ fn fit_imm(value: i128, bits: u32) -> Option<i64> {
     None
 }
 
-/// Main Assembly Parser powered by iced-x86 Encoder engine with dynamic register sizing
-///
-/// `ip` is the virtual address the bytes will live at; it is what makes
-/// RIP-relative operands come out correct.
-/// Total length of the whole instructions starting at `offset` needed to cover at
-/// least `len` bytes.
-///
-/// Always a sum of complete instructions, so the byte after the span is an
-/// instruction boundary. `None` when the bytes there do not decode, which means
-/// there is no boundary to align to.
 fn covering_span(app: &App, offset: usize, len: usize) -> Option<usize> {
     let mut span = crate::disasm::nav::instruction_len(app, offset)?;
     let mut cursor = offset.saturating_add(span);
 
-    // One decode per instruction consumed, and a patch never spans more than a
-    // handful, but the loop is bounded anyway so a pathological input cannot hang
-    // the UI.
     for _ in 0..MAX_PATCH_INSTRUCTIONS {
         if span >= len {
             return Some(span);
@@ -202,52 +163,27 @@ fn covering_span(app: &App, offset: usize, len: usize) -> Option<usize> {
     if span >= len { Some(span) } else { None }
 }
 
-/// How many consecutive instructions a single patch may overwrite.
 const MAX_PATCH_INSTRUCTIONS: usize = 16;
 
-/// Stages `bytes` at `offset`, padding with NOPs out to the next instruction
-/// boundary.
-///
-/// Without the padding, replacing an instruction with a shorter one left the tail
-/// of the original behind: patching a 5-byte `call` with a 2-byte `xor eax, eax`
-/// left 3 orphaned operand bytes, which the decoder then read as an instruction
-/// and every following line was garbage until it happened to re-synchronise. The
-/// same applies in reverse - a longer encoding partially overwrites the next
-/// instruction - so the span is rounded up to whole instructions and the remainder
-/// filled with 0x90, which is what Hiew and x64dbg both do.
-///
-/// Returns the message to log, or an error describing why nothing was staged.
 pub fn stage_assembled_bytes(
     app: &mut App,
     offset: usize,
     bytes: &[u8],
 ) -> std::result::Result<String, String> {
     if bytes.is_empty() {
-        return Err("nothing to assemble".to_string());
+        return Err(crate::i18n::M::ErrNothingToAssemble.tr(app.config.lang).to_string());
     }
 
-    // Read-only files were accepted here and silently collected edits that `:w`
-    // could never write, unlike the NOP-out and edit-data paths which refuse.
     if app.file_info.is_read_only {
-        return Err("file is read-only".to_string());
+        return Err(crate::i18n::M::ErrFileReadOnly.tr(app.config.lang).to_string());
     }
 
     let new_len = bytes.len();
-
-    // Bounded by the mapping, not `file_info.size` (a directory-entry value that
-    // can exceed it), and refused as a whole rather than trimmed: the dropped
-    // offsets are ones `:w` would seek past EOF to reach.
     let limit = app.file_info.buffer_len();
-
-    // An undecodable target has no boundary to align to, so the bytes are written
-    // as given rather than refused - patching raw data is legitimate.
     let span = covering_span(app, offset, new_len).unwrap_or(new_len).max(new_len);
 
     if offset.checked_add(span).is_none_or(|end| end > limit) {
-        return Err(format!(
-            "{} byte(s) at 0x{:X} would run past the end of the file (0x{:X})",
-            span, offset, limit
-        ));
+        return Err(crate::i18n::M::ErrAssemblePastEof.tr(app.config.lang).to_string());
     }
 
     for (i, &b) in bytes.iter().enumerate() {
@@ -278,7 +214,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
         return None;
     }
 
-    // 1. Single continuous hex bytes (e.g. "90909090", "31C0", "5B58", "EB05", "C3")
     let single_clean = clean.trim_start_matches("0x").trim_start_matches("0X");
     if single_clean.len() % 2 == 0 && single_clean.chars().all(|c| c.is_ascii_hexdigit()) {
         let mut bytes = Vec::new();
@@ -292,7 +227,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
         }
     }
 
-    // 2. Space/comma separated hex tokens (e.g. "31 c0", "5b 58", "90 90", "0x31, 0xc0")
     let hex_tokens: Vec<&str> = clean.split(|c: char| c.is_whitespace() || c == ',')
         .filter(|s| !s.is_empty())
         .collect();
@@ -316,7 +250,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
         return Some(hex_bytes);
     }
 
-    // 3. Assembly Parsing powered by iced-x86 Encoder API with dynamic register size matching
     let lower = clean.to_lowercase();
     let tokens: Vec<&str> = lower.split_whitespace().collect();
     if tokens.is_empty() {
@@ -342,7 +275,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
         "sysenter" => return encode_instruction(&Instruction::with(Code::Sysenter), bitness),
         "ud2" => return encode_instruction(&Instruction::with(Code::Ud2), bitness),
 
-        // POP
         "pop" => {
             if tokens.len() >= 2 {
                 if let Some(reg) = parse_reg(tokens[1]) {
@@ -359,7 +291,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        // PUSH
         "push" => {
             if tokens.len() >= 2 {
                 let target = tokens[1].trim();
@@ -386,7 +317,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        // MOV
         "mov" => {
             let rest = lower.trim_start_matches("mov").trim();
             let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
@@ -408,9 +338,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
                     }
                 } else if let Some(dst) = dst_reg {
                     let size = get_reg_size(dst);
-                    // Range-checked against the destination width, so
-                    // `mov al, 1FF` is rejected instead of silently truncating
-                    // to 0xFF the way the old `val as i32` cast did.
                     let bits = match size {
                         RegSize::R64 => 64,
                         RegSize::R32 => 32,
@@ -435,7 +362,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        // XOR
         "xor" => {
             let rest = lower.trim_start_matches("xor").trim();
             let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
@@ -456,7 +382,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        // ADD
         "add" => {
             let rest = lower.trim_start_matches("add").trim();
             let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
@@ -477,7 +402,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        // SUB
         "sub" => {
             let rest = lower.trim_start_matches("sub").trim();
             let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
@@ -498,7 +422,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        // CMP
         "cmp" => {
             let rest = lower.trim_start_matches("cmp").trim();
             let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
@@ -519,7 +442,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        // TEST
         "test" => {
             let rest = lower.trim_start_matches("test").trim();
             let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
@@ -540,7 +462,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        // INC
         "inc" => {
             if tokens.len() >= 2 {
                 if let Some(reg) = parse_reg(tokens[1]) {
@@ -559,7 +480,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        // DEC
         "dec" => {
             if tokens.len() >= 2 {
                 if let Some(reg) = parse_reg(tokens[1]) {
@@ -578,18 +498,11 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        // LEA
         "lea" => {
-            // `clean[3..]` panics when the input is shorter than 3 bytes or when
-            // byte 3 is not a char boundary (`clean` is the raw user input, not
-            // the lower-cased copy that produced `op`).
             let rest = clean.get(3..).unwrap_or("").trim();
             if let Some((dst_str, src_str)) = rest.split_once(',') {
                 if let Some(dst_reg) = parse_reg(dst_str) {
                     let clean_src = src_str.trim().trim_start_matches('[').trim_end_matches(']').trim();
-                    // `[rip + X]` and a bare `[X]` both mean the same thing here:
-                    // the operand names an absolute address, and the encoder turns
-                    // it into a displacement relative to the next instruction.
                     let addr_text = clean_src
                         .rsplit_once('+')
                         .map(|(_, tail)| tail)
@@ -603,11 +516,6 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
                         let mem =
                             iced_x86::MemoryOperand::with_base_displ(Register::RIP, target as i64);
                         if let Ok(instr) = Instruction::with2(code, dst_reg, mem) {
-                            // Encoded at the address the bytes will occupy.
-                            // Encoding at 0 (as every other form does, harmlessly)
-                            // made the emitted disp32 short by the instruction's
-                            // own address, so the `lea` pointed nowhere near the
-                            // requested target.
                             if let Some(bytes) = encode_instruction_at(&instr, bitness, ip) {
                                 return Some(bytes);
                             }
@@ -674,7 +582,6 @@ pub fn dialog_assemble_draw(app: &mut App, frame: &mut Frame) {
 
     frame.render_widget(paragraph, dialog_area);
 
-    // Set blinking cursor inside the input box at cursor position
     let cursor_x = dialog_area.x + 1 + app.assemble_input.cursor() as u16;
     let cursor_y = dialog_area.y + 1;
     if cursor_x < dialog_area.x + dialog_area.width - 1 {
@@ -704,7 +611,6 @@ pub fn dialog_assemble_events(app: &mut App, event: &Event) -> Result<bool> {
         let is_shift = key.modifiers.contains(ratatui::crossterm::event::KeyModifiers::SHIFT);
         let is_ctrl = key.modifiers.contains(ratatui::crossterm::event::KeyModifiers::CONTROL);
 
-        // Ctrl+C: Copy selected or full assembly text to clipboard
         if is_ctrl && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C')) {
             let input_val = app.assemble_input.value();
             let text_to_copy = if app.assemble_selection_all {
@@ -726,7 +632,6 @@ pub fn dialog_assemble_events(app: &mut App, event: &Event) -> Result<bool> {
             return Ok(false);
         }
 
-        // Ctrl+V: Paste assembly text from clipboard
         if is_ctrl && (key.code == KeyCode::Char('v') || key.code == KeyCode::Char('V')) {
             if let Ok(cb) = &mut app.clipboard {
                 if let Ok(pasted) = cb.get_text() {
@@ -765,7 +670,6 @@ pub fn dialog_assemble_events(app: &mut App, event: &Event) -> Result<bool> {
             return Ok(false);
         }
 
-        // Handle Shift + Left / Right / Home / End selection
         if is_shift {
             let cursor = app.assemble_input.cursor();
             let val_char_len = app.assemble_input.value().chars().count();
@@ -920,13 +824,11 @@ mod assemble_tests {
         assert_eq!(parse_imm("  1F  "), Some(0x1f));
     }
 
-    /// The `t` suffix is how the rest of dz6 spells "decimal" (`util::parse_offset`).
     #[test]
     fn t_suffix_means_decimal() {
         assert_eq!(parse_imm("10t"), Some(10));
         assert_eq!(parse_imm("10T"), Some(10));
         assert_eq!(parse_imm("255t"), Some(255));
-        // A decimal-only spelling must not be reinterpreted as hex.
         assert_ne!(parse_imm("10t"), parse_imm("10"));
     }
 
@@ -941,7 +843,6 @@ mod assemble_tests {
         assert_eq!(parse_imm("zz"), None);
         assert_eq!(parse_imm("12x"), None);
         assert_eq!(parse_imm("1.5"), None);
-        // `t` with non-decimal digits is not a number.
         assert_eq!(parse_imm("fft"), None);
     }
 
@@ -955,11 +856,6 @@ mod assemble_tests {
         assert_eq!(fit_imm(0x1_0000_0000, 32), None);
     }
 
-    /// `push 10` is hex; `push 10t` is ten.
-    ///
-    /// The old parser tried hex first and fell back to decimal, but every decimal
-    /// digit is also a hex digit, so the decimal arm was unreachable and there was
-    /// no way to express a decimal operand at all.
     #[test]
     fn push_immediate_radix() {
         let hex = parse_assemble_input("push 10", 64, 0).expect("push 10");
@@ -976,11 +872,9 @@ mod assemble_tests {
         assert_eq!(hex.last_chunk::<4>().map(|c| u32::from_le_bytes(*c)), Some(0x10));
         assert_eq!(dec.last_chunk::<4>().map(|c| u32::from_le_bytes(*c)), Some(10));
 
-        // -1 into a 32-bit register is 0xFFFFFFFF.
         let neg = parse_assemble_input("mov eax, -1t", 64, 0).expect("mov -1");
         assert_eq!(neg.last_chunk::<4>().map(|c| u32::from_le_bytes(*c)), Some(0xFFFF_FFFF));
 
-        // Too wide for the destination: rejected rather than truncated.
         assert!(
             parse_assemble_input("mov al, 1FF", 64, 0).is_none(),
             "0x1FF does not fit in an 8-bit register and must not be truncated to 0xFF"
@@ -988,11 +882,6 @@ mod assemble_tests {
         assert!(parse_assemble_input("mov al, 7F", 64, 0).is_some());
     }
 
-    /// `lea` must be encoded at the address it will occupy.
-    ///
-    /// The displacement is relative to the *next* instruction, so encoding at IP 0
-    /// (as the old code did) produced a value short by the instruction's own
-    /// address - the `lea` pointed nowhere near the requested target.
     #[test]
     fn lea_rip_relative_displacement_is_correct() {
         let ip = 0x1_4000_0000u64;
@@ -1007,13 +896,10 @@ mod assemble_tests {
             "rip + disp32 must land on the requested address"
         );
 
-        // The `[rip + X]` spelling means the same thing.
         let with_rip = parse_assemble_input("lea rax, [rip + 0x140001000]", 64, ip).expect("lea rip");
         assert_eq!(with_rip, bytes);
     }
 
-    /// Encoding the same `lea` at a different address must yield a different
-    /// displacement - the property that was missing before.
     #[test]
     fn lea_displacement_depends_on_the_instruction_address() {
         let a = parse_assemble_input("lea rax, [0x140001000]", 64, 0x1_4000_0000).expect("a");
@@ -1021,7 +907,6 @@ mod assemble_tests {
         assert_ne!(a, b, "the displacement must follow the instruction's address");
     }
 
-    /// Plain forms are unaffected by the new `ip` argument.
     #[test]
     fn simple_forms_are_ip_independent() {
         for text in ["nop", "ret", "int3", "push rax", "xor eax, eax"] {
@@ -1032,7 +917,6 @@ mod assemble_tests {
         }
     }
 
-    /// Raw hex byte input still bypasses the assembler.
     #[test]
     fn raw_hex_bytes_still_work() {
         assert_eq!(parse_assemble_input("909090", 64, 0), Some(vec![0x90, 0x90, 0x90]));
@@ -1045,21 +929,15 @@ mod patch_padding_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// push rax(1) | mov eax, imm32(5) | ret(1) | int3(1), then NOP filler.
-    ///
-    /// Hand-built so the expected instruction boundaries are known independently
-    /// of the code under test: 0, 1, 6, 7, 8...
     const CODE: &[u8] = &[
-        0x50, // 0: push rax
-        0xB8, 0x78, 0x56, 0x34, 0x12, // 1..6: mov eax, 0x12345678
-        0xC3, // 6: ret
-        0xCC, // 7: int3
+        0x50,
+        0xB8, 0x78, 0x56, 0x34, 0x12,
+        0xC3,
+        0xCC,
     ];
 
     static FIXTURE_SEQ: AtomicUsize = AtomicUsize::new(0);
 
-    /// One fixture file per call: loading maps the file, and tests run in
-    /// parallel, so a shared path fails to be rewritten while still mapped.
     fn app_with_code() -> App {
         let dir = std::env::temp_dir().join("dz6_patch_pad");
         std::fs::create_dir_all(&dir).expect("scratch dir");
@@ -1073,8 +951,6 @@ mod patch_padding_tests {
         app.config.database = false;
         app.load_file(path.to_str().expect("path"), 0, false)
             .expect("open fixture");
-        // Fixtures are written fresh, but the mapping is opened read-only, so make
-        // sure the writability probe did not latch read-only on us.
         app.file_info.is_read_only = false;
         app
     }
@@ -1086,12 +962,6 @@ mod patch_padding_tests {
             .copied()
     }
 
-    /// A shorter instruction must be padded out to the original's boundary.
-    ///
-    /// Patching the 5-byte `mov eax, imm32` at offset 1 with a 1-byte `nop` used to
-    /// stage only that one byte, leaving `78 56 34 12` behind. The decoder read
-    /// those as instructions, so every following line was garbage until it
-    /// happened to re-synchronise.
     #[test]
     fn a_shorter_instruction_is_padded_with_nops() {
         let mut app = app_with_code();
@@ -1112,11 +982,6 @@ mod patch_padding_tests {
         assert!(message.contains("padded with 4 NOP"), "message was: {message}");
     }
 
-    /// A longer instruction must consume whole instructions, not half of one.
-    ///
-    /// Writing 5 bytes over the 1-byte `push rax` at offset 0 reaches into the
-    /// middle of the following `mov`, so the span has to extend to that
-    /// instruction's end (offset 6) and the gap be filled.
     #[test]
     fn a_longer_instruction_rounds_up_to_whole_instructions() {
         let mut app = app_with_code();
@@ -1137,7 +1002,6 @@ mod patch_padding_tests {
         assert!(message.contains("padded with 1 NOP"), "message was: {message}");
     }
 
-    /// An exact-length replacement needs no padding and says so.
     #[test]
     fn an_exact_fit_pads_nothing() {
         let mut app = app_with_code();
@@ -1151,7 +1015,6 @@ mod patch_padding_tests {
         assert!(!message.contains("padded"), "message was: {message}");
     }
 
-    /// Every staged byte, padding included, has to be undoable.
     #[test]
     fn padding_is_undoable() {
         let mut app = app_with_code();
@@ -1171,7 +1034,6 @@ mod patch_padding_tests {
         }
     }
 
-    /// A patch that would run past the end of the file is refused outright.
     #[test]
     fn a_patch_past_the_end_is_refused() {
         let mut app = app_with_code();
@@ -1187,7 +1049,6 @@ mod patch_padding_tests {
         );
     }
 
-    /// Read-only files must not collect edits that `:w` can never write.
     #[test]
     fn a_read_only_file_is_refused() {
         let mut app = app_with_code();

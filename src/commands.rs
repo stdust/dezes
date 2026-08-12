@@ -15,14 +15,11 @@ use std::io::Result;
 
 pub struct Commands;
 
-/// Upper bound for `:set byteline N` when the terminal size isn't known yet
-/// (i.e. before the first frame has been drawn).
 const MAX_BYTES_PER_LINE_FALLBACK: usize = 64;
 
 #[derive(Subcommand, Debug)]
 enum Command {
     Q,
-    /// Program info dialog, same as F8. `:ver` is accepted as an alias.
     About,
     Ver,
     W {
@@ -50,14 +47,10 @@ enum Command {
         offset: String,
         comment: String,
     },
-    /// Undocumented.
     #[command(hide = true)]
     Matrix {
-        /// `kana` for half-width katakana, `hex` for hex digits, nothing for the
-        /// bytes of the open file.
         glyphs: Option<String>,
     },
-    /// `:set` with no arguments lists every option and its current value.
     Set {
         option: Option<String>,
         value: Option<String>,
@@ -82,10 +75,7 @@ pub fn resolve_keywords(app: &App, input: &str) -> String {
         return input.to_string();
     }
 
-    // Fast-path Lazy Check: If input contains no keywords, return immediately (0ms)
     let lower_input = input.to_lowercase();
-    // `cur` (the cursor's address) was called `sel`, which read as "selection" -
-    // it has never had anything to do with the selected block.
     let has_cur = lower_input.contains("cur");
     let has_base = lower_input.contains("base");
     let has_oep = lower_input.contains("oep");
@@ -114,13 +104,13 @@ pub fn resolve_keywords(app: &App, input: &str) -> String {
             if text.is_char_boundary(i) && i + wlen <= len && text.is_char_boundary(i + wlen) {
                 if text[i..i + wlen].eq_ignore_ascii_case(word) {
                     let prev_is_alnum = if i > 0 {
-                        let prev_ch = text[..i].chars().last().unwrap();
+                        let prev_ch = text[..i].chars().last().unwrap_or('\0');
                         prev_ch.is_alphanumeric() || prev_ch == '_'
                     } else {
                         false
                     };
                     let next_is_alnum = if i + wlen < len {
-                        let next_ch = text[i + wlen..].chars().next().unwrap();
+                        let next_ch = text[i + wlen..].chars().next().unwrap_or('\0');
                         next_ch.is_alphanumeric() || next_ch == '_'
                     } else {
                         false
@@ -220,29 +210,10 @@ pub fn eval_address_expression(app: &App, raw_expr: &str) -> Option<u64> {
     Some(current_val)
 }
 
-/// True when addresses the user types are virtual addresses rather than file
-/// offsets.
-///
-/// The same condition the `g` handler uses to pre-fill the Goto box and that the
-/// address column is drawn with, so what is shown, what is typed and what is jumped
-/// to all mean the same thing.
 pub fn addresses_are_virtual(app: &App) -> bool {
     app.hex_view.show_va || app.editor_view == crate::editor::AppView::Disasm
 }
 
-/// Resolves an evaluated address to a file offset, honouring the display mode.
-///
-/// Both Goto paths used to try `va_to_offset` first no matter what, so in offset
-/// mode a value that happened to land inside a section was translated as a virtual
-/// address: with `.text` at RVA 0x1000 / raw 0x400, typing `94D+1000` evaluated to
-/// 0x194D and then jumped to offset 0xD4D. The arithmetic was right; the
-/// interpretation was not, and it contradicted the offset the box had been
-/// pre-filled with.
-///
-/// The other reading is kept as a fallback, but only when the primary one cannot
-/// apply - a value past the end of the file cannot be an offset, and an address
-/// outside every section cannot be translated - so it never silently overrides a
-/// valid answer.
 pub fn address_to_offset(app: &App, value: u64) -> Option<usize> {
     let limit = app.file_info.size.min(app.file_info.buffer_len());
     let as_offset = usize::try_from(value).ok().filter(|ofs| *ofs < limit);
@@ -272,8 +243,6 @@ fn try_goto(app: &mut App, raw_offset: &str) {
 
     if let Some(val) = parsed_val {
         if offset_direction != OffsetType::Absolute {
-            // A relative `+n` / `-n` is a byte count, not an address, so it is never
-            // translated - it is added to the cursor below.
             final_ofs = usize::try_from(val).ok().filter(|n| *n < app.file_info.size);
         } else {
             final_ofs = address_to_offset(app, val);
@@ -304,12 +273,10 @@ fn try_goto(app: &mut App, raw_offset: &str) {
     app.dialog_renderer = Some(command_error_draw);
 }
 
-/// A translated message with no placeholders.
 fn tr(app: &App, message: M) -> String {
     message.tr(app.config.lang).to_string()
 }
 
-/// A translated message with its placeholders filled in.
 fn tr1(app: &App, message: M, arg: &str) -> String {
     crate::i18n::fill(message.tr(app.config.lang), &[arg])
 }
@@ -318,27 +285,16 @@ fn tr2(app: &App, message: M, first: &str, second: &str) -> String {
     crate::i18n::fill(message.tr(app.config.lang), &[first, second])
 }
 
-/// "':set <option>' takes on, off or toggle, got '<value>'", in the interface
-/// language. All six on/off options share it.
 fn switch_error(app: &App, option: &str, got: &str) -> String {
     tr2(app, M::ErrSwitchValue, option, got)
 }
 
-/// Reports a bad `:set` (or any command) argument on the command bar.
-///
-/// Every failure mode in `:set` used to fall through the final `_ =>` arm and do
-/// nothing at all: a misspelled option, a value the option cannot take, a missing
-/// value. There was no way to tell that from "the option did what I asked".
 fn command_error(app: &mut App, message: String) {
     app.last_error = Dz6Error { message };
     app.dialog_renderer = Some(command_error_draw);
     app.state = UIState::Normal;
 }
 
-/// Parses the `on | off | toggle` argument shared by every boolean option.
-///
-/// A missing value means "on", which is what `:set db` has always meant here -
-/// `.dz6init` files rely on it, so it cannot become a toggle.
 fn parse_switch(value: Option<&str>, current: bool) -> std::result::Result<bool, String> {
     let clean = value.map(|v| v.trim().to_ascii_lowercase());
     match clean.as_deref() {
@@ -349,12 +305,6 @@ fn parse_switch(value: Option<&str>, current: bool) -> std::result::Result<bool,
     }
 }
 
-/// Wraps `#RRGGBB` and `#RGB` in single quotes so the splitter keeps them.
-///
-/// `shell_words::split` follows POSIX, where `#` starts a comment: `set bg #2B3339`
-/// arrived as `["set", "bg"]` and the colour was gone. Only a run of three or six
-/// hex digits ending at a word boundary is protected, so `# a note` at the end of a
-/// line is still dropped the way it always was.
 fn quote_colour_literals(line: &str) -> String {
     let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len() + 8);
@@ -410,11 +360,8 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
 
     match CommandLine::try_parse_from(argv) {
         Ok(cli) => match cli.command {
-            // quit
             Some(Command::Q) => app.running = false,
-            // program info
             Some(Command::About) | Some(Command::Ver) => app.open_about_dialog(),
-            // open file
             Some(Command::O { filename }) | Some(Command::Open { filename }) => {
                 if let Some(fname) = filename {
                     let fname_clean = fname.trim();
@@ -439,7 +386,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                     app.open_file_dialog();
                 }
             }
-            // write to file
             Some(Command::W { filename }) => {
                 let res = if let Some(fname) = filename {
                     let fname_clean = fname.trim();
@@ -473,14 +419,11 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                     };
                     app.dialog_renderer = Some(command_error_draw);
                 } else {
-                    // `persist_annotations` checks `config.database` itself and
-                    // logs a failed write, which `let _ = save_database()` hid.
                     app.persist_annotations();
                     app.dialog_renderer = None;
                     app.state = UIState::Normal;
                 }
             }
-            // write and quit
             Some(Command::Wq { filename }) | Some(Command::X { filename }) => {
                 let res = if let Some(fname) = filename {
                     let fname_clean = fname.trim();
@@ -519,7 +462,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                     app.running = false;
                 }
             }
-            // write selected block to file
             Some(Command::Wb { filename }) | Some(Command::Wblock { filename }) => {
                 let fname_clean = filename.trim();
                 if fname_clean.is_empty() {
@@ -558,7 +500,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                     }
                 }
             }
-            // comment <offset> <comment>
             Some(Command::Cmt { offset, comment }) => {
                 if let Ok(mut ofs) = parse_offset(&offset) {
                     if offset.starts_with('+') {
@@ -585,29 +526,22 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                 }
                 app.state = UIState::Normal;
             }
-            // set
             Some(Command::Matrix { glyphs }) => {
-            use crate::global::matrix::GlyphSource;
-            match GlyphSource::parse(glyphs.as_deref()) {
-                Some(source) => crate::global::matrix::open(app, source),
-                // Katakana needs a font that has it, so the choice is explicit and a
-                // typo should say so rather than silently rain something else.
-                None => command_error(
-                    app,
-                    format!(
-                        "':matrix' takes kana, hex or nothing, got '{}'",
-                        glyphs.unwrap_or_default()
+                use crate::global::matrix::GlyphSource;
+                match GlyphSource::parse(glyphs.as_deref()) {
+                    Some(source) => crate::global::matrix::open(app, source),
+                    None => command_error(
+                        app,
+                        format!(
+                            "':matrix' takes kana, hex or nothing, got '{}'",
+                            glyphs.unwrap_or_default()
+                        ),
                     ),
-                ),
+                }
             }
-        }
-        Some(Command::Set { option, value }) => {
-                // Bare `:set` shows the table instead of being an error, which is
-                // the only way to find out what anything is currently set to.
+            Some(Command::Set { option, value }) => {
                 let Some(option) = option else {
                     if app.loading_initfile {
-                        // A `.dz6init` line must not leave a dialog open over the
-                        // first frame; the table goes to the log instead.
                         let table = crate::global::settings::settings_text(app);
                         App::log(app, format!("Settings:\n{}", table));
                     } else {
@@ -617,7 +551,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                 };
                 let option = option.trim().to_ascii_lowercase();
                 match option.as_str() {
-                    // bytes per line
                     "byteline" | "width" => {
                         let Some(val) = value else {
                             command_error(app, tr(app, M::ErrNeedsNumberAuto));
@@ -629,9 +562,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                                 command_error(app, tr(app, M::ErrBytelineZero));
                                 return;
                             }
-                            // Clamped: `:set byteline 0` used to be accepted and
-                            // then panicked on the next frame in six different draw
-                            // paths (division by zero and `bpl - 1` underflows).
                             let max = if app.screen.width > 0 {
                                 crate::util::max_bytes_per_line(app.screen.width)
                             } else {
@@ -653,10 +583,7 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         }
                         app.dialog_renderer = None;
                     }
-                    // control / non-graphic bytes
                     "ctrlchar" => {
-                        // `chars().count()`, not `len()`: the latter is a byte
-                        // count, so a single multi-byte character was rejected.
                         match value.as_deref() {
                             Some(val) if val.chars().count() == 1 => {
                                 let c = val.chars().next().expect("one character");
@@ -673,7 +600,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             }
                         }
                     }
-                    // save database files <filename>.dz6
                     "db" => {
                         match parse_switch(value.as_deref(), app.config.database) {
                             Ok(on) => {
@@ -691,11 +617,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         app.config.database = false;
                         app.dialog_renderer = None;
                     }
-                    // dim (gray out) control bytes
-                    //
-                    // Independent of `dimzero` now. Setting one used to clear the
-                    // other, and the only way off was `nodim`, which killed both -
-                    // so "dim control bytes but not nulls" was unreachable.
                     "dimctrl" => {
                         match parse_switch(value.as_deref(), app.config.dim_control_chars) {
                             Ok(on) => {
@@ -708,7 +629,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             }
                         }
                     }
-                    // dim null bytes
                     "dimzero" => {
                         match parse_switch(value.as_deref(), app.config.dim_zeroes) {
                             Ok(on) => {
@@ -726,9 +646,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         app.config.dim_zeroes = false;
                         app.dialog_renderer = None;
                     }
-                    // primary encoding: hex view text column, plus the first
-                    // field of the Edit Data and Find Pattern dialogs.
-                    // No "none" here - the hex view always needs a text column.
                     "enc1" | "encoding1" | "hex_mode_encoding" => {
                         if let Some(val) = value {
                             match crate::text::dialog_encoding::encoding_from_name(&val) {
@@ -789,20 +706,8 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         }
                         app.dialog_renderer = None;
                     }
-                    // theme
-                    //
-                    // A theme file now carries the disassembly colours as well,
-                    // so one command colours both views. Older files that have
-                    // no disassembly section resolve to the built-in preset of
-                    // the same name, and anything else leaves the disassembly
-                    // colours as they were rather than snapping them back to the
-                    // compiled-in defaults.
                     "theme" => {
                         if let Some(val) = value {
-                            // Refuse a file that has no main-view keys at all -
-                            // a disassembly-only theme. Loading it would leave
-                            // the fallback (near-black dark) in place and look
-                            // like the theme had been applied.
                             if let Some(path) = crate::themes::find_theme_path(&val)
                                 && let Ok(data) = std::fs::read_to_string(&path)
                                 && !crate::themes::has_main_keys(&data)
@@ -828,21 +733,9 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             }
 
                             app.config.theme = crate::themes::load_theme_or_fallback(&val);
-                            // Preserve the user's lookup key (filename) as the
-                            // theme name, not the internal `name = ...` from
-                            // the theme file. The two can differ: a file called
-                            // `grey3.theme` may carry `name = gray_soft`, and
-                            // saving that to `.dzsrc` makes the next startup
-                            // look for `gray_soft.theme` which doesn't exist.
                             app.config.theme.name = val.trim().to_string();
                             app.save_initfile();
                             
-                            // Only a theme file that *declares* disassembly colours
-                            // changes them. Without this the same-named built-in
-                            // preset was applied, so picking a hex-view theme threw
-                            // away whatever `:set disasmtheme` had been used to set -
-                            // and `.dz6init`'s `set theme` line did it again on every
-                            // launch. Use `:set disasmtheme <name>` to change them.
                             match crate::disasm::theme::disasm_theme_from_file(&val) {
                                 Some(dt) => {
                                     app.config.disasm_theme = dt;
@@ -867,7 +760,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             app.dialog_renderer = None;
                         }
                     }
-                    // forced decoding width: 16 / 32 / 64 / auto
                     "bitness" | "bits" => {
                         match value.as_deref().map(str::trim) {
                             Some("auto") | Some("") | None => {
@@ -896,7 +788,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             },
                         }
                     }
-                    // bottom hint line
                     "hintbar" | "hints" => {
                         match parse_switch(value.as_deref(), app.config.hint_bar) {
                             Ok(on) => {
@@ -915,12 +806,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         App::log(app, "Hint bar: off".to_string());
                         app.dialog_renderer = None;
                     }
-                    // IME indicator (`EN` / `Han`) in the status bar.
-                    //
-                    // Undocumented on purpose: not in the `:set` table, not in the
-                    // name list the typo suggestions come from, not in the help.
-                    // It is a switch for the few people who type through an IME,
-                    // and the indicator costs a window-message round-trip to read.
                     "han" => {
                         match parse_switch(value.as_deref(), app.config.show_ime) {
                             Ok(on) => {
@@ -935,7 +820,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         }
                     }
 
-                    // search wrap
                     "wrapscan" => {
                         match parse_switch(value.as_deref(), app.config.search_wrap) {
                             Ok(on) => {
@@ -952,7 +836,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         app.config.search_wrap = false;
                         app.dialog_renderer = None;
                     }
-                    // syntax highlighting (highlight / hilight)
                     "highlight" | "hilight" => {
                         match parse_switch(value.as_deref(), app.config.syntax_highlight) {
                             Ok(on) => {
@@ -969,11 +852,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         app.config.syntax_highlight = false;
                         app.dialog_renderer = None;
                     }
-                    // view
-                    //
-                    // `disasm` used to be missing, so the one view you might
-                    // actually want to reach from `.dz6init` was the one view this
-                    // could not select - and an unknown name did nothing at all.
                     "view" => {
                         use crate::editor::AppView;
                         let target = match value.as_deref().map(str::trim) {
@@ -1001,17 +879,10 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             if target == AppView::Hex || target == AppView::Disasm {
                                 app.last_primary_view = target;
                             }
-                            // The two views read `page_start` differently; see
-                            // `App::align_page_for_view`.
                             app.align_page_for_view();
                             app.dialog_renderer = None;
                         }
                     }
-                    // interface language
-                    //
-                    // Persisted through `save_initfile`, like the encodings: a
-                    // language that resets to English on every launch is worse than
-                    // not having the option.
                     "lang" | "language" => {
                         let names = crate::i18n::Lang::ALL
                             .iter()
@@ -1040,10 +911,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             }
                         }
                     }
-                    // address column: VA or file offset
-                    //
-                    // `:set va` and `:set offset` were two options for one setting.
-                    // They still work, as aliases.
                     "addr" | "address" => {
                         match value.as_deref().map(|v| v.trim().to_ascii_lowercase()).as_deref() {
                             Some("va") => app.hex_view.show_va = true,
@@ -1068,11 +935,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         app.hex_view.show_va = false;
                         app.dialog_renderer = None;
                     }
-                    // whole disassembly theme by name
-                    //
-                    // Saved into `disasm.theme` like the individual
-                    // `:set disasm_*` colour commands, so the choice survives a
-                    // restart without needing a separate entry in `.dz6init`.
                     "disasmtheme" | "disasm_theme" => {
                         if let Some(val) = value {
                             match crate::disasm::theme::resolve_disasm_theme(&val) {
@@ -1102,11 +964,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             app.dialog_renderer = None;
                         }
                     }
-                    // disassembly colours, and everything unrecognised.
-                    //
-                    // The eight colour options were eight near-identical arms that
-                    // each ignored a bad colour string in silence. One lookup and
-                    // one assignment now, with a real error on a bad value.
                     other => {
                         if let Some(key) = crate::themes::resolve_color_key(other) {
                             let Some(val) = value else {
@@ -1123,10 +980,6 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             match color {
                                 Some(color) => {
                                     app.config.theme.apply_color(key, color);
-                                    // The disassembly view caches rendered rows and
-                                    // fingerprints the styles they were built with,
-                                    // so the colour change reaches it on the next
-                                    // frame without any extra bookkeeping here.
                                     app.dialog_renderer = None;
                                     App::log(app, format!("{} = {}", key, text));
                                 }
@@ -1173,13 +1026,10 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
             }
         },
         Err(_) => {
-            // goto as :offset
             try_goto(app, &cmdline);
         }
     }
 }
-
-// command bar
 
 pub fn command_draw(app: &mut App, frame: &mut Frame) {
     let val = app.command_input.input.value();
@@ -1478,10 +1328,6 @@ mod keyword_tests {
         app
     }
 
-    /// The cursor address keyword is `cur`.
-    ///
-    /// It used to be `sel`, which read as "selection" even though it has never had
-    /// anything to do with the selected block - it is just where the cursor is.
     #[test]
     fn cur_expands_to_the_cursor_address() {
         let app = app_at(0x40);
@@ -1489,12 +1335,9 @@ mod keyword_tests {
 
         assert_eq!(resolve_keywords(&app, "cur"), expected);
         assert_eq!(resolve_keywords(&app, "cur+10"), format!("{}+10", expected));
-        // Case-insensitive, like the other keywords.
         assert_eq!(resolve_keywords(&app, "CUR"), expected);
     }
 
-    /// The old name must no longer expand, or a stale `.dz6init` would silently keep
-    /// working and the two spellings would drift.
     #[test]
     fn sel_is_no_longer_a_keyword() {
         let app = app_at(0x40);
@@ -1505,8 +1348,6 @@ mod keyword_tests {
         );
     }
 
-    /// Only whole words are replaced, so an address or command containing the letters
-    /// is not mangled.
     #[test]
     fn only_whole_words_are_replaced() {
         let app = app_at(0x40);
@@ -1519,12 +1360,6 @@ mod keyword_tests {
         }
     }
 
-    /// In offset mode a typed address is a file offset, not a VA.
-    ///
-    /// The reported case: with `.text` at RVA 0x1000 / raw 0x400, `94D+1000`
-    /// evaluates to 0x194D and used to be translated as a virtual address, landing on
-    /// offset 0xD4D. The arithmetic was right; the interpretation contradicted the
-    /// offset the Goto box had been pre-filled with.
     #[test]
     fn offset_mode_does_not_translate_through_the_section_table() {
         let mut app = App::new();
@@ -1536,8 +1371,6 @@ mod keyword_tests {
         }
         let Some(pe) = app.header_view.pe.as_ref() else { return };
 
-        // A section whose RVA and raw offset differ is what makes the two readings
-        // disagree at all.
         let Some(section) = pe
             .sections
             .iter()
@@ -1545,7 +1378,6 @@ mod keyword_tests {
         else {
             return;
         };
-        // An address inside that section, expressed as a VA.
         let inside_rva = section.virtual_address as u64 + 0x20;
         let va = app.get_image_base() + inside_rva;
         let raw_offset = section.pointer_to_raw_data as u64 + 0x20;
@@ -1566,8 +1398,6 @@ mod keyword_tests {
         );
     }
 
-    /// The mode follows what the address column shows, including the Disasm view,
-    /// which is always in VA terms.
     #[test]
     fn the_disasm_view_is_always_virtual() {
         let mut app = App::new();
@@ -1584,8 +1414,6 @@ mod keyword_tests {
         );
     }
 
-    /// A value that cannot be an offset still falls back to the other reading, so a
-    /// pasted VA keeps working in offset mode.
     #[test]
     fn an_out_of_range_offset_falls_back_to_a_virtual_address() {
         let mut app = App::new();
@@ -1602,7 +1430,6 @@ mod keyword_tests {
         app.hex_view.show_va = false;
         app.editor_view = crate::editor::AppView::Hex;
 
-        // A full VA is far past the end of the file, so it cannot be an offset.
         let va = app.get_va(0x100);
         assert!(
             va as usize >= app.file_info.size,
@@ -1615,7 +1442,6 @@ mod keyword_tests {
         );
     }
 
-    /// The other two keywords are unaffected by the rename.
     #[test]
     fn base_and_oep_still_expand() {
         let app = app_at(0x40);
@@ -1628,15 +1454,12 @@ mod keyword_tests {
 mod dz6init_tests {
     use super::*;
 
-    /// `.dz6init` lines go through `parse_command`, so the `set enc1 <name>` /
-    /// `set enc2 <name>` forms this file writes must round-trip through clap.
     fn parse_set(line: &str) -> Option<(String, Option<String>)> {
         let args = shell_words::split(line).unwrap_or_default();
         let mut argv: Vec<&str> = vec!["dz6"];
         argv.extend(args.iter().map(|s| s.as_str()));
         match CommandLine::try_parse_from(argv) {
             Ok(cli) => match cli.command {
-                // `option` is optional now, since bare `:set` lists everything.
                 Some(Command::Set { option, value }) => option.map(|opt| (opt, value)),
                 _ => None,
             },
@@ -1682,12 +1505,6 @@ mod set_command_tests {
         parse_command(app, line);
     }
 
-    /// `:set han` switches the IME indicator, and stays out of everything that
-    /// documents the option set.
-    ///
-    /// Hidden on purpose. It is checked here so "hidden" keeps meaning "absent from
-    /// the table, the settings dialog and the suggestions" rather than "absent
-    /// until someone adds it to the list by habit".
     #[test]
     fn han_is_hidden_but_works() {
         let mut app = app();
@@ -1702,7 +1519,6 @@ mod set_command_tests {
         run(&mut app, "set han toggle");
         assert!(!app.config.show_ime);
 
-        // Not an unknown option, so no error was raised.
         run(&mut app, "set han on");
         assert!(
             !app.last_error.message.contains("Unknown option"),
@@ -1710,7 +1526,6 @@ mod set_command_tests {
             app.last_error.message
         );
 
-        // And invisible to every list that describes the option set.
         assert!(
             !crate::global::settings::OPTION_NAMES.contains(&"han"),
             "'han' is in the name list, so ':set' would document it and typos would suggest it"
@@ -1719,7 +1534,6 @@ mod set_command_tests {
         assert!(!table.contains("han"), "'han' shows up in the ':set' table");
     }
 
-    /// A bad value is still reported, hidden or not.
     #[test]
     fn han_rejects_junk() {
         let mut app = app();
@@ -1732,7 +1546,6 @@ mod set_command_tests {
         assert!(!app.config.show_ime);
     }
 
-    /// `bg` and `fg` change the main style, and every theme-file key works too.
     #[test]
     fn colours_can_be_set_directly() {
         use ratatui::style::Color;
@@ -1743,7 +1556,6 @@ mod set_command_tests {
         run(&mut app, "set fg #D3C6AA");
         assert_eq!(app.config.theme.main.fg, Some(Color::Rgb(0xD3, 0xC6, 0xAA)));
 
-        // The full key names, one per style, exactly as a theme file spells them.
         for (option, hex) in [
             ("offsets_fg", "#859289"),
             ("dimmed_fg", "#4A555B"),
@@ -1768,8 +1580,6 @@ mod set_command_tests {
         assert_eq!(app.config.theme.editing.fg, Some(Color::Rgb(0x2B, 0x33, 0x39)));
     }
 
-    /// Hex with or without a prefix, and the named colours the disassembly options
-    /// already accept.
     #[test]
     fn colour_values_take_several_spellings() {
         use ratatui::style::Color;
@@ -1783,7 +1593,6 @@ mod set_command_tests {
         assert_eq!(app.config.theme.main.fg, Some(Color::Red));
     }
 
-    /// A junk value is refused and changes nothing.
     #[test]
     fn a_bad_colour_is_refused() {
         let mut app = app();
@@ -1801,7 +1610,6 @@ mod set_command_tests {
         );
     }
 
-    /// The colour options stay out of everything that documents the option set.
     #[test]
     fn colours_are_hidden() {
         let app = app();
@@ -1825,10 +1633,6 @@ mod set_command_tests {
         }
     }
 
-    /// A misspelled option must say so, and point at the right name.
-    ///
-    /// Every unrecognised option used to fall through the final `_ =>` arm and do
-    /// nothing, which is indistinguishable from having worked.
     #[test]
     fn an_unknown_option_is_reported() {
         let mut app = app();
@@ -1846,7 +1650,6 @@ mod set_command_tests {
         );
     }
 
-    /// A value the option cannot take is an error too, not a silent no-op.
     #[test]
     fn bad_values_are_reported() {
         let mut app = app();
@@ -1873,8 +1676,6 @@ mod set_command_tests {
         assert!(app.last_error.message.contains("not a colour"));
     }
 
-    /// on / off / toggle, and the bare form that has to keep meaning "on" because
-    /// existing `.dz6init` files use it.
     #[test]
     fn switches_take_on_off_and_toggle() {
         let mut app = app();
@@ -1888,7 +1689,6 @@ mod set_command_tests {
         run(&mut app, "set hintbar");
         assert!(app.config.hint_bar, "a bare switch still means on");
 
-        // The old spellings keep working.
         run(&mut app, "set nohintbar");
         assert!(!app.config.hint_bar);
         run(&mut app, "set nowrapscan");
@@ -1897,10 +1697,6 @@ mod set_command_tests {
         assert!(app.config.search_wrap);
     }
 
-    /// The two dim options are independent now.
-    ///
-    /// Setting one used to clear the other, and the only way off was `nodim`, which
-    /// killed both - so "dim control bytes but not nulls" could not be expressed.
     #[test]
     fn dim_options_are_independent() {
         let mut app = app();
@@ -1917,7 +1713,6 @@ mod set_command_tests {
         assert!(!app.config.dim_control_chars && !app.config.dim_zeroes);
     }
 
-    /// One option for the address column, with the two old ones as aliases.
     #[test]
     fn addr_replaces_va_and_offset() {
         let mut app = app();
@@ -1935,8 +1730,6 @@ mod set_command_tests {
         assert!(app.hex_view.show_va);
     }
 
-    /// `:set view disasm` exists at all - it was the one view the command could not
-    /// select - and it refuses a file with no code rather than doing nothing.
     #[test]
     fn view_accepts_disasm() {
         let mut app = app();
@@ -1955,7 +1748,6 @@ mod set_command_tests {
         assert!(app.editor_view == crate::editor::AppView::Hex);
     }
 
-    /// The interface language, with the spellings people actually type.
     #[test]
     fn lang_switches_the_interface() {
         use crate::i18n::{Lang, M};
@@ -1982,7 +1774,6 @@ mod set_command_tests {
         assert_eq!(app.config.lang, Lang::En, "a bad name must not change it");
     }
 
-    /// The settings table follows the language, and lists `lang` itself.
     #[test]
     fn the_settings_table_is_translated() {
         let mut app = app();
@@ -1996,12 +1787,9 @@ mod set_command_tests {
             "the notes column must be translated, got:\n{}",
             text
         );
-        // Option names are identifiers shared with the documentation and must not
-        // move with the language.
         assert!(text.contains("byteline") && text.contains("hintbar"));
     }
 
-    /// Bare `:set` opens the table.
     #[test]
     fn bare_set_shows_the_table() {
         let mut app = app();
@@ -2011,7 +1799,6 @@ mod set_command_tests {
         assert!(app.dialog_renderer.is_some());
     }
 
-    /// A `.dz6init` line must not leave a dialog over the first frame.
     #[test]
     fn bare_set_in_the_init_file_logs_instead() {
         let mut app = app();
@@ -2038,8 +1825,6 @@ mod localized_message_tests {
         app
     }
 
-    /// `:set` errors follow the interface language, and still name the option and
-    /// the value the user typed - those are identifiers, not prose.
     #[test]
     fn set_errors_are_localized() {
         let mut app = app_in(Lang::Ko);
@@ -2063,7 +1848,6 @@ mod localized_message_tests {
         assert!(app.last_error.message.starts_with("':set view'"));
     }
 
-    /// A read-only refusal is translated on both halves - the prefix and the action.
     #[test]
     fn read_only_refusals_are_localized() {
         let mut app = app_in(Lang::Ko);
@@ -2084,18 +1868,11 @@ mod localized_message_tests {
 
 #[cfg(test)]
 mod option_name_tests {
-    /// Every name in `OPTION_NAMES` must be an option `:set` actually handles.
-    ///
-    /// The list drives the `:set` table and the typo suggestions, so a name in it
-    /// that nothing handles sends the user to a dead option - and the suggestion
-    /// machinery would confidently point at it.
     #[test]
     fn every_listed_option_is_handled() {
         for name in crate::global::settings::OPTION_NAMES {
             let mut app = crate::app::App::new();
             app.config.database = false;
-            // The value is deliberately plausible-but-generic: what is being checked
-            // is only whether the *name* is recognised.
             crate::commands::parse_command(&mut app, &format!("set {} on", name));
             assert!(
                 !app.last_error.message.contains("Unknown option"),

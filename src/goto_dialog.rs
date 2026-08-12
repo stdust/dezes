@@ -204,11 +204,19 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
                         app.dialog_renderer = None;
                     } else {
                         crate::beep!();
-                        app.error(format!("Address 0x{:X} out of bounds", addr));
+                        let msg = crate::i18n::fill(
+                            crate::i18n::M::ErrAddressOutOfBounds.tr(app.config.lang),
+                            &[&format!("{:X}", addr)],
+                        );
+                        app.error(msg);
                     }
                 } else {
                     crate::beep!();
-                    app.error(format!("Invalid address expression: '{}'", raw_input));
+                    let msg = crate::i18n::fill(
+                        crate::i18n::M::ErrInvalidAddressExpr.tr(app.config.lang),
+                        &[raw_input],
+                    );
+                    app.error(msg);
                 }
             }
             KeyCode::Home => {

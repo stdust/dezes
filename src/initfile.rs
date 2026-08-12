@@ -48,54 +48,61 @@ impl App {
             }
         }
 
+        let mut found_path: Option<PathBuf> = None;
+
         // Try reading from the first candidate that exists
-        for path in candidates {
+        for path in &candidates {
             if path.is_file() {
-                if let Ok(data) = fs::read_to_string(&path) {
-                    App::log(self, format!("Loading .dz6init from: {}", path.display()));
-                    self.initfile_loaded = Some(path.clone());
-                    self.loading_initfile = true;
-                    for cmdline in data.lines() {
-                        let trimmed = cmdline.trim();
-                        // Skip empty lines and comments
-                        if trimmed.is_empty() || trimmed.starts_with('#') {
-                            continue;
-                        }
+                found_path = Some(path.clone());
+                break;
+            }
+        }
 
-                        // A config file must not be able to end the session or
-                        // leave the app in an error state before the first frame
-                        // is even drawn. Every line goes through `parse_command`,
-                        // so a stray `q` quit immediately - with the terminal not
-                        // yet in raw mode, that looked like dz6 failing to start -
-                        // and a bad `set` installed the error dialog over the
-                        // opening screen.
-                        if is_quit_command(trimmed) {
-                            App::log(
-                                self,
-                                format!("Ignoring '{}' in .dz6init: it would quit at startup", trimmed),
-                            );
-                            continue;
-                        }
+        // If no configuration file exists, create .dzsrc in the executable directory
+        if found_path.is_none() {
+            let default_path = exe_dir.join(crate::app::INIT_FILE);
+            let default_content = "# dezes initialization configuration\n";
+            if let Ok(_) = fs::write(&default_path, default_content) {
+                App::log(self, format!("Created default .dzsrc at: {}", default_path.display()));
+                found_path = Some(default_path);
+            }
+        }
 
-                        parse_command(self, cmdline);
-
-                        if !self.running {
-                            App::log(
-                                self,
-                                format!("'{}' in .dz6init asked to quit; ignoring", trimmed),
-                            );
-                            self.running = true;
-                        }
+        if let Some(path) = found_path {
+            if let Ok(data) = fs::read_to_string(&path) {
+                App::log(self, format!("Loading startup config from: {}", path.display()));
+                self.initfile_loaded = Some(path.clone());
+                self.loading_initfile = true;
+                for cmdline in data.lines() {
+                    let trimmed = cmdline.trim();
+                    // Skip empty lines and comments
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
                     }
-                    self.loading_initfile = false;
-                    // Any error a `set` line raised belongs in the log, not over
-                    // the first frame.
-                    if self.state == crate::editor::UIState::Error {
-                        self.state = crate::editor::UIState::Normal;
+
+                    if is_quit_command(trimmed) {
+                        App::log(
+                            self,
+                            format!("Ignoring '{}' in startup config: it would quit at startup", trimmed),
+                        );
+                        continue;
                     }
-                    self.dialog_renderer = None;
-                    break;
+
+                    parse_command(self, cmdline);
+
+                    if !self.running {
+                        App::log(
+                            self,
+                            format!("'{}' in startup config asked to quit; ignoring", trimmed),
+                        );
+                        self.running = true;
+                    }
                 }
+                self.loading_initfile = false;
+                if self.state == crate::editor::UIState::Error {
+                    self.state = crate::editor::UIState::Normal;
+                }
+                self.dialog_renderer = None;
             }
         }
 
@@ -133,7 +140,7 @@ pub fn merge_initfile(existing: Option<&str>, enc1: &str, enc2: &str, lang: &str
     let Some(existing) = existing.filter(|text| !text.trim().is_empty()) else {
         // Nothing to preserve: the file dz6 writes from scratch.
         return format!(
-            "# dezes configuration\nset enc1 {}\nset enc2 {}\nset lang {}\nset theme {}\nset disasmtheme {}\n", enc1, enc2, lang, theme, disasmtheme
+            "# dezes initialization configuration\nset enc1 {}\nset enc2 {}\nset lang {}\nset theme {}\nset disasmtheme {}\n", enc1, enc2, lang, theme, disasmtheme
         );
     };
 
@@ -311,7 +318,7 @@ set byteline 16
     fn a_missing_file_is_created_from_scratch() {
         for existing in [None, Some(""), Some("   \n\n")] {
             let merged = merge_initfile(existing, "UTF-8", "none", "en", "dark", "dark");
-            assert!(merged.starts_with("# dezes configuration"), "{:?}", merged);
+            assert!(merged.starts_with("# dezes initialization configuration"), "{:?}", merged);
             assert!(merged.contains("set enc1 UTF-8"));
             assert!(merged.contains("set enc2 none"));
             assert!(merged.contains("set lang en"));

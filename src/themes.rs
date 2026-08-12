@@ -275,42 +275,55 @@ pub fn get_default_gray() -> Theme {
     Theme {
         name: "gray".to_string(),
         offsets: Style::new()
-            .fg(Color::from_u32(0x004080))
-            .bg(Color::from_u32(0xc4c4c4))
+            .fg(Color::from_u32(0x3B4A5A))
+            .bg(Color::from_u32(0xC2C2BE))
             .add_modifier(Modifier::BOLD),
         main: Style::new()
-            .fg(Color::from_u32(0x505050))
-            .bg(Color::from_u32(0xd9d9d9))
+            .fg(Color::from_u32(0x2B2B2B))
+            .bg(Color::from_u32(0xD6D6D2))
             .add_modifier(Modifier::BOLD),
         dimmed: Style::new()
-            .fg(Color::from_u32(0x787878))
-            .bg(Color::from_u32(0xd9d9d9))
+            .fg(Color::from_u32(0x7C7C78))
+            .bg(Color::from_u32(0xD6D6D2))
             .add_modifier(Modifier::BOLD),
         dialog: Style::new()
-            .fg(Color::from_u32(0x111111))
-            .bg(Color::from_u32(0xe6e6e6))
+            .fg(Color::from_u32(0x262626))
+            .bg(Color::from_u32(0xE2E2DE))
             .add_modifier(Modifier::BOLD),
         changed_bytes: Style::new()
-            .fg(Color::from_u32(0x990000))
-            .bg(Color::from_u32(0xd9d9d9)),
+            .fg(Color::from_u32(0xA13A3A))
+            .bg(Color::from_u32(0xD6D6D2)),
         highlight: Style::new()
-            .fg(Color::from_u32(0x505050))
-            .bg(Color::from_u32(0xb1c3e7)),
+            .fg(Color::from_u32(0x2B2B2B))
+            .bg(Color::from_u32(0xBCCBE8)),
         byte_highlight: Style::new()
-            .fg(Color::from_u32(0xffffff))
-            .bg(Color::from_u32(0xd9534f)),
+            .fg(Color::from_u32(0xF5F1E8))
+            .bg(Color::from_u32(0xC05A52)),
         topbar: Style::new()
-            .fg(Color::from_u32(0x15141e))
-            .bg(Color::from_u32(0xadb5bd)),
+            .fg(Color::from_u32(0x262530))
+            .bg(Color::from_u32(0xABB0A9)),
         error: Style::new()
-            .fg(Color::from_u32(0x721c24))
-            .bg(Color::from_u32(0xf8d7da)),
+            .fg(Color::from_u32(0x6E2A30))
+            .bg(Color::from_u32(0xEFD6D2)),
         editing: Style::new()
-            .fg(Color::from_u32(0xffffff))
-            .bg(Color::from_u32(0xd9534f))
+            .fg(Color::from_u32(0xF5F1E8))
+            .bg(Color::from_u32(0xC05A52))
             .add_modifier(Modifier::RAPID_BLINK),
     }
 }
+
+pub const EXTRA_BUILTIN_THEMES: &[(&str, &str)] = &[
+    ("arctic_ice.theme", "# DZ6 Arctic Ice Theme\nname = arctic_ice\nmain_fg = #7FDBFF\nmain_bg = #08131F\noffsets_fg = #4A90A4\noffsets_bg = #08131F\ndimmed_fg = #2C4A5C\ndimmed_bg = #08131F\ndialog_fg = #B3ECFF\ndialog_bg = #0F2438\nchanged_bytes_fg = #FFDC73\nchanged_bytes_bg = #08131F\nhighlight_fg = #08131F\nhighlight_bg = #7FDBFF\nbyte_highlight_fg = #FFFFFF\nbyte_highlight_bg = #4A90A4\ntopbar_fg = #B3ECFF\ntopbar_bg = #163049\nerror_fg = #FF6B6B\nerror_bg = #2A0808\nediting_fg = #08131F\nediting_bg = #FFDC73\n"),
+    ("coffee.theme", "# Coffee & Cognac\nname = coffee\nmain_fg = #E8D2A0\nmain_bg = #2B1D14\noffsets_fg = #A67C52\noffsets_bg = #2B1D14\ndimmed_fg = #5A4632\ndimmed_bg = #2B1D14\ndialog_fg = #2B1D14\ndialog_bg = #C08A4E\nchanged_bytes_fg = #D98C3F\nchanged_bytes_bg = #2B1D14\nhighlight_fg = #2B1D14\nhighlight_bg = #B57A3F\nbyte_highlight_fg = #FFF3D9\nbyte_highlight_bg = #8B5E34\ntopbar_fg = #E8D2A0\ntopbar_bg = #4A3320\nerror_fg = #E05C3E\nerror_bg = #4A2418\nediting_fg = #2B1D14\nediting_bg = #D98C3F\n"),
+    ("darkone.theme", "# Dezes Theme File - darkone\nname = darkone\nmain_fg = #F2F2F2\nmain_bg = #0A0A0A\noffsets_fg = #29B6F6\noffsets_bg = #0A0A0A\ndimmed_fg = #78909C\ndimmed_bg = #0A0A0A\ndialog_fg = #F2F2F2\ndialog_bg = #0277BD\nchanged_bytes_fg = #FFD54F\nchanged_bytes_bg = #0A0A0A\nhighlight_fg = #F2F2F2\nhighlight_bg = #C62828\nbyte_highlight_fg = #F2F2F2\nbyte_highlight_bg = #00ACC1\ntopbar_fg = #F2F2F2\ntopbar_bg = #2C82C9\nerror_fg = #FFEBEE\nerror_bg = #C62828\nediting_fg = #000000\nediting_bg = #FFCA28\n"),
+    ("ice.theme", "# DZ6 Ice White\nname = ice\nmain_fg = #DEDEDE\nmain_bg = #152028\noffsets_fg = #A8D7F0\noffsets_bg = #152028\ndimmed_fg = #6D8796\ndimmed_bg = #152028\ndialog_fg = #DEDEDE\ndialog_bg = #24333F\nchanged_bytes_fg = #FFF27A\nchanged_bytes_bg = #152028\nhighlight_fg = #152028\nhighlight_bg = #DEDEDE\nbyte_highlight_fg = #FFFFFF\nbyte_highlight_bg = #58B4E8\ntopbar_fg = #DEDEDE\ntopbar_bg = #334552\nerror_fg = #FF6666\nerror_bg = #440000\nediting_fg = #152028\nediting_bg = #FFF27A\n"),
+    ("matrix.theme", "# DZ6 Matrix Green Theme\nname = matrix\nmain_fg = #00FF66\nmain_bg = #05140A\noffsets_fg = #00CC44\noffsets_bg = #05140A\ndimmed_fg = #2D6639\ndimmed_bg = #05140A\ndialog_fg = #00FF66\ndialog_bg = #0A2914\nchanged_bytes_fg = #FFFF00\nchanged_bytes_bg = #05140A\nhighlight_fg = #05140A\nhighlight_bg = #00FF66\nbyte_highlight_fg = #FFFFFF\nbyte_highlight_bg = #009933\ntopbar_fg = #00FF66\ntopbar_bg = #143D1E\nerror_fg = #FF3333\nerror_bg = #330000\nediting_fg = #05140A\nediting_bg = #FFFF00\n"),
+    ("mocha.theme", "# DZ6 Everforest Theme\nname = mocha\nmain_fg = #D3C6AA\nmain_bg = #2B3339\noffsets_fg = #859289\noffsets_bg = #2B3339\ndimmed_fg = #4A555B\ndimmed_bg = #2B3339\ndialog_fg = #DDC7A1\ndialog_bg = #343F44\nchanged_bytes_fg = #DBBC7F\nchanged_bytes_bg = #2B3339\nhighlight_fg = #2B3339\nhighlight_bg = #A7C080\nbyte_highlight_fg = #2B3339\nbyte_highlight_bg = #83C092\ntopbar_fg = #D3C6AA\ntopbar_bg = #3A464C\nerror_fg = #E67E80\nerror_bg = #3C2E2E\nediting_fg = #2B3339\nediting_bg = #DBBC7F\n"),
+    ("paper.theme", "# DZ6 Gruvbox Theme\nname = paper\nmain_fg = #EBDBB2\nmain_bg = #282828\noffsets_fg = #A89984\noffsets_bg = #282828\ndimmed_fg = #665C54\ndimmed_bg = #282828\ndialog_fg = #FBF1C7\ndialog_bg = #3C3836\nchanged_bytes_fg = #D79921\nchanged_bytes_bg = #282828\nhighlight_fg = #282828\nhighlight_bg = #B8BB26\nbyte_highlight_fg = #282828\nbyte_highlight_bg = #689D6A\ntopbar_fg = #EBDBB2\ntopbar_bg = #3C3836\nerror_fg = #CC241D\nerror_bg = #3C2020\nediting_fg = #282828\nediting_bg = #D79921\n"),
+    ("latte.theme", "# DZ6 Gruvbox Light Theme\nname = latte\nmain_fg = #3C3836\nmain_bg = #F7F1DF\noffsets_fg = #7C6F64\noffsets_bg = #F7F1DF\ndimmed_fg = #EEDFBB\ndimmed_bg = #F7F1DF\ndialog_fg = #282828\ndialog_bg = #EBDBB2\nchanged_bytes_fg = #D79921\nchanged_bytes_bg = #F7F1DF\nhighlight_fg = #282828\nhighlight_bg = #EBE2B8\nbyte_highlight_fg = #282828\nbyte_highlight_bg = #689D6A\ntopbar_fg = #3C3836\ntopbar_bg = #EBDBB2\nerror_fg = #CC241D\nerror_bg = #F2D9C4\nediting_fg = #282828\nediting_bg = #D79921\n"),
+    ("punk.theme", "# DZ6 Cyberpunk Theme\nname = punk\nmain_fg = #00F0FF\nmain_bg = #0D0F18\noffsets_fg = #00F0FF\noffsets_bg = #0D0F18\ndimmed_fg = #708090\ndimmed_bg = #0D0F18\ndialog_fg = #00F0FF\ndialog_bg = #1A092B\nchanged_bytes_fg = #FFE600\nchanged_bytes_bg = #0D0F18\nhighlight_fg = #0D0F18\nhighlight_bg = #00F0FF\nbyte_highlight_fg = #FFFFFF\nbyte_highlight_bg = #FF007F\ntopbar_fg = #FFFFFF\ntopbar_bg = #2B0938\nerror_fg = #FF0055\nerror_bg = #3B0014\nediting_fg = #0D0F18\nediting_bg = #FFE600\n"),
+    ("terracotta.theme", "# Terracotta Adobe Theme\nname = terracotta\nmain_fg = #4A2E22\nmain_bg = #EDD9B8\noffsets_fg = #8B5A2B\noffsets_bg = #EDD9B8\ndimmed_fg = #D9B98C\ndimmed_bg = #EDD9B8\ndialog_fg = #2E1B12\ndialog_bg = #D98452\nchanged_bytes_fg = #C1440E\nchanged_bytes_bg = #EDD9B8\nhighlight_fg = #2E1B12\nhighlight_bg = #E8B36B\nbyte_highlight_fg = #FFF3E0\nbyte_highlight_bg = #A63B1F\ntopbar_fg = #4A2E22\ntopbar_bg = #D98452\nerror_fg = #8B0000\nerror_bg = #F0C4A8\nediting_fg = #FFF3E0\nediting_bg = #C1440E\n"),
+];
 
 pub fn ensure_and_load_themes() -> (Theme, Theme, Theme) {
     // Anchored to the executable's directory, so one install has one set of
@@ -350,6 +363,13 @@ pub fn ensure_and_load_themes() -> (Theme, Theme, Theme) {
     }
     if !gray_path.exists() {
         let _ = gray_def.save_to_file(&gray_path);
+    }
+
+    for (fname, content) in EXTRA_BUILTIN_THEMES {
+        let extra_path = dir.join(fname);
+        if !extra_path.exists() {
+            let _ = fs::write(&extra_path, content);
+        }
     }
 
     let dark = Theme::load_from_file(&dark_path, &dark_def);
