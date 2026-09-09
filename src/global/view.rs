@@ -10,6 +10,10 @@ impl App {
                 _ => self.editor_view = AppView::Hex,
             }
         } else {
+            if self.editor_view == AppView::Hex {
+                let msg = crate::i18n::M::ErrNoCodeSection.tr(self.config.lang).to_string();
+                self.error(msg);
+            }
             self.editor_view = AppView::Hex;
         }
         self.prev_editor_view = self.editor_view;
@@ -182,5 +186,19 @@ mod view_switch_tests {
         assert!(app.editor_view == AppView::Hex);
         assert_eq!(app.reader.page_start % 16, 0, "back in hex, back on the grid");
         assert_eq!(app.hex_view.offset, 0x118, "the cursor itself never moves");
+    }
+
+    #[test]
+    fn tab_on_non_executable_shows_error_and_stays_hex() {
+        let mut app = app_with_code();
+        app.header_view.pe = None;
+        app.editor_view = AppView::Hex;
+        assert!(app.status_error.is_none());
+
+        app.switch_editor_view();
+        assert_eq!(app.editor_view, AppView::Hex);
+        assert!(app.status_error.is_some());
+        let err = app.status_error.unwrap();
+        assert_eq!(err, crate::i18n::M::ErrNoCodeSection.tr(app.config.lang));
     }
 }

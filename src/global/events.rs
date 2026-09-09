@@ -523,6 +523,47 @@ mod view_toggle_tests {
         assert!(app.status_error.is_some(), "must set an error message");
     }
 
+    /// Tab on a non-executable file must refuse to enter Disasm view and show an error message.
+    #[test]
+    fn tab_on_non_executable_shows_error_and_stays() {
+        let mut app = app_with_file();
+        assert_eq!(app.editor_view, AppView::Hex);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.editor_view, AppView::Hex, "must not switch to Disasm view on non-executable");
+        assert!(app.status_error.is_some(), "must set an error message");
+        let err = app.status_error.unwrap();
+        assert_eq!(err, crate::i18n::M::ErrNoCodeSection.tr(app.config.lang));
+    }
+
+    /// Shift+Tab (BackTab) on a non-executable file must also refuse and show error.
+    #[test]
+    fn backtab_on_non_executable_shows_error_and_stays() {
+        let mut app = app_with_file();
+        assert_eq!(app.editor_view, AppView::Hex);
+
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.editor_view, AppView::Hex, "must not switch to Disasm view on non-executable");
+        assert!(app.status_error.is_some(), "must set an error message");
+        let err = app.status_error.unwrap();
+        assert_eq!(err, crate::i18n::M::ErrNoCodeSection.tr(app.config.lang));
+    }
+
+    /// Tab on an executable PE file toggles Hex <-> Disasm without error.
+    #[test]
+    fn tab_on_executable_switches_to_disasm() {
+        let Some(mut app) = app_with_pe() else { return };
+        assert_eq!(app.editor_view, AppView::Hex);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.editor_view, AppView::Disasm);
+        assert!(app.status_error.is_none());
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.editor_view, AppView::Hex);
+        assert!(app.status_error.is_none());
+    }
+
     /// F4 and F7 are toggles. Pressing them in the view they open used to do
     /// nothing, so the only way out was Esc.
     #[test]

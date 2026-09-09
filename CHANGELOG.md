@@ -10,6 +10,7 @@ All notable changes to the **Dezes** project are documented in this file.
 - **PE Section Tools Localization & Expanded UI**: Added full multilingual translation (English, Korean, Simplified Chinese) and expanded the PE Section Tool dialog width to 90% for clear inspection of section characteristics.
 - **Wider Strings Viewer**: Expanded the Strings Dialog viewport to 75% screen width, eliminating clipping on long string references.
 - **Disassembly Theme Refinements**: Updated return instruction highlighting and theme rendering.
+- **Non-Executable Disassembly Tab Refusal**: Displayed localized error message (`ErrNoCodeSection`) when pressing `Tab` / `Shift+Tab` in Hex view on files where disassembly view is not supported.
 
 ## [0.8.1] - 2026-08-08
 
