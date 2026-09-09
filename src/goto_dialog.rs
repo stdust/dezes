@@ -71,7 +71,7 @@ pub fn dialog_goto_draw(app: &mut App, frame: &mut Frame) {
 
     frame.render_widget(paragraph, dialog_area);
 
-    let cursor_x = dialog_area.x + 1 + app.goto_input.cursor() as u16;
+    let cursor_x = dialog_area.x + 1 + app.goto_input.visual_cursor() as u16;
     let cursor_y = dialog_area.y + 1;
     if cursor_x < dialog_area.x + dialog_area.width - 1 {
         frame.set_cursor_position((cursor_x, cursor_y));
@@ -100,50 +100,49 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
                 input_val.to_string()
             };
 
-            if !text_to_copy.is_empty() {
-                if let Ok(cb) = &mut app.clipboard {
-                    let _ = cb.set_text(text_to_copy);
-                    App::log(app, "Copied address text to clipboard".to_string());
-                }
+            if !text_to_copy.is_empty()
+                && let Ok(cb) = &mut app.clipboard
+            {
+                let _ = cb.set_text(text_to_copy);
+                App::log(app, "Copied address text to clipboard".to_string());
             }
             return Ok(false);
         }
 
         // Ctrl+V: Paste text from clipboard
-        if is_ctrl && (key.code == KeyCode::Char('v') || key.code == KeyCode::Char('V')) {
-            if let Ok(cb) = &mut app.clipboard {
-                if let Ok(pasted) = cb.get_text() {
-                    let clean_pasted = pasted.trim().replace('\n', "").replace('\r', "");
-                    let pasted_char_cnt = clean_pasted.chars().count();
-                    if app.goto_selection_all {
-                        app.goto_selection_all = false;
-                        app.goto_selection_anchor = None;
-                        app.goto_input = tui_input::Input::new(clean_pasted);
-                    } else if let Some(anchor) = app.goto_selection_anchor {
-                        let cursor = app.goto_input.cursor();
-                        let val = app.goto_input.value();
-                        let (before, _, after) = safe_slice_parts(val, anchor, cursor);
-                        let before_char_cnt = before.chars().count();
-                        let mut new_val = String::new();
-                        new_val.push_str(before);
-                        new_val.push_str(&clean_pasted);
-                        new_val.push_str(after);
-                        let new_cursor = before_char_cnt + pasted_char_cnt;
-                        app.goto_selection_anchor = None;
-                        app.goto_input = tui_input::Input::new(new_val).with_cursor(new_cursor);
-                    } else {
-                        let cursor = app.goto_input.cursor();
-                        let val = app.goto_input.value();
-                        let (before, _, after) = safe_slice_parts(val, cursor, cursor);
-                        let before_char_cnt = before.chars().count();
-                        let mut new_val = String::new();
-                        new_val.push_str(before);
-                        new_val.push_str(&clean_pasted);
-                        new_val.push_str(after);
-                        let new_cursor = before_char_cnt + pasted_char_cnt;
-                        app.goto_input = tui_input::Input::new(new_val).with_cursor(new_cursor);
-                    }
-                }
+        if is_ctrl && (key.code == KeyCode::Char('v') || key.code == KeyCode::Char('V'))
+            && let Ok(cb) = &mut app.clipboard
+            && let Ok(pasted) = cb.get_text()
+        {
+            let clean_pasted = pasted.trim().replace(['\n', '\r'], "");
+            let pasted_char_cnt = clean_pasted.chars().count();
+            if app.goto_selection_all {
+                app.goto_selection_all = false;
+                app.goto_selection_anchor = None;
+                app.goto_input = tui_input::Input::new(clean_pasted);
+            } else if let Some(anchor) = app.goto_selection_anchor {
+                let cursor = app.goto_input.cursor();
+                let val = app.goto_input.value();
+                let (before, _, after) = safe_slice_parts(val, anchor, cursor);
+                let before_char_cnt = before.chars().count();
+                let mut new_val = String::new();
+                new_val.push_str(before);
+                new_val.push_str(&clean_pasted);
+                new_val.push_str(after);
+                let new_cursor = before_char_cnt + pasted_char_cnt;
+                app.goto_selection_anchor = None;
+                app.goto_input = tui_input::Input::new(new_val).with_cursor(new_cursor);
+            } else {
+                let cursor = app.goto_input.cursor();
+                let val = app.goto_input.value();
+                let (before, _, after) = safe_slice_parts(val, cursor, cursor);
+                let before_char_cnt = before.chars().count();
+                let mut new_val = String::new();
+                new_val.push_str(before);
+                new_val.push_str(&clean_pasted);
+                new_val.push_str(after);
+                let new_cursor = before_char_cnt + pasted_char_cnt;
+                app.goto_input = tui_input::Input::new(new_val).with_cursor(new_cursor);
             }
             return Ok(false);
         }
@@ -152,9 +151,7 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
         if is_shift {
             let cursor = app.goto_input.cursor();
             let val_char_len = app.goto_input.value().chars().count();
-            if app.goto_selection_anchor.is_none() {
-                app.goto_selection_anchor = Some(cursor);
-            }
+            app.goto_selection_anchor.get_or_insert(cursor);
             app.goto_selection_all = false;
 
             match key.code {
@@ -184,14 +181,36 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
             KeyCode::Esc => {
                 app.goto_selection_all = false;
                 app.goto_selection_anchor = None;
+                app.goto_history.reset_nav();
                 app.state = UIState::Normal;
                 app.dialog_renderer = None;
+            }
+            KeyCode::Up if is_ctrl || key.modifiers.contains(KeyModifiers::NONE) => {
+                app.goto_selection_all = false;
+                app.goto_selection_anchor = None;
+                let cur = app.goto_input.value().to_string();
+                if let Some(val) = app.goto_history.navigate_up(&cur) {
+                    let cur_len = val.chars().count();
+                    app.goto_input = tui_input::Input::new(val).with_cursor(cur_len);
+                }
+                return Ok(false);
+            }
+            KeyCode::Down if is_ctrl || key.modifiers.contains(KeyModifiers::NONE) => {
+                app.goto_selection_all = false;
+                app.goto_selection_anchor = None;
+                let cur = app.goto_input.value().to_string();
+                if let Some(val) = app.goto_history.navigate_down(&cur) {
+                    let cur_len = val.chars().count();
+                    app.goto_input = tui_input::Input::new(val).with_cursor(cur_len);
+                }
+                return Ok(false);
             }
             KeyCode::Enter => {
                 app.goto_selection_all = false;
                 app.goto_selection_anchor = None;
                 let raw_input = app.goto_input.value().trim();
                 if let Some(addr) = crate::commands::eval_address_expression(app, raw_input) {
+                    app.goto_history.push(raw_input.to_string());
                     let filesize = app.file_info.size;
                     let target_offset = crate::commands::address_to_offset(app, addr)
                         .unwrap_or(addr as usize);
@@ -289,4 +308,66 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
+
+    fn make_key_event(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    #[test]
+    fn test_goto_dialog_history_up_down() {
+        let mut app = App::new();
+        app.goto_history.push("0x1000".to_string());
+        app.goto_history.push("0x2000".to_string());
+
+        app.goto_input = tui_input::Input::new("0x3000".to_string());
+
+        // 1st Up: 0x2000 (latest)
+        let _ = dialog_goto_events(&mut app, &make_key_event(KeyCode::Up));
+        assert_eq!(app.goto_input.value(), "0x2000");
+
+        // 2nd Up: 0x1000 (older)
+        let _ = dialog_goto_events(&mut app, &make_key_event(KeyCode::Up));
+        assert_eq!(app.goto_input.value(), "0x1000");
+
+        // 1st Down: 0x2000 (newer)
+        let _ = dialog_goto_events(&mut app, &make_key_event(KeyCode::Down));
+        assert_eq!(app.goto_input.value(), "0x2000");
+
+        // 2nd Down: 0x3000 (draft restored)
+        let _ = dialog_goto_events(&mut app, &make_key_event(KeyCode::Down));
+        assert_eq!(app.goto_input.value(), "0x3000");
+
+        // Down from draft also brings up latest (0x2000)
+        let _ = dialog_goto_events(&mut app, &make_key_event(KeyCode::Down));
+        assert_eq!(app.goto_input.value(), "0x2000");
+
+        // Ctrl+Up and Ctrl+Down also navigate history
+        let ctrl_up = Event::Key(KeyEvent {
+            code: KeyCode::Up,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        let ctrl_down = Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        let _ = dialog_goto_events(&mut app, &ctrl_up);
+        assert_eq!(app.goto_input.value(), "0x1000");
+        let _ = dialog_goto_events(&mut app, &ctrl_down);
+        assert_eq!(app.goto_input.value(), "0x2000");
+    }
 }

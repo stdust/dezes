@@ -44,16 +44,11 @@ pub struct ElfState {
     pub symbols_table_state: TableState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum HeaderPane {
+    #[default]
     Sidebar,
     Detail,
-}
-
-impl Default for HeaderPane {
-    fn default() -> Self {
-        HeaderPane::Sidebar
-    }
 }
 
 /// Single-line, "select all on open" numeric input used by the "Add New
@@ -99,6 +94,7 @@ pub struct HeaderView {
     pub edit_size: usize,
     pub edit_name: String,
     pub section_size_dialog: SectionSizeDialog,
+    pub dump_dialog: SectionSizeDialog,
     /// Which section "Align Offset to VA" (in the Section Tools tab) targets.
     /// Kept separate from `detail_index` because that resets to 0 whenever
     /// the sidebar tab changes, which would make picking a section on the

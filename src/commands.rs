@@ -15,6 +15,7 @@ use std::io::Result;
 
 pub struct Commands;
 
+pub const DEFAULT_LOG_FILENAME: &str = "dezes_log.txt";
 const MAX_BYTES_PER_LINE_FALLBACK: usize = 64;
 
 #[derive(Subcommand, Debug)]
@@ -101,9 +102,12 @@ pub fn resolve_keywords(app: &App, input: &str) -> String {
         let wlen = word.len();
 
         while i < len {
-            if text.is_char_boundary(i) && i + wlen <= len && text.is_char_boundary(i + wlen) {
-                if text[i..i + wlen].eq_ignore_ascii_case(word) {
-                    let prev_is_alnum = if i > 0 {
+            if text.is_char_boundary(i)
+                && i + wlen <= len
+                && text.is_char_boundary(i + wlen)
+                && text[i..i + wlen].eq_ignore_ascii_case(word)
+            {
+                let prev_is_alnum = if i > 0 {
                         let prev_ch = text[..i].chars().last().unwrap_or('\0');
                         prev_ch.is_alphanumeric() || prev_ch == '_'
                     } else {
@@ -122,7 +126,6 @@ pub fn resolve_keywords(app: &App, input: &str) -> String {
                         continue;
                     }
                 }
-            }
 
             if let Some(ch) = text[i..].chars().next() {
                 out.push(ch);
@@ -243,7 +246,7 @@ fn try_goto(app: &mut App, raw_offset: &str) {
 
     if let Some(val) = parsed_val {
         if offset_direction != OffsetType::Absolute {
-            final_ofs = usize::try_from(val).ok().filter(|n| *n < app.file_info.size);
+            final_ofs = usize::try_from(val).ok().filter(|n| *n < app.file_info.buffer_len());
         } else {
             final_ofs = address_to_offset(app, val);
         }
@@ -255,7 +258,7 @@ fn try_goto(app: &mut App, raw_offset: &str) {
         } else if offset_direction == OffsetType::Backward {
             ofs = app.hex_view.offset.saturating_sub(ofs);
         }
-        if ofs < app.file_info.size {
+        if ofs < app.file_info.buffer_len() {
             app.dialog_renderer = None;
             app.state = UIState::Normal;
             app.goto(ofs);
@@ -306,41 +309,130 @@ fn parse_switch(value: Option<&str>, current: bool) -> std::result::Result<bool,
 }
 
 fn quote_colour_literals(line: &str) -> String {
-    let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len() + 8);
-    let mut i = 0usize;
+    let mut rest = line;
 
-    while i < bytes.len() {
-        if bytes[i] != b'#' {
-            out.push(bytes[i] as char);
-            i += 1;
-            continue;
-        }
+    while let Some(hash_pos) = rest.find('#') {
+        out.push_str(&rest[..hash_pos]);
+        let after_hash = &rest[hash_pos + 1..];
 
-        let digits = bytes[i + 1..]
-            .iter()
+        let digits = after_hash
+            .bytes()
             .take_while(|b| b.is_ascii_hexdigit())
             .count();
-        let ends_word = bytes
-            .get(i + 1 + digits)
-            .is_none_or(|b| b.is_ascii_whitespace());
+
+        let remainder = &after_hash[digits..];
+        let ends_word = remainder.is_empty()
+            || remainder.chars().next().is_some_and(|c| c.is_whitespace());
 
         if (digits == 3 || digits == 6) && ends_word {
             out.push('\'');
             out.push('#');
-            out.push_str(&line[i + 1..i + 1 + digits]);
+            out.push_str(&after_hash[..digits]);
             out.push('\'');
-            i += 1 + digits;
+            rest = remainder;
         } else {
             out.push('#');
-            i += 1;
+            rest = after_hash;
         }
     }
 
+    out.push_str(rest);
     out
 }
 
 pub fn parse_command(app: &mut App, cmdline_raw: &str) {
+    let raw_trimmed = cmdline_raw.trim().trim_start_matches(':').trim();
+    if raw_trimmed == "log" {
+        crate::global::log::open_log_dialog(app);
+        return;
+    }
+    if let Some(rest) = raw_trimmed.strip_prefix("log ").or_else(|| raw_trimmed.strip_prefix("log\t")) {
+        let rest = rest.trim();
+        if rest.eq_ignore_ascii_case("clear") {
+            let had = app.logs.len();
+            app.logs.clear();
+            app.log_scroll_offset = (0, 0);
+            App::log(app, format!("Log cleared ({} line(s) dropped)", had));
+            app.state = UIState::Normal;
+            app.dialog_renderer = None;
+            return;
+        }
+        if let Some(target_filename) = rest.strip_prefix("save ").or_else(|| rest.strip_prefix("save\t")) {
+            let target_filename = target_filename.trim().trim_matches('"').trim_matches('\'');
+            let target_path = std::path::Path::new(target_filename);
+            let resolved_path = if target_path.is_absolute() {
+                target_path.to_path_buf()
+            } else {
+                let current_path = std::path::Path::new(&app.file_info.path);
+                if let Some(parent) = current_path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    parent.join(target_path)
+                } else {
+                    target_path.to_path_buf()
+                }
+            };
+
+            let content = app.logs.join("\n");
+            match std::fs::write(&resolved_path, content) {
+                Ok(_) => {
+                    let msg = crate::i18n::fill(M::DoneSavedLogs.tr(app.config.lang), &[&resolved_path.display().to_string()]);
+                    App::log(app, msg);
+                    app.state = UIState::Normal;
+                    app.dialog_renderer = None;
+                }
+                Err(e) => {
+                    let msg = crate::i18n::fill(M::ErrFailedToSaveLog.tr(app.config.lang), &[&e.to_string()]);
+                    command_error(app, msg);
+                }
+            }
+            return;
+        } else if rest.eq_ignore_ascii_case("save") {
+            let target_path = std::path::Path::new(DEFAULT_LOG_FILENAME);
+            let resolved_path = {
+                let current_path = std::path::Path::new(&app.file_info.path);
+                if let Some(parent) = current_path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    parent.join(target_path)
+                } else {
+                    target_path.to_path_buf()
+                }
+            };
+
+            let content = app.logs.join("\n");
+            match std::fs::write(&resolved_path, content) {
+                Ok(_) => {
+                    let msg = crate::i18n::fill(M::DoneSavedLogs.tr(app.config.lang), &[&resolved_path.display().to_string()]);
+                    App::log(app, msg);
+                    app.state = UIState::Normal;
+                    app.dialog_renderer = None;
+                }
+                Err(e) => {
+                    let msg = crate::i18n::fill(M::ErrFailedToSaveLog.tr(app.config.lang), &[&e.to_string()]);
+                    command_error(app, msg);
+                }
+            }
+            return;
+        }
+
+        // 일반 메시지 기록 (따옴표로 감싸진 경우 따옴표 벗김)
+        let unquoted = if (rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2)
+            || (rest.starts_with('\'') && rest.ends_with('\'') && rest.len() >= 2)
+        {
+            &rest[1..rest.len() - 1]
+        } else {
+            rest
+        };
+
+        let log_entry = format!("[User] {}", unquoted);
+        App::log(app, log_entry);
+        app.state = UIState::Normal;
+        app.dialog_renderer = None;
+        return;
+    }
+
     let cmdline_str = quote_colour_literals(&resolve_keywords(app, cmdline_raw));
     let cmdline = cmdline_str.as_str();
 
@@ -350,7 +442,16 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
         return;
     }
 
-    let args = shell_words::split(cmdline).unwrap_or_default();
+    let args = match shell_words::split(cmdline) {
+        Ok(args) => args,
+        Err(err) => {
+            app.last_error = Dz6Error {
+                message: format!("Invalid command syntax: {}", err),
+            };
+            app.dialog_renderer = Some(command_error_draw);
+            return;
+        }
+    };
     let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
     argv.push("dezes");
 
@@ -370,13 +471,15 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                     } else {
                         match app.load_file(fname_clean, 0, false) {
                             Ok(_) => {
-                                App::log(app, format!("Opened file '{}'", fname_clean));
+                                let msg = crate::i18n::fill(M::DoneOpenedFile.tr(app.config.lang), &[fname_clean]);
+                                App::log(app, msg);
                                 app.state = UIState::Normal;
                                 app.dialog_renderer = None;
                             }
                             Err(e) => {
+                                let err_str = e.to_string();
                                 app.last_error = Dz6Error {
-                                    message: format!("Error opening '{}': {}", fname_clean, e),
+                                    message: crate::i18n::fill(M::ErrOpeningFile.tr(app.config.lang), &[fname_clean, &err_str]),
                                 };
                                 app.dialog_renderer = Some(command_error_draw);
                             }
@@ -505,7 +608,7 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                     if offset.starts_with('+') {
                         ofs = ofs.saturating_add(app.hex_view.offset);
                     }
-                    if ofs < app.file_info.size {
+                    if ofs < app.file_info.buffer_len() {
                         Commands::comment(app, ofs, comment);
                         app.dialog_renderer = None;
                     } else {
@@ -513,7 +616,7 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             message: format!(
                                 "Invalid range: {}; maximum offset for this file is {}",
                                 cmdline,
-                                app.file_info.size.saturating_sub(1)
+                                app.file_info.buffer_len().saturating_sub(1)
                             ),
                         };
                         app.dialog_renderer = Some(command_error_draw);
@@ -708,7 +811,15 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                     }
                     "theme" => {
                         if let Some(val) = value {
-                            if let Some(path) = crate::themes::find_theme_path(&val)
+                            let clean_val = val.trim();
+                            if !crate::themes::theme_exists(clean_val) {
+                                app.last_error = Dz6Error {
+                                    message: format!("Unknown theme '{}'", clean_val),
+                                };
+                                app.dialog_renderer = Some(command_error_draw);
+                                return;
+                            }
+                            if let Some(path) = crate::themes::find_theme_path(clean_val)
                                 && let Ok(data) = std::fs::read_to_string(&path)
                                 && !crate::themes::has_main_keys(&data)
                             {
@@ -718,13 +829,13 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                                     message: if disasm_only {
                                         format!(
                                             "'{}' holds only disassembly colours - use ':set disasmtheme {}'",
-                                            val.trim(),
-                                            val.trim()
+                                            clean_val,
+                                            clean_val
                                         )
                                     } else {
                                         format!(
                                             "'{}' has no theme colours in it (expected keys like main_fg, main_bg)",
-                                            val.trim()
+                                            clean_val
                                         )
                                     },
                                 };
@@ -732,11 +843,11 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                                 return;
                             }
 
-                            app.config.theme = crate::themes::load_theme_or_fallback(&val);
-                            app.config.theme.name = val.trim().to_string();
+                            app.config.theme = crate::themes::load_theme_or_fallback(clean_val);
+                            app.config.theme.name = clean_val.to_string();
                             app.save_initfile();
                             
-                            match crate::disasm::theme::disasm_theme_from_file(&val) {
+                            match crate::disasm::theme::disasm_theme_from_file(clean_val) {
                                 Some(dt) => {
                                     app.config.disasm_theme = dt;
                                     crate::disasm::theme::save_disasm_theme(&app.config.disasm_theme);
@@ -819,6 +930,37 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             }
                         }
                     }
+                    "block" | "block_base" => {
+                        match value.as_deref().map(str::trim) {
+                            Some("10") | Some("dec") => {
+                                app.config.block_base = 10;
+                                App::log(app, "Block length base: 10".to_string());
+                                app.dialog_renderer = None;
+                            }
+                            Some("16") | Some("hex") => {
+                                app.config.block_base = 16;
+                                App::log(app, "Block length base: 16".to_string());
+                                app.dialog_renderer = None;
+                            }
+                            Some(bad) => {
+                                app.last_error = Dz6Error {
+                                    message: format!("Invalid block base '{}' (expected 10 or 16)", bad),
+                                };
+                                app.dialog_renderer = Some(command_error_draw);
+                                return;
+                            }
+                            None => {
+                                app.config.block_base = if app.config.block_base == 10 { 16 } else { 10 };
+                                App::log(app, format!("Block length base: {}", app.config.block_base));
+                                app.dialog_renderer = None;
+                            }
+                        }
+                    }
+                    "noblock" => {
+                        app.config.block_base = 16;
+                        App::log(app, "Block length base: 16".to_string());
+                        app.dialog_renderer = None;
+                    }
 
                     "wrapscan" => {
                         match parse_switch(value.as_deref(), app.config.search_wrap) {
@@ -852,6 +994,22 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         app.config.syntax_highlight = false;
                         app.dialog_renderer = None;
                     }
+                    "backup" | "bak" => {
+                        match parse_switch(value.as_deref(), app.config.backup) {
+                            Ok(on) => {
+                                app.config.backup = on;
+                                app.dialog_renderer = None;
+                            }
+                            Err(bad) => {
+                                command_error(app, switch_error(app, "backup", &bad));
+                                return;
+                            }
+                        }
+                    }
+                    "nobackup" | "nobak" => {
+                        app.config.backup = false;
+                        app.dialog_renderer = None;
+                    }
                     "view" => {
                         use crate::editor::AppView;
                         let target = match value.as_deref().map(str::trim) {
@@ -870,6 +1028,10 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         if let Some(target) = target {
                             if target == AppView::Disasm && !app.is_executable() {
                                 command_error(app, tr(app, M::ErrNoCodeSection));
+                                return;
+                            }
+                            if target == AppView::Header && !app.is_pe() && app.header_view.elf.is_none() && !app.file_info.r#type.starts_with("ELF") {
+                                command_error(app, tr(app, M::ErrNoPEHeader));
                                 return;
                             }
                             if app.editor_view == AppView::Hex || app.editor_view == AppView::Disasm {
@@ -1022,11 +1184,11 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                 app.state = UIState::Normal;
             }
             None => {
-                try_goto(app, &cmdline);
+                try_goto(app, cmdline);
             }
         },
         Err(_) => {
-            try_goto(app, &cmdline);
+            try_goto(app, cmdline);
         }
     }
 }
@@ -1076,7 +1238,11 @@ pub fn command_draw(app: &mut App, frame: &mut Frame) {
 
     frame.render_widget(Clear, app.command_area);
     frame.render_widget(para, app.command_area);
-    frame.set_cursor_position((app.command_area.x + 1 + cur as u16, app.command_area.y));
+    let visual_cur: usize = chars[..cur]
+        .iter()
+        .map(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0))
+        .sum();
+    frame.set_cursor_position((app.command_area.x + 1 + visual_cur as u16, app.command_area.y));
 }
 
 pub fn command_events(app: &mut App, event: &Event) -> Result<bool> {
@@ -1220,29 +1386,29 @@ pub fn command_events(app: &mut App, event: &Event) -> Result<bool> {
                 }
             }
             KeyCode::Char('v') | KeyCode::Char('V') if has_ctrl => {
-                if let Ok(clipboard) = &mut app.clipboard {
-                    if let Ok(text) = clipboard.get_text() {
-                        let text_clean = text.trim();
-                        if let Some((s, e)) = get_selection(app, cur, len) {
-                            chars.drain(s..e);
-                            let paste_chars: Vec<char> = text_clean.chars().collect();
-                            for (idx, ch) in paste_chars.into_iter().enumerate() {
-                                chars.insert(s + idx, ch);
-                            }
-                            let new_val: String = chars.into_iter().collect();
-                            app.command_input.input = tui_input::Input::new(new_val);
-                            app.command_input.cursor_pos = s + text_clean.chars().count();
-                        } else {
-                            let paste_chars: Vec<char> = text_clean.chars().collect();
-                            for (idx, ch) in paste_chars.into_iter().enumerate() {
-                                chars.insert(cur + idx, ch);
-                            }
-                            let new_val: String = chars.into_iter().collect();
-                            app.command_input.input = tui_input::Input::new(new_val);
-                            app.command_input.cursor_pos = cur + text_clean.chars().count();
+                if let Ok(clipboard) = &mut app.clipboard
+                    && let Ok(text) = clipboard.get_text()
+                {
+                    let text_clean = text.trim();
+                    if let Some((s, e)) = get_selection(app, cur, len) {
+                        chars.drain(s..e);
+                        let paste_chars: Vec<char> = text_clean.chars().collect();
+                        for (idx, ch) in paste_chars.into_iter().enumerate() {
+                            chars.insert(s + idx, ch);
                         }
-                        app.command_input.selection_anchor = None;
+                        let new_val: String = chars.into_iter().collect();
+                        app.command_input.input = tui_input::Input::new(new_val);
+                        app.command_input.cursor_pos = s + text_clean.chars().count();
+                    } else {
+                        let paste_chars: Vec<char> = text_clean.chars().collect();
+                        for (idx, ch) in paste_chars.into_iter().enumerate() {
+                            chars.insert(cur + idx, ch);
+                        }
+                        let new_val: String = chars.into_iter().collect();
+                        app.command_input.input = tui_input::Input::new(new_val);
+                        app.command_input.cursor_pos = cur + text_clean.chars().count();
                     }
+                    app.command_input.selection_anchor = None;
                 }
             }
             KeyCode::Char('\u{7f}') | KeyCode::Char('\u{8}') => {
@@ -1762,6 +1928,9 @@ mod set_command_tests {
         assert_eq!(app.config.lang, Lang::Zh);
         assert_eq!(M::Help.tr(app.config.lang), "帮助");
 
+        run(&mut app, "set lang cn");
+        assert_eq!(app.config.lang, Lang::Zh);
+
         run(&mut app, "set lang en");
         assert_eq!(app.config.lang, Lang::En);
 
@@ -1882,4 +2051,37 @@ mod option_name_tests {
             );
         }
     }
+
+    #[test]
+    fn test_set_block_command() {
+        let mut app = crate::app::App::new();
+        assert_eq!(app.config.block_base, 16);
+
+        crate::commands::parse_command(&mut app, "set block 10");
+        assert_eq!(app.config.block_base, 10);
+
+        crate::commands::parse_command(&mut app, "set block 16");
+        assert_eq!(app.config.block_base, 16);
+
+        crate::commands::parse_command(&mut app, "set block dec");
+        assert_eq!(app.config.block_base, 10);
+
+        crate::commands::parse_command(&mut app, "set block hex");
+        assert_eq!(app.config.block_base, 16);
+
+        crate::commands::parse_command(&mut app, "set block");
+        assert_eq!(app.config.block_base, 10);
+
+        crate::commands::parse_command(&mut app, "set noblock");
+        assert_eq!(app.config.block_base, 16);
+    }
+
+    #[test]
+    fn test_quote_colour_literals_preserves_utf8() {
+        assert_eq!(super::quote_colour_literals(":cmt 안녕하세요"), ":cmt 안녕하세요");
+        assert_eq!(super::quote_colour_literals("set theme #fff #123456"), "set theme '#fff' '#123456'");
+        assert_eq!(super::quote_colour_literals(":cmt 한글 #123456 테스트"), ":cmt 한글 '#123456' 테스트");
+        assert_eq!(super::quote_colour_literals(":cmt #태그"), ":cmt #태그");
+    }
 }
+

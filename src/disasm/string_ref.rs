@@ -29,109 +29,80 @@ pub fn try_read_string_at_offset(buffer: &[u8], offset: usize) -> Option<(String
     }
 
     let bytes = &buffer[offset..(offset + 256).min(buffer.len())];
-    if bytes.is_empty() {
+    if bytes.is_empty() || bytes[0] == 0 {
         return None;
     }
 
-    // 1. Try ASCII
-    let mut str_bytes = Vec::new();
+    // Fast-scan candidate non-zero printable / DBCS byte run directly on slice without allocating
+    let mut text_len = 0usize;
+    let mut is_pure_ascii = true;
     for &b in bytes {
         if b == 0 {
             break;
         }
         if b.is_ascii_graphic() || b == b' ' || b == b'\t' {
-            str_bytes.push(b);
+            text_len += 1;
+        } else if b >= 0x80 {
+            text_len += 1;
+            is_pure_ascii = false;
         } else {
             break;
         }
     }
 
-    if str_bytes.len() >= 3 {
-        if let Ok(s) = std::str::from_utf8(&str_bytes) {
-            let s_trimmed = s.trim();
-            if s_trimmed.len() >= 3 {
-                return Some((format!("\"{}\"", s_trimmed), "ASCII"));
-            }
+    let text_slice = &bytes[..text_len];
+
+    // 1. Try ASCII
+    if is_pure_ascii && text_slice.len() >= 3
+        && let Ok(s) = std::str::from_utf8(text_slice)
+    {
+        let s_trimmed = s.trim();
+        if s_trimmed.len() >= 3 {
+            return Some((format!("\"{}\"", s_trimmed), "ASCII"));
         }
     }
 
     // 2. Try UTF-8
-    let mut utf8_bytes = Vec::new();
-    for &b in bytes {
-        if b == 0 {
-            break;
-        }
-        if b.is_ascii_graphic() || b == b' ' || b == b'\t' || b >= 0x80 {
-            utf8_bytes.push(b);
-        } else {
-            break;
-        }
-    }
-
-    if utf8_bytes.len() >= 4 {
+    if text_slice.len() >= 4 {
         let mut valid_len = 0;
-        for i in 1..=utf8_bytes.len() {
-            if let Ok(s) = std::str::from_utf8(&utf8_bytes[..i]) {
-                if let Some(c) = s.chars().last() {
-                    if !c.is_control() && c != '\u{FFFD}' {
-                        valid_len = i;
-                    } else {
-                        break;
-                    }
+        for i in 1..=text_slice.len() {
+            if let Ok(s) = std::str::from_utf8(&text_slice[..i])
+                && let Some(c) = s.chars().last()
+            {
+                if !c.is_control() && c != '\u{FFFD}' {
+                    valid_len = i;
+                } else {
+                    break;
                 }
             }
         }
-        if valid_len >= 4 {
-            if let Ok(s) = std::str::from_utf8(&utf8_bytes[..valid_len]) {
-                let s_trimmed = s.trim();
-                if s_trimmed.chars().count() >= 2 && s_trimmed.chars().any(|c| c as u32 > 0x7F) {
-                    return Some((format!("\"{}\"", s_trimmed), "UTF-8"));
-                }
+        if valid_len >= 4
+            && let Ok(s) = std::str::from_utf8(&text_slice[..valid_len])
+        {
+            let s_trimmed = s.trim();
+            if s_trimmed.chars().count() >= 2 && s_trimmed.chars().any(|c| c as u32 > 0x7F) {
+                return Some((format!("\"{}\"", s_trimmed), "UTF-8"));
             }
         }
     }
 
-    // 2. Try Korean CP949 (EUC-KR)
-    let mut cp949_bytes = Vec::new();
-    for &b in bytes {
-        if b == 0 {
-            break;
-        }
-        if b.is_ascii_graphic() || b == b' ' || b == b'\t' || b >= 0x80 {
-            cp949_bytes.push(b);
-        } else {
-            break;
-        }
-    }
-
-    if cp949_bytes.len() >= 4 {
-        let (cow, has_eval) = encoding_rs::EUC_KR.decode_without_bom_handling(&cp949_bytes);
+    // 3. Try Korean CP949 (EUC-KR)
+    if text_slice.len() >= 4 {
+        let (cow, has_eval) = encoding_rs::EUC_KR.decode_without_bom_handling(text_slice);
         if !has_eval {
             let s = cow.trim();
-            if s.chars().count() >= 2 && s.chars().any(|c| c >= '\u{AC00}' && c <= '\u{D7A3}') {
+            if s.chars().count() >= 2 && s.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)) {
                 return Some((format!("\"{}\"", s), "CP949"));
             }
         }
     }
 
-    // 3. Try Chinese CP936 (GBK)
-    let mut gbk_bytes = Vec::new();
-    for &b in bytes {
-        if b == 0 {
-            break;
-        }
-        if b.is_ascii_graphic() || b == b' ' || b == b'\t' || b >= 0x80 {
-            gbk_bytes.push(b);
-        } else {
-            break;
-        }
-    }
-
-    if gbk_bytes.len() >= 4 {
-        let (cow, has_eval) = encoding_rs::GBK.decode_without_bom_handling(&gbk_bytes);
+    // 4. Try Chinese CP936 (GBK)
+    if text_slice.len() >= 4 {
+        let (cow, has_eval) = encoding_rs::GBK.decode_without_bom_handling(text_slice);
         if !has_eval {
             let s = cow.trim();
-            if s.chars().count() >= 2 && s.chars().any(|c| c >= '\u{4E00}' && c <= '\u{9FFF}') {
+            if s.chars().count() >= 2 && s.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)) {
                 return Some((format!("\"{}\"", s), "CP936"));
             }
         }
@@ -146,7 +117,22 @@ pub fn try_read_string_at_offset(buffer: &[u8], offset: usize) -> Option<(String
                 break;
             }
             if let Some(ch) = char::from_u32(val as u32) {
-                if (ch.is_ascii_graphic() || ch == ' ' || ch == '\t' || (ch >= '\u{AC00}' && ch <= '\u{D7A3}') || (ch >= '\u{4E00}' && ch <= '\u{9FFF}')) && !ch.is_control() {
+                if !ch.is_control()
+                    && (ch.is_ascii_graphic()
+                        || ch == ' '
+                        || ch == '\t'
+                        || ('\u{00A0}'..='\u{024F}').contains(&ch)
+                        || ('\u{0370}'..='\u{04FF}').contains(&ch)
+                        || ('\u{2000}'..='\u{20BF}').contains(&ch)
+                        || ('\u{3000}'..='\u{303F}').contains(&ch)
+                        || ('\u{3040}'..='\u{30FF}').contains(&ch)
+                        || ('\u{4E00}'..='\u{9FFF}').contains(&ch)
+                        || ('\u{3400}'..='\u{4DBF}').contains(&ch)
+                        || ('\u{AC00}'..='\u{D7A3}').contains(&ch)
+                        || ('\u{1100}'..='\u{11FF}').contains(&ch)
+                        || ('\u{3130}'..='\u{318F}').contains(&ch)
+                        || ('\u{FF01}'..='\u{FF60}').contains(&ch))
+                {
                     u16_chars.push(ch);
                 } else {
                     break;
@@ -156,10 +142,13 @@ pub fn try_read_string_at_offset(buffer: &[u8], offset: usize) -> Option<(String
             }
         }
 
-        if u16_chars.len() >= 3 {
+        let has_cjk = u16_chars.iter().any(|&c| c as u32 > 0x7F);
+        let min_len = if has_cjk { 2 } else { 3 };
+
+        if u16_chars.len() >= min_len {
             let s: String = u16_chars.into_iter().collect();
             let s_trimmed = s.trim();
-            if s_trimmed.len() >= 3 {
+            if s_trimmed.chars().count() >= min_len {
                 return Some((format!("L\"{}\"", s_trimmed), "UTF-16LE"));
             }
         }
@@ -224,17 +213,37 @@ fn scan_string_references_in(app: &App, buffer: &[u8]) -> Vec<StringRefItem> {
             let mnem = instr.mnemonic();
 
             if bitness == 64 {
-                // In 64-bit, x64dbg strictly tracks RIP-relative LEA instructions: `lea reg, [rip + disp]`
-                if mnem != Mnemonic::Lea || !instr.is_ip_rel_memory_operand() {
-                    current_offset += len;
-                    if current_offset >= sec_end {
-                        break;
+                if instr.is_ip_rel_memory_operand() {
+                    let mem_addr = instr.ip_rel_memory_address();
+                    if mem_addr >= 0x1000 {
+                        target_va = Some(mem_addr);
                     }
-                    continue;
-                }
-                let mem_addr = instr.ip_rel_memory_address();
-                if mem_addr >= 0x1000 {
-                    target_va = Some(mem_addr);
+                } else {
+                    for op in 0..instr.op_count() {
+                        match instr.op_kind(op) {
+                            OpKind::Immediate64
+                            | OpKind::Immediate32
+                            | OpKind::Immediate32to64 => {
+                                let imm = instr.immediate(op);
+                                let rebased = app.rebase_va(imm);
+                                if rebased >= 0x1000 {
+                                    target_va = Some(rebased);
+                                    break;
+                                }
+                            }
+                            OpKind::Memory => {
+                                let disp = instr.memory_displacement64();
+                                if disp != 0 {
+                                    let rebased = app.rebase_va(disp);
+                                    if rebased >= 0x1000 {
+                                        target_va = Some(rebased);
+                                        break;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             } else {
                 // In 32-bit, allow PUSH, MOV, LEA
@@ -259,16 +268,20 @@ fn scan_string_references_in(app: &App, buffer: &[u8]) -> Vec<StringRefItem> {
                             | OpKind::Immediate64
                             | OpKind::Immediate32to64 => {
                                 let imm = instr.immediate(op);
-                                if imm >= 0x1000 {
-                                    target_va = Some(imm);
+                                let rebased = app.rebase_va(imm);
+                                if rebased >= 0x1000 {
+                                    target_va = Some(rebased);
                                     break;
                                 }
                             }
                             OpKind::Memory => {
                                 let disp = instr.memory_displacement64();
-                                if disp >= 0x1000 {
-                                    target_va = Some(disp);
-                                    break;
+                                if disp != 0 {
+                                    let rebased = app.rebase_va(disp);
+                                    if rebased >= 0x1000 {
+                                        target_va = Some(rebased);
+                                        break;
+                                    }
                                 }
                             }
                             _ => {}
@@ -277,35 +290,37 @@ fn scan_string_references_in(app: &App, buffer: &[u8]) -> Vec<StringRefItem> {
                 }
             }
 
-            if let Some(t_va) = target_va {
-                if let Some(str_offset) = app.va_to_offset(t_va) {
-                    if str_offset < filesize {
-                        if let Some((str_val, enc_kind)) = try_read_string_at_offset(buffer, str_offset) {
-                            raw_text.clear();
-                            formatter.format(&instr, &mut raw_text);
-                            let clean_instr = raw_text.replace(" short ", " ");
+            if let Some(t_va) = target_va
+                && let Some(str_offset) = app.va_to_offset(t_va)
+                && str_offset < filesize
+                && let Some((str_val, enc_kind)) = try_read_string_at_offset(buffer, str_offset)
+            {
+                raw_text.clear();
+                formatter.format(&instr, &mut raw_text);
+                let clean_instr = crate::disasm::draw::clean_instruction_text(app, &instr, &raw_text);
 
-                            let va_str_64 = format!("{:016X}", va);
-                            let va_str_32 = format!("{:08X}", va);
-                            let full_text_str = format!("{} {}", enc_kind, str_val);
+                let va_str_64 = if va >= 0x1_0000_0000 {
+                    format!("{:X}", va)
+                } else {
+                    format!("{:08X}", va)
+                };
+                let va_str_32 = format!("{:08X}", va);
+                let full_text_str = format!("{} {}", enc_kind, str_val);
 
-                            items.push(StringRefItem {
-                                offset: current_offset,
-                                va,
-                                string_offset: str_offset,
-                                string_va: t_va,
-                                va_str_64,
-                                va_str_32,
-                                instr_text: clean_instr,
-                                string_text: str_val,
-                                encoding_kind: enc_kind,
-                                full_text_str,
-                            });
-                            if items.len() >= MAX_STRING_REF_ITEMS {
-                                return items;
-                            }
-                        }
-                    }
+                items.push(StringRefItem {
+                    offset: current_offset,
+                    va,
+                    string_offset: str_offset,
+                    string_va: t_va,
+                    va_str_64,
+                    va_str_32,
+                    instr_text: clean_instr,
+                    string_text: str_val,
+                    encoding_kind: enc_kind,
+                    full_text_str,
+                });
+                if items.len() >= MAX_STRING_REF_ITEMS {
+                    return items;
                 }
             }
 
@@ -382,5 +397,33 @@ mod string_location_tests {
         }
 
         assert!(checked > 0);
+    }
+
+    #[test]
+    fn utf16_cjk_chinese_string_is_decoded_properly() {
+        // "分辨率 " in UTF-16LE: 06 52 A8 8F 87 73 20 00 00 00
+        let bytes = vec![0x06, 0x52, 0xA8, 0x8F, 0x87, 0x73, 0x20, 0x00, 0x00, 0x00];
+        let read = try_read_string_at_offset(&bytes, 0);
+        assert!(read.is_some());
+        let (s, enc) = read.unwrap();
+        assert_eq!(enc, "UTF-16LE");
+        assert_eq!(s, "L\"分辨率\"");
+    }
+
+    #[test]
+    fn inspect_string_references_finds_all_references() {
+        let path = "C:\\Users\\Administrator\\Desktop\\pecmd\\dumped_SCY.exe";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut app = crate::app::App::new();
+        app.config.database = false;
+        if app.load_file(path, 0, false).is_err() {
+            return;
+        }
+        let items = scan_string_references(&app);
+        assert!(items.len() > 1000, "Expected thousands of string references, got {}", items.len());
+        let found = items.iter().any(|it| it.string_offset == 0x1206A8 && it.string_text.contains("分辨率"));
+        assert!(found, "Expected to find reference to string at 0x1206A8");
     }
 }

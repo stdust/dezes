@@ -1,6 +1,6 @@
 [package]
 name = "dezes"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 description = "Fast terminal hex editor and x86 disassembler"
 license = "GPL-3.0-or-later"

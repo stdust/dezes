@@ -37,7 +37,10 @@ fn perform_undo(app: &mut App, offset: usize) {
             crate::beep!();
         }
     } else if let Some(ofs) = app.hex_view.changed_history.pop() {
-        let _ = app.hex_view.changed_bytes.remove(&ofs);
+        if let Some(val) = app.hex_view.changed_bytes.remove(&ofs) {
+            app.hex_view.redo_history.push((ofs, val));
+            app.view_generation = app.view_generation.wrapping_add(1);
+        }
 
         crate::app::App::log(app, format!("Undid change at offset 0x{:X}", ofs));
     } else {
@@ -48,7 +51,7 @@ fn perform_undo(app: &mut App, offset: usize) {
 /// Re-applies the most recently undone edit (Ctrl+Y).
 fn perform_redo(app: &mut App) {
     if let Some((ofs, val)) = app.hex_view.redo_history.pop() {
-        crate::hex::edit::record_edit(app, ofs, val);
+        crate::hex::edit::record_edit_redo(app, ofs, val);
         crate::app::App::log(app, format!("Redid change at offset 0x{:X}", ofs));
     } else {
         crate::beep!();
@@ -74,16 +77,9 @@ fn revert_byte_at_cursor(app: &mut App) {
 }
 
 /// Length in bytes of the instruction starting at `offset`, or `None` if
-/// nothing decodes there.
-fn instr_len_at(app: &mut App, offset: usize, bitness: u32, filesize: usize) -> Option<usize> {
-    let ip = app.get_va(offset);
-    let buffer = app.file_info.get_buffer_ref();
-    let end = offset.saturating_add(MAX_INSTR_BYTES).min(filesize).min(buffer.len());
-    if offset >= end {
-        return None;
-    }
-    let decoder = Decoder::with_ip(bitness, &buffer[offset..end], ip, DecoderOptions::NONE);
-    decoder.into_iter().next().map(|i| i.len())
+/// nothing decodes there. Uses navigation's instruction_len to respect pending edits.
+fn instr_len_at(app: &mut App, offset: usize, _bitness: u32, _filesize: usize) -> Option<usize> {
+    crate::disasm::nav::instruction_len(app, offset)
 }
 
 /// Overwrites the instruction under the cursor with 0x90 (NOP) bytes, exactly
@@ -91,6 +87,7 @@ fn instr_len_at(app: &mut App, offset: usize, bitness: u32, filesize: usize) -> 
 /// here). Uses the decoded length rather than a selection, so a 5-byte call
 /// becomes exactly five NOPs with no leftover operand bytes to desynchronize
 /// the following instructions.
+#[allow(dead_code)]
 fn nop_current_instruction(app: &mut App, offset: usize, bitness: u32, filesize: usize) {
     if app.file_info.is_read_only {
         app.read_only_error(crate::i18n::M::RoNopOut);
@@ -153,20 +150,19 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     if is_shift {
         match key.code {
             KeyCode::Down | KeyCode::Up | KeyCode::PageDown | KeyCode::PageUp | KeyCode::Home | KeyCode::End => {
-                if app.disasm_selection_anchor.is_none() {
-                    app.disasm_selection_anchor = Some(offset);
-                }
+                app.disasm_selection_anchor.get_or_insert(offset);
             }
             _ => {}
         }
     }
 
-    // Ctrl+C: Copy selected disasm lines, or the current line, to the clipboard.
-    // Was a bare 'y' (vi yank), which also meant Ctrl+Y (Redo) had to be excluded
-    // here by hand.
-    if (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C'))
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-    {
+    // Copy (y / Ctrl+C): Copy selected disasm lines, or the current line, to the clipboard.
+    let is_copy = ((key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C'))
+        && key.modifiers.contains(KeyModifiers::CONTROL))
+        || ((key.code == KeyCode::Char('y') || key.code == KeyCode::Char('Y'))
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT));
+    if is_copy {
         let (start_ofs, end_ofs) = if let Some(anchor) = app.disasm_selection_anchor {
             (anchor.min(offset), anchor.max(offset))
         } else {
@@ -207,10 +203,7 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 let _ = write!(hex_str, "{:02X}", b);
             }
 
-            let clean_instr = line_text.replace(" short ", " ").replace("(bad)", "???").replace("bad", "???");
-            // Same import substitution the view does, so a copied listing reads
-            // like the screen rather than showing bare slot addresses.
-            let clean_instr = crate::disasm::draw::apply_import_symbol(app, &instr, &clean_instr);
+            let clean_instr = crate::disasm::draw::clean_instruction_text(app, &instr, &line_text);
 
             // Same comment the view shows, so a copied listing carries the
             // resolved import names, user comments and string references. It used
@@ -314,16 +307,22 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                             match instr.op_kind(op) {
                                 iced_x86::OpKind::Memory => {
                                     let disp = instr.memory_displacement64();
-                                    if disp != 0 && app.va_to_offset(disp).is_some() {
-                                        return Some(disp);
+                                    if disp != 0 {
+                                        let target = app.rebase_va(disp);
+                                        if app.va_to_offset(target).is_some() {
+                                            return Some(target);
+                                        }
                                     }
                                 }
                                 iced_x86::OpKind::Immediate64
                                 | iced_x86::OpKind::Immediate32
                                 | iced_x86::OpKind::Immediate32to64 => {
                                     let imm = instr.immediate(op);
-                                    if imm != 0 && app.va_to_offset(imm).is_some() {
-                                        return Some(imm);
+                                    if imm != 0 {
+                                        let target = app.rebase_va(imm);
+                                        if app.va_to_offset(target).is_some() {
+                                            return Some(target);
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -332,10 +331,11 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                         None
                     });
 
-                    if let Some(t_va) = target_va {
-                        if let Some(target_offset) = app.va_to_offset(t_va) {
-                            if target_offset < filesize {
-                                if is_ctrl {
+                    if let Some(t_va) = target_va
+                        && let Some(target_offset) = app.va_to_offset(t_va)
+                        && target_offset < filesize
+                    {
+                        if is_ctrl {
                                     if app.hex_view.jump_history_back.last() != Some(&(offset, crate::editor::AppView::Disasm)) {
                                         app.hex_view.jump_history_back.push((offset, crate::editor::AppView::Disasm));
                                         if app.hex_view.jump_history_back.len() > 100 {
@@ -358,8 +358,6 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                                 }
                                 return Ok(false);
                             }
-                        }
-                    }
                     break;
                 }
                 current_ofs += len;
@@ -405,9 +403,69 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         KeyCode::F(3) if key.modifiers.contains(KeyModifiers::ALT) => {
             revert_byte_at_cursor(app);
         }
-        // NOP out the instruction under the cursor (Delete)
-        KeyCode::Delete => {
-            nop_current_instruction(app, offset, bitness, filesize);
+        // Fill selected block or current instruction with NOP (Delete) / 0x00 (Insert).
+        // With a Shift-selection active, the whole range is filled;
+        // without one, Delete NOPs the current instruction, Insert zeroes it.
+        KeyCode::Delete | KeyCode::Insert => {
+            if app.file_info.is_read_only {
+                let what = if key.code == KeyCode::Delete {
+                    crate::i18n::M::RoFillNop
+                } else {
+                    crate::i18n::M::RoFillZero
+                };
+                app.read_only_error(what);
+                return Ok(false);
+            }
+            let value: u8 = if key.code == KeyCode::Delete { 0x90 } else { 0x00 };
+            if let Some(anchor) = app.disasm_selection_anchor {
+                let start = anchor.min(offset);
+                let end = anchor.max(offset);
+                // Walk instruction boundaries from start to find end range
+                let fill_end = {
+                    let slice_end = (end + MAX_INSTR_BYTES).min(filesize);
+                    let buffer = app.file_info.get_buffer_ref();
+                    let code_bytes = &buffer[end..slice_end];
+                    let ip = app.get_va(end);
+                    let mut decoder = Decoder::with_ip(bitness, code_bytes, ip, DecoderOptions::NONE);
+                    if let Some(instr) = decoder.iter().next() {
+                        if !instr.is_invalid() {
+                            end + instr.len()
+                        } else {
+                            end + 1
+                        }
+                    } else {
+                        end + 1
+                    }
+                }.min(filesize);
+                let count = fill_end - start;
+                for ofs in start..fill_end {
+                    crate::hex::edit::record_edit(app, ofs, value);
+                }
+                app.disasm_selection_anchor = None;
+                crate::app::App::log(
+                    app,
+                    format!(
+                        "Filled {} byte(s) at 0x{:X}..0x{:X} with 0x{:02X}",
+                        count, start, fill_end, value
+                    ),
+                );
+            } else {
+                // No selection: fill current instruction
+                let Some(len) = instr_len_at(app, offset, bitness, filesize) else {
+                    crate::beep!();
+                    return Ok(false);
+                };
+                for i in 0..len {
+                    let ofs = offset + i;
+                    if ofs >= filesize { break; }
+                    crate::hex::edit::record_edit(app, ofs, value);
+                }
+                let label = if value == 0x90 { "NOP" } else { "0x00" };
+                crate::app::App::log(
+                    app,
+                    format!("Filled instruction at 0x{:X} with {} {} byte(s)", offset, len, label),
+                );
+            }
         }
         // strings list (F6), same as in Hex view. Alt+F6 sets the image base.
         KeyCode::F(6) if !key.modifiers.contains(KeyModifiers::ALT) => {
@@ -646,6 +704,40 @@ mod disasm_key_tests {
         // lookup in place; the clipboard itself is environment-dependent.
     }
 
+    #[test]
+    fn test_copy_trims_leading_zeros_and_matches_screen() {
+        let app = App::new();
+        let code_bytes = &[
+            0xE8, 0x2F, 0x0B, 0x00, 0x00, // call 0x14005F5D0
+            0x48, 0x83, 0xC4, 0x28,       // add rsp, 0x28
+            0xE9, 0x7A, 0xFE, 0xFF, 0xFF, // jmp 0x14005E924
+        ];
+        let ip = 0x14005EA9Cu64;
+        let decoder = iced_x86::Decoder::with_ip(64, code_bytes, ip, iced_x86::DecoderOptions::NONE);
+        let mut formatter = iced_x86::IntelFormatter::new();
+        formatter.options_mut().set_first_operand_char_index(0);
+        formatter.options_mut().set_hex_prefix("0x");
+        formatter.options_mut().set_hex_suffix("");
+        formatter.options_mut().set_leading_zeroes(false);
+
+        let mut rendered = Vec::new();
+        for instr in decoder {
+            let mut raw = String::new();
+            formatter.format(&instr, &mut raw);
+            let clean = crate::disasm::draw::clean_instruction_text(&app, &instr, &raw);
+            rendered.push(clean);
+        }
+
+        assert_eq!(
+            rendered,
+            vec![
+                "call 0x14005F5D0".to_string(),
+                "add rsp, 0x28".to_string(),
+                "jmp 0x14005E924".to_string(),
+            ]
+        );
+    }
+
     /// Follow works from any row, not just the ones near the top of the page.
     #[test]
     fn follow_works_far_from_page_start() {
@@ -677,6 +769,29 @@ mod disasm_key_tests {
             "the jmp at 0x800 targets 0x812 (0x802 + 0x10) and Follow must go there"
         );
     }
+
+    #[test]
+    fn disasm_selection_delete_and_insert() {
+        let mut app = app_with_code();
+        app.file_info.is_read_only = false;
+        app.hex_view.offset = 2;
+        app.disasm_selection_anchor = Some(0);
+
+        // Delete should NOP from 0 to end of instr at offset 2 (which is 0x50 -> 1 byte, so range 0..3)
+        press(&mut app, KeyCode::Delete);
+        assert_eq!(app.hex_view.changed_bytes.get(&0), Some(&0x90));
+        assert_eq!(app.hex_view.changed_bytes.get(&1), Some(&0x90));
+        assert_eq!(app.hex_view.changed_bytes.get(&2), Some(&0x90));
+        assert!(app.disasm_selection_anchor.is_none());
+
+        // Insert should zero selection
+        app.hex_view.offset = 3;
+        app.disasm_selection_anchor = Some(3); // single instr (mov eax, imm32: 5 bytes -> 3..8)
+        press(&mut app, KeyCode::Insert);
+        for i in 3..8 {
+            assert_eq!(app.hex_view.changed_bytes.get(&i), Some(&0x00));
+        }
+    }
 }
 
 pub fn open_assemble_dialog(app: &mut App) {
@@ -701,16 +816,12 @@ pub fn open_assemble_dialog(app: &mut App) {
     formatter.options_mut().set_leading_zeroes(false);
 
     let mut initial_text = String::new();
-    for instr in decoder {
+    let clean_initial = if let Some(instr) = decoder.into_iter().next() {
         formatter.format(&instr, &mut initial_text);
-        break;
-    }
-
-    let clean_initial = initial_text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace(" short ", " ");
+        crate::disasm::draw::clean_instruction_text(app, &instr, &initial_text)
+    } else {
+        String::new()
+    };
     app.state = crate::editor::UIState::DialogAssemble;
     app.assemble_input = tui_input::Input::new(clean_initial);
     app.assemble_selection_all = true;

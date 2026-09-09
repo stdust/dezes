@@ -63,8 +63,20 @@ pub fn displayed_byte(app: &App, offset: usize) -> u8 {
 /// some pushed it once for the whole field, so Ctrl+Z either needed several
 /// presses for one edit or left most of a header field staged.
 pub fn record_edit(app: &mut App, offset: usize, new: u8) {
-    if offset >= app.file_info.size {
+    record_edit_internal(app, offset, new, true);
+}
+
+pub fn record_edit_redo(app: &mut App, offset: usize, new: u8) {
+    record_edit_internal(app, offset, new, false);
+}
+
+fn record_edit_internal(app: &mut App, offset: usize, new: u8, clear_redo: bool) {
+    if offset >= app.file_info.buffer_len() {
         return;
+    }
+
+    if clear_redo {
+        app.hex_view.redo_history.clear();
     }
 
     // One `changed_history` entry per offset, recorded when the byte is first
@@ -75,6 +87,7 @@ pub fn record_edit(app: &mut App, offset: usize, new: u8) {
     app.hex_view
         .changed_bytes
         .insert(offset, new);
+    app.view_generation = app.view_generation.wrapping_add(1);
 }
 /// Applies one typed hex digit to the byte under the cursor.
 ///
@@ -110,7 +123,7 @@ fn type_hex_nibble(app: &mut App, digit: char) {
 
     if completing {
         app.hex_view.nibble_pending = None;
-        app.goto(offset + 1);
+        app.goto(offset.saturating_add(1));
     } else {
         app.hex_view.nibble_pending = Some(offset);
     }
@@ -120,7 +133,7 @@ pub fn fill_with(app: &mut App, with: u8, advance: bool) {
     let offset = app.hex_view.offset;
     record_edit(app, offset, with);
     if advance {
-        app.goto(app.hex_view.offset + 1);
+        app.goto(app.hex_view.offset.saturating_add(1));
     }
 }
 
@@ -269,7 +282,7 @@ pub fn edit_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                     let encoded_bytes = crate::util::encode_char(c, app.text_view.table);
                     let mut ofs = app.hex_view.offset;
                     for &b in encoded_bytes.iter() {
-                        if ofs < app.file_info.size {
+                        if ofs < app.file_info.buffer_len() {
                             record_edit(app, ofs, b);
                             ofs += 1;
                         } else {
@@ -283,7 +296,7 @@ pub fn edit_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                     let encoded_bytes = crate::util::encode_char(c, enc2);
                     let mut ofs = app.hex_view.offset;
                     for &b in encoded_bytes.iter() {
-                        if ofs < app.file_info.size {
+                        if ofs < app.file_info.buffer_len() {
                             record_edit(app, ofs, b);
                             ofs += 1;
                         } else {

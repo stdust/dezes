@@ -128,7 +128,7 @@ pub fn find_xrefs(app: &App, target_va: u64) -> Vec<XrefItem> {
                     match instr.op_kind(op) {
                         OpKind::Memory => {
                             let disp = instr.memory_displacement64();
-                            if disp == target_va {
+                            if disp != 0 && app.rebase_va(disp) == target_va {
                                 is_match = true;
                                 ref_type = XrefType::Data;
                                 break;
@@ -138,7 +138,7 @@ pub fn find_xrefs(app: &App, target_va: u64) -> Vec<XrefItem> {
                         | OpKind::Immediate32
                         | OpKind::Immediate32to64 => {
                             let imm = instr.immediate(op);
-                            if imm == target_va {
+                            if imm != 0 && app.rebase_va(imm) == target_va {
                                 is_match = true;
                                 ref_type = XrefType::Data;
                                 break;
@@ -153,7 +153,7 @@ pub fn find_xrefs(app: &App, target_va: u64) -> Vec<XrefItem> {
         if is_match {
             raw_text.clear();
             formatter.format(&instr, &mut raw_text);
-            let clean_text = raw_text.replace(" short ", " ");
+            let clean_text = crate::disasm::draw::clean_instruction_text(app, &instr, &raw_text);
             items.push(XrefItem {
                 offset: current_offset,
                 va,
@@ -230,20 +230,47 @@ fn find_dword(haystack: &[u8], value: u32) -> Vec<usize> {
 fn find_data_references(app: &App, target_va: u64, buffer: &[u8], items: &mut Vec<XrefItem>) {
     let image_base = app.get_image_base();
     let target_rva = target_va.checked_sub(image_base).and_then(|r| u32::try_from(r).ok());
+    let is_64 = app.is_64();
 
-    for section in crate::disasm::sections::data_sections(app, buffer.len()) {
+    let mut seen: std::collections::HashSet<usize> = items.iter().map(|i| i.offset).collect();
+
+    for section in crate::disasm::sections::xref_sections(app, buffer.len()) {
         let bytes = &buffer[section.start..section.end];
 
-        for at in find_qword(bytes, target_va) {
-            let offset = section.start + at;
-            items.push(XrefItem {
-                offset,
-                va: section.va + at as u64,
-                ref_type: XrefType::Ptr,
-                instr_text: format!("qword 0x{:X}", target_va),
-            });
-            if items.len() >= MAX_XREF_ITEMS {
-                return;
+        if is_64 || target_va > u32::MAX as u64 {
+            let original_target = app.unrebase_va(target_va);
+            for at in find_qword(bytes, original_target) {
+                let offset = section.start + at;
+                if seen.insert(offset) {
+                    items.push(XrefItem {
+                        offset,
+                        va: app.get_va(offset),
+                        ref_type: XrefType::Ptr,
+                        instr_text: format!("qword 0x{:X}", target_va),
+                    });
+                    if items.len() >= MAX_XREF_ITEMS {
+                        return;
+                    }
+                }
+            }
+        }
+        if !is_64 {
+            let original_target = app.unrebase_va(target_va);
+            if let Ok(target_u32) = u32::try_from(original_target) {
+                for at in find_dword(bytes, target_u32) {
+                    let offset = section.start + at;
+                    if seen.insert(offset) {
+                        items.push(XrefItem {
+                            offset,
+                            va: app.get_va(offset),
+                            ref_type: XrefType::Ptr,
+                            instr_text: format!("dword 0x{:X}", target_va),
+                        });
+                        if items.len() >= MAX_XREF_ITEMS {
+                            return;
+                        }
+                    }
+                }
             }
         }
 
@@ -251,14 +278,16 @@ fn find_data_references(app: &App, target_va: u64, buffer: &[u8], items: &mut Ve
         if let Some(rva) = target_rva.filter(|r| *r >= 0x1000) {
             for at in find_dword(bytes, rva) {
                 let offset = section.start + at;
-                items.push(XrefItem {
-                    offset,
-                    va: section.va + at as u64,
-                    ref_type: XrefType::Rva,
-                    instr_text: format!("dword rva 0x{:X}", rva),
-                });
-                if items.len() >= MAX_XREF_ITEMS {
-                    return;
+                if seen.insert(offset) {
+                    items.push(XrefItem {
+                        offset,
+                        va: app.get_va(offset),
+                        ref_type: XrefType::Rva,
+                        instr_text: format!("dword rva 0x{:X}", rva),
+                    });
+                    if items.len() >= MAX_XREF_ITEMS {
+                        return;
+                    }
                 }
             }
         }
@@ -468,34 +497,52 @@ mod xref_tests {
         );
     }
 
-    /// Data hits never come from a code section or from `.reloc`.
-    ///
-    /// Both would be double-reporting or noise: an `imm64` in an instruction is
-    /// already a DATA hit from the code scan, and a relocation block cannot hold a
-    /// pointer.
+    /// Data hits never come from `.reloc`.
     #[test]
-    fn data_hits_stay_out_of_code_and_reloc() {
+    fn data_hits_stay_out_of_reloc() {
         let Some(app) = loaded_app() else { return };
         let len = app.file_info.buffer_len();
         let Some((_, target_va)) = first_call(&app) else { return };
 
-        let code = crate::disasm::sections::code_sections(&app, len);
-        let data = crate::disasm::sections::data_sections(&app, len);
+        let pe = app.header_view.pe.as_ref().unwrap();
+        let reloc_range = pe.sections.iter().find(|s| s.name().unwrap_or("") == ".reloc").map(|s| {
+            let start = s.pointer_to_raw_data as usize;
+            let end = (start + s.size_of_raw_data as usize).min(len);
+            start..end
+        });
 
-        for item in find_xrefs(&app, target_va) {
-            if matches!(item.ref_type, XrefType::Ptr | XrefType::Rva) {
-                assert!(
-                    data.iter().any(|s| item.offset >= s.start && item.offset < s.end),
-                    "data hit at 0x{:X} is outside every data section",
-                    item.offset
-                );
-                assert!(
-                    !code.iter().any(|s| item.offset >= s.start && item.offset < s.end),
-                    "data hit at 0x{:X} is inside a code section",
-                    item.offset
-                );
+        if let Some(reloc) = reloc_range {
+            for item in find_xrefs(&app, target_va) {
+                if matches!(item.ref_type, XrefType::Ptr | XrefType::Rva) {
+                    assert!(
+                        !reloc.contains(&item.offset),
+                        "data hit at 0x{:X} is inside .reloc",
+                        item.offset
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn pointer_in_code_section_is_found() {
+        let mut app = crate::app::App::new();
+        let dir = std::env::temp_dir().join(format!("dz6_xref_code_ptr_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bin");
+        let target_va = 0x14011DDD0u64;
+        let mut bytes = vec![0x90u8; 0x200];
+        // Embed 64-bit pointer at offset 0x50
+        bytes[0x50..0x58].copy_from_slice(&target_va.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        app.load_file(path.to_str().unwrap(), 0, true).unwrap();
+
+        let items = find_xrefs(&app, target_va);
+        assert!(
+            items.iter().any(|i| i.offset == 0x50 && i.ref_type == XrefType::Ptr),
+            "pointer at 0x50 must be found"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A target too close to the image base has an RVA small enough to match plain

@@ -3,3 +3,6 @@
 *.pdb
 .idea
 .vscode
+*_v*.rs
+*_v*.toml
+*_v*.md

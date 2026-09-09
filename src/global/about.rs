@@ -21,6 +21,7 @@ use std::io::Result;
 use std::path::{Path, PathBuf};
 
 use crate::{app::App, editor::UIState, util::center_widget};
+use unicode_width::UnicodeWidthStr;
 
 /// Maintainer of this build, credited in the notice below.
 pub const BUILD_AUTHOR: &str = "stdust";
@@ -205,7 +206,7 @@ pub fn about_text(app: &App) -> String {
 /// Outer width of the About box. Paths are the widest content, so this is a bit
 /// roomier than the help box and still clamps on narrow terminals.
 fn about_box_width(area: Rect) -> u16 {
-    (area.width.saturating_sub(4)).min(84).max(20)
+    area.width.saturating_sub(4).clamp(20, 84)
 }
 
 /// Rows the text occupies once wrapped, so the scroll bound matches what is
@@ -213,7 +214,7 @@ fn about_box_width(area: Rect) -> u16 {
 fn about_row_count(text: &str, box_width: u16) -> u16 {
     let text_width = box_width.saturating_sub(4).max(1) as usize;
     text.lines()
-        .map(|line| (line.chars().count().div_ceil(text_width)).max(1) as u16)
+        .map(|line| (line.width().div_ceil(text_width)).max(1) as u16)
         .sum()
 }
 

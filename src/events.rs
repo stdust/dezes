@@ -38,7 +38,7 @@ fn mouse_column_to_byte(col_idx: usize, addr_width: usize, bpl: usize) -> usize 
 
     if col_idx >= hex_start && col_idx < hex_start + hex_dump_width {
         hex_column_to_byte(col_idx - hex_start, bpl)
-    } else if col_idx >= hex_start + hex_dump_width + 1 {
+    } else if col_idx > hex_start + hex_dump_width {
         (col_idx - (hex_start + hex_dump_width + 1)).min(bpl - 1)
     } else {
         0
@@ -69,14 +69,12 @@ fn disasm_offset_at_row(
 
     let mut current_offset = page_start;
     let mut found_ofs = page_start;
-    let mut row_count = 0;
-    for instr in decoder {
+    for (row_count, instr) in decoder.into_iter().enumerate() {
         found_ofs = current_offset;
         if row_count == target_row {
             break;
         }
         current_offset += instr.len();
-        row_count += 1;
         if current_offset >= filesize {
             break;
         }
@@ -145,19 +143,23 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         let state_before = app.state;
                         global::events::handle_global_events(app, key)?;
                         // If global handler changed state (e.g. opened a dialog), don't pass event to view
-                        if app.state == state_before {
-                            if key.code != KeyCode::Enter || app.editor_view == view_before {
-                                match app.editor_view {
-                                    AppView::Hex => { hex::events::hex_mode_events(app, key)?; },
-                                    AppView::Text => { text::events::text_mode_events(app, key)?; },
-                                    AppView::Header => { header::events::header_view_events(app, key)?; },
-                                    AppView::Disasm => { crate::disasm::events::disasm_mode_events(app, key)?; },
-                                }
+                        if app.state == state_before
+                            && (key.code != KeyCode::Enter || app.editor_view == view_before)
+                        {
+                            match app.editor_view {
+                                AppView::Hex => { hex::events::hex_mode_events(app, key)?; },
+                                AppView::Text => { text::events::text_mode_events(app, key)?; },
+                                AppView::Header => { header::events::header_view_events(app, key)?; },
+                                AppView::Disasm => { crate::disasm::events::disasm_mode_events(app, key)?; },
                             }
                         }
                     }
                 }
                 UIState::DialogAbout => { global::about::dialog_about_events(app, key)?; },
+                UIState::DialogConfirmReload => { global::events::dialog_confirm_reload_events(app, key)?; },
+                UIState::DialogConfirmDeleteSection => {
+                    crate::header::formats::pe::section_tools::dialog_confirm_delete_section_events(app, key)?;
+                },
                 UIState::DialogAssemble => { crate::disasm::assemble::dialog_assemble_events(app, &event)?; },
                 UIState::DialogHelp => { hex::help::dialog_help_events(app, key)?; },
                 UIState::DialogEncoding => { text::dialog_encoding::dialog_encoding_events(app, key)?; },
@@ -168,6 +170,9 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                 UIState::DialogFindPattern => { hex::find_dialog::dialog_find_events(app, &event)?; },
                 UIState::DialogSectionSize => {
                     crate::header::formats::pe::section_tools::dialog_section_size_events(app, &event)?;
+                },
+                UIState::DialogDumpSection => {
+                    crate::header::formats::pe::section_tools::dialog_dump_section_events(app, &event)?;
                 },
                 UIState::DialogGoto => { crate::goto_dialog::dialog_goto_events(app, &event)?; },
                 UIState::DialogHeaderEdit => { header::edit_dialog::handle_dialog_header_edit_events(app, &event)?; },
@@ -192,6 +197,9 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                 UIState::DialogBase => { global::base::dialog_base_events(app, &event)?; },
                 UIState::DialogNames => { hex::names::dialog_names_events(app, &event)?; },
                 UIState::DialogNamesRegex => { hex::names::dialog_names_regex_events(app, &event)?; },
+                UIState::DialogBookmarks => { hex::bookmark::dialog_bookmarks_events(app, &event)?; },
+                UIState::DialogBookmarkInput => { hex::bookmark::dialog_bookmark_input_events(app, &event)?; },
+                UIState::DialogPatches => { hex::patches_dialog::dialog_patches_events(app, &event)?; },
                 UIState::DialogCalculator => {
                     global::calculator::dialog_calculator_events(app, &event)?;
                 }
@@ -225,6 +233,12 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
             if matches!(app.state, UIState::DialogStrings) =>
         {
             hex::strings::dialog_strings_events(app, &event)?;
+            return Ok(false);
+        }
+        Event::Mouse(_)
+            if matches!(app.state, UIState::DialogBookmarks) =>
+        {
+            hex::bookmark::dialog_bookmarks_events(app, &event)?;
             return Ok(false);
         }
         Event::Mouse(_)
@@ -321,6 +335,53 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         app.reader.page_start = curr_ofs;
                         app.hex_view.offset = curr_ofs;
                         app.disasm_selection_anchor = None;
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
+
+            if app.editor_view == crate::editor::AppView::Text {
+                let in_rows = (mouse.row as usize) < (app.screen.height as usize).saturating_sub(2);
+                match mouse.kind {
+                    ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left)
+                        if in_rows =>
+                    {
+                        let click_line = (mouse.row as usize).saturating_add(app.text_view.scroll_offset.0 as usize);
+                        let click_col = ((mouse.column as usize).saturating_sub(1)).saturating_add(app.text_view.scroll_offset.1 as usize);
+                        let max_l = app.text_view.lines_to_show.saturating_sub(1);
+                        app.text_view.cursor = (click_line.min(max_l), click_col);
+                        app.text_view.selection_anchor = None;
+                    }
+                    ratatui::crossterm::event::MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left)
+                        if in_rows =>
+                    {
+                        if app.text_view.selection_anchor.is_none() {
+                            app.text_view.selection_anchor = Some(app.text_view.cursor);
+                        }
+                        let drag_line = (mouse.row as usize).saturating_add(app.text_view.scroll_offset.0 as usize);
+                        let drag_col = ((mouse.column as usize).saturating_sub(1)).saturating_add(app.text_view.scroll_offset.1 as usize);
+                        let max_l = app.text_view.lines_to_show.saturating_sub(1);
+                        app.text_view.cursor = (drag_line.min(max_l), drag_col);
+                    }
+                    ratatui::crossterm::event::MouseEventKind::ScrollUp => {
+                        if app.text_view.cursor.0 >= 3 {
+                            app.text_view.cursor.0 -= 3;
+                        } else {
+                            app.text_view.cursor.0 = 0;
+                        }
+                        if app.text_view.scroll_offset.0 >= 3 {
+                            app.text_view.scroll_offset.0 -= 3;
+                        } else {
+                            app.text_view.scroll_offset.0 = 0;
+                        }
+                    }
+                    ratatui::crossterm::event::MouseEventKind::ScrollDown => {
+                        let max_l = app.text_view.lines_to_show.saturating_sub(1);
+                        app.text_view.cursor.0 = (app.text_view.cursor.0 + 3).min(max_l);
+                        if (app.text_view.scroll_offset.0 as usize) + 3 < app.text_view.lines_to_show {
+                            app.text_view.scroll_offset.0 += 3;
+                        }
                     }
                     _ => {}
                 }
@@ -459,6 +520,43 @@ fn header_mouse(app: &mut App, mouse: &ratatui::crossterm::event::MouseEvent) {
             }
 
             app.header_view.active_pane = HeaderPane::Detail;
+            if app.header_view.sidebar_index == 4 {
+                let sec_count = app.header_view.pe.as_ref().map(|p| p.sections.len()).unwrap_or(0);
+                // 6 tool rows + 2 borders + 1 footer/message row
+                let tools_needed = 6 + 2 + 1;
+                let total_h = app.screen.height.saturating_sub(2);
+                let tools_h = (tools_needed as u16).min(total_h.saturating_sub(6)).max(4);
+                let tools_top_y = total_h.saturating_sub(tools_h);
+
+                if mouse.row >= tools_top_y {
+                    let tool_row = (mouse.row.saturating_sub(tools_top_y + 1)) as usize;
+                    if tool_row < 6 {
+                        app.header_view.detail_index = sec_count + tool_row;
+                        crate::header::formats::pe::events::run_section_tool(app, tool_row);
+                        app.last_left_click = Some((now, mouse.row, mouse.column));
+                        return;
+                    }
+                } else {
+                    let Some(table_row) = mouse.row.checked_sub(2) else { return };
+                    let picked = table_row as usize;
+                    if picked < sec_count {
+                        app.header_view.detail_index = picked;
+                        app.header_view.tools_section_index = picked;
+                    }
+                    if is_double_click {
+                        app.last_left_click = None;
+                        let key = ratatui::crossterm::event::KeyEvent::new(
+                            ratatui::crossterm::event::KeyCode::Enter,
+                            ratatui::crossterm::event::KeyModifiers::NONE,
+                        );
+                        let _ = crate::header::formats::pe::events::view_header_pe_events(app, key);
+                        return;
+                    }
+                    app.last_left_click = Some((now, mouse.row, mouse.column));
+                    return;
+                }
+            }
+
             let Some(row) = row.checked_sub(1) else { return }; // column headings
             let picked = row as usize;
             let max = crate::header::formats::pe::events::max_detail_index_for_mouse(app);
@@ -466,17 +564,8 @@ fn header_mouse(app: &mut App, mouse: &ratatui::crossterm::event::MouseEvent) {
                 return;
             }
             app.header_view.detail_index = picked;
-            if app.header_view.sidebar_index == 4 {
-                app.header_view.tools_section_index = picked;
-            }
 
-            // On the Section Tools tab the rows *are* the actions, so a click runs
-            // the one it lands on. Both are recoverable: "Add New Section" only
-            // opens a size prompt, and the alignment is a staged edit like any
-            // other.
-            if app.header_view.sidebar_index == 6 {
-                crate::header::formats::pe::events::run_section_tool(app, picked);
-            } else if is_double_click {
+            if is_double_click {
                 app.last_left_click = None;
                 let key = ratatui::crossterm::event::KeyEvent::new(
                     ratatui::crossterm::event::KeyCode::Enter,
@@ -527,22 +616,14 @@ pub fn handle_replace_pattern_events(app: &mut App, event: &Event) -> Result<boo
                 }
                 return Ok(false);
             }
-            // Ctrl+B in Replace dialog -> Switch to Find dialog (Ctrl+B)
-            KeyCode::Char('b') | KeyCode::Char('B') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let current_text = app.hex_view.replace_dialog.search_input.value().to_string();
-                app.hex_view.replace_dialog.reset();
-                app.state = UIState::DialogFindPattern;
-                app.hex_view.find_dialog.reset();
-                app.dialog_renderer = Some(crate::hex::find_dialog::draw_find_dialog);
-                if !current_text.is_empty() {
-                    app.hex_view.find_dialog.input_hex = tui_input::Input::new(current_text);
-                    let enc1 = app.text_view.table;
-                    app.hex_view.find_dialog.sync_from_focus(enc1);
-                }
+            // Changing field drops the block: it belonged to the field being left.
+            KeyCode::BackTab | KeyCode::Up => {
+                app.hex_view.replace_dialog.active_field =
+                    (app.hex_view.replace_dialog.active_field + 2 - 1) % 2;
+                app.hex_view.replace_dialog.anchor = None;
                 return Ok(false);
             }
-            // Changing field drops the block: it belonged to the field being left.
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {
+            KeyCode::Tab | KeyCode::Down => {
                 app.hex_view.replace_dialog.active_field =
                     (app.hex_view.replace_dialog.active_field + 1) % 2;
                 app.hex_view.replace_dialog.anchor = None;
@@ -669,8 +750,10 @@ fn execute_find(app: &mut App, forward: bool) {
         app.hex_view.selection.start = hit;
         // Clamp to EOF: an unclamped end feeds Selection::contains in the draw
         // loops with offsets past the end of the file.
-        app.hex_view.selection.end = (hit + pattern_len)
-            .min(app.file_info.size.saturating_sub(1))
+        let buf_limit = app.file_info.buffer_len().saturating_sub(1);
+        app.hex_view.selection.end = hit
+            .saturating_add(pattern_len.saturating_sub(1))
+            .min(buf_limit)
             .max(hit);
         // Which match this is, so repeated Enter presses read as progress through
         // the file rather than as an unlabelled jump.
@@ -702,23 +785,35 @@ fn execute_replace_one(app: &mut App) {
     let search_pat = match HexPattern::parse(&search_str) { Ok(p) => p, Err(e) => { app.hex_view.replace_dialog.error_message = Some(e.to_string()); return; } };
     let replace_pat = match HexPattern::parse(&replace_str) { Ok(p) => p, Err(e) => { app.hex_view.replace_dialog.error_message = Some(e.to_string()); return; } };
 
-    // Pending edits applied first: without this, replacing over a region that had
-    // already been edited matched the on-disk bytes and then wrote raw-derived
-    // bytes back over those edits.
-    let mut buffer_vec = app.with_effective_buffer(|b| b.to_vec());
-    let replacer = match HexReplacer::new(search_pat, replace_pat, &buffer_vec) {
+    // Read only the local window around cursor with pending edits applied,
+    // avoiding whole-file heap cloning.
+    let len = search_pat.len();
+    let offset = app.hex_view.offset;
+    let mut window = Vec::with_capacity(len);
+    for i in 0..len {
+        let pos = offset + i;
+        let b = app.hex_view.changed_bytes.get(&pos).copied()
+            .or_else(|| app.read_u8(pos));
+        match b {
+            Some(byte) => window.push(byte),
+            None => {
+                app.hex_view.replace_dialog.error_message = None;
+                app.hex_view.replace_dialog.status_message =
+                    Some(crate::i18n::M::NotAtAMatch.tr(app.config.lang).to_string());
+                return;
+            }
+        }
+    }
+
+    let replacer = match HexReplacer::new(search_pat, replace_pat, &window) {
         Ok(r) => r,
         Err(e) => { app.hex_view.replace_dialog.error_message = Some(e.to_string()); return; }
     };
 
-    let offset = app.hex_view.offset;
-    if replacer.replace_at(&mut buffer_vec, offset) {
-        let len = replacer.pattern_len();
-        for i in 0..len {
-            let pos = offset + i;
-            let b = buffer_vec[pos];
-            crate::hex::edit::record_edit(app, pos, b);
-        }
+    if replacer.replace_at(&mut window, 0) {
+        replacer.replace_pattern().for_each_literal(|rel_idx, b| {
+            crate::hex::edit::record_edit(app, offset + rel_idx, b);
+        });
         app.hex_view.replace_dialog.error_message = None;
         let message = crate::i18n::fill(
             crate::i18n::M::ReplacedAt.tr(app.config.lang),
@@ -745,17 +840,20 @@ fn execute_replace_all(app: &mut App) {
     let search_pat = match HexPattern::parse(&search_str) { Ok(p) => p, Err(e) => { app.hex_view.replace_dialog.error_message = Some(e.to_string()); return; } };
     let replace_pat = match HexPattern::parse(&replace_str) { Ok(p) => p, Err(e) => { app.hex_view.replace_dialog.error_message = Some(e.to_string()); return; } };
 
-    // Same reason as Replace One: the search and the bytes written back both have
-    // to see the pending edits.
-    let mut buffer_vec = app.with_effective_buffer(|b| b.to_vec());
-    let replacer = match HexReplacer::new(search_pat, replace_pat, &buffer_vec) {
-        Ok(r) => r,
-        Err(e) => { app.hex_view.replace_dialog.error_message = Some(e.to_string()); return; }
+    // Find matches directly in effective buffer without cloning entire file to heap
+    let (replacer, hits) = match app.with_effective_buffer(|buffer| {
+        let replacer = HexReplacer::new(search_pat, replace_pat, buffer)?;
+        let hits = replacer.find_all(buffer);
+        Ok::<_, crate::hex::pattern_engine::PatternError>((replacer, hits))
+    }) {
+        Ok(pair) => pair,
+        Err(e) => {
+            app.hex_view.replace_dialog.error_message = Some(e.to_string());
+            return;
+        }
     };
 
-    let hits = replacer.replace_all(&mut buffer_vec);
     let count = hits.len();
-    let len = replacer.pattern_len();
 
     // The pattern no longer matches anything, so the highlight has to go with it -
     // otherwise the old hits stay painted over bytes that have already changed.
@@ -764,11 +862,9 @@ fn execute_replace_all(app: &mut App) {
     app.hex_view.search.match_len = 0;
 
     for &start in &hits {
-        for i in 0..len {
-            let pos = start + i;
-            let b = buffer_vec[pos];
-            crate::hex::edit::record_edit(app, pos, b);
-        }
+        replacer.replace_pattern().for_each_literal(|rel_idx, b| {
+            crate::hex::edit::record_edit(app, start + rel_idx, b);
+        });
     }
 
     app.hex_view.replace_dialog.error_message = None;

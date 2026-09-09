@@ -10,11 +10,6 @@ use ratatui::{
 };
 
 use crate::app::App;
-
-/// Address column width, 64-bit target.
-pub const VA_COL_WIDTH_64: u16 = 11;
-/// Address column width, 32-bit target.
-pub const VA_COL_WIDTH_32: u16 = 10;
 /// Hex-dump column width.
 pub const BYTES_COL_WIDTH: u16 = 22;
 /// Instruction text column width.
@@ -26,19 +21,13 @@ pub const DISASM_COL_WIDTH: u16 = 52;
 
 /// Column widths are shared with `ruler.rs`, which draws the header above this
 /// table; keeping them in one place stops the two from drifting apart.
-pub fn va_col_width(is_64: bool) -> u16 {
-    if is_64 { VA_COL_WIDTH_64 } else { VA_COL_WIDTH_32 }
+pub fn va_col_width(app: &App) -> u16 {
+    app.get_addr_col_width() as u16
 }
 
 /// Longest possible x86 instruction. Used to size decode windows, so a window is
 /// always large enough to hold `n` instructions.
 const MAX_INSTR_BYTES: usize = 16;
-
-/// How many bytes to read when probing for a string at a target address.
-const STRING_PROBE_LEN: usize = 128;
-
-/// Shortest run of printable bytes that counts as a string in the comment column.
-const MIN_STRING_LEN: usize = 3;
 
 fn is_register(tok: &str) -> bool {
     let clean = tok.trim_matches(|c: char| !c.is_alphanumeric());
@@ -86,63 +75,7 @@ fn is_segment_register(token: &str) -> bool {
 }
 
 fn read_string_at_offset(buffer: &[u8], offset: usize) -> Option<String> {
-    // `&buffer[offset..]` panics outright when `offset > buffer.len()`; the
-    // callers derive offsets from VAs, so that is reachable.
-    if offset >= buffer.len() {
-        return None;
-    }
-    let bytes = &buffer[offset..(offset + STRING_PROBE_LEN).min(buffer.len())];
-
-    // 1. Try ASCII / UTF-8
-    let mut str_bytes = Vec::new();
-    for &b in bytes {
-        if b == 0 {
-            break;
-        }
-        if b.is_ascii_graphic() || b == b' ' || b == b'\t' {
-            str_bytes.push(b);
-        } else {
-            break;
-        }
-    }
-
-    if str_bytes.len() >= MIN_STRING_LEN {
-        if let Ok(s) = std::str::from_utf8(&str_bytes) {
-            let s_trimmed = s.trim();
-            if s_trimmed.len() >= MIN_STRING_LEN {
-                return Some(s_trimmed.to_string());
-            }
-        }
-    }
-
-    // 2. Try UTF-16 LE
-    if bytes.len() >= 4 {
-        let mut u16_chars = Vec::new();
-        for chunk in bytes.chunks_exact(2) {
-            let val = u16::from_le_bytes([chunk[0], chunk[1]]);
-            if val == 0 {
-                break;
-            }
-            if let Some(ch) = char::from_u32(val as u32) {
-                if (ch.is_ascii_graphic() || ch == ' ' || ch == '\t') && !ch.is_control() {
-                    u16_chars.push(ch);
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-        if u16_chars.len() >= MIN_STRING_LEN {
-            let s: String = u16_chars.into_iter().collect();
-            let s_trimmed = s.trim();
-            if s_trimmed.len() >= MIN_STRING_LEN {
-                return Some(s_trimmed.to_string());
-            }
-        }
-    }
-
-    None
+    crate::disasm::string_ref::try_read_string_at_offset(buffer, offset).map(|(s, _)| s)
 }
 
 fn try_get_string_at_va(app: &App, va: u64) -> Option<String> {
@@ -165,14 +98,13 @@ fn try_get_string_at_va(app: &App, va: u64) -> Option<String> {
     if offset + 8 <= buffer.len() {
         let ptr_bytes = &buffer[offset..offset + 8];
         let target_va = u64::from_le_bytes(ptr_bytes.try_into().unwrap());
-        if target_va != 0 && target_va != va {
-            if let Some(target_offset) = app.va_to_offset(target_va) {
-                if target_offset < buffer.len() {
-                    if let Some(s) = read_string_at_offset(buffer, target_offset) {
-                        return Some(s);
-                    }
-                }
-            }
+        if target_va >= 0x10000
+            && target_va != va
+            && let Some(target_offset) = app.va_to_offset(target_va)
+            && target_offset < buffer.len()
+            && let Some(s) = read_string_at_offset(buffer, target_offset)
+        {
+            return Some(s);
         }
     }
 
@@ -180,14 +112,13 @@ fn try_get_string_at_va(app: &App, va: u64) -> Option<String> {
     if offset + 4 <= buffer.len() {
         let ptr_bytes = &buffer[offset..offset + 4];
         let target_va = u32::from_le_bytes(ptr_bytes.try_into().unwrap()) as u64;
-        if target_va != 0 && target_va != va {
-            if let Some(target_offset) = app.va_to_offset(target_va) {
-                if target_offset < buffer.len() {
-                    if let Some(s) = read_string_at_offset(buffer, target_offset) {
-                        return Some(s);
-                    }
-                }
-            }
+        if target_va >= 0x10000
+            && target_va != va
+            && let Some(target_offset) = app.va_to_offset(target_va)
+            && target_offset < buffer.len()
+            && let Some(s) = read_string_at_offset(buffer, target_offset)
+        {
+            return Some(s);
         }
     }
 
@@ -198,7 +129,7 @@ fn try_get_string_at_va(app: &App, va: u64) -> Option<String> {
 ///
 /// Walks the string in place rather than collecting it into a `Vec<char>` first,
 /// which used to happen once per instruction per frame.
-fn trim_hex_leading_zeros(text: &str) -> String {
+pub fn trim_hex_leading_zeros(text: &str) -> String {
     let bytes = text.as_bytes();
     let len = bytes.len();
     let mut result = String::with_capacity(len);
@@ -233,12 +164,11 @@ fn trim_hex_leading_zeros(text: &str) -> String {
 /// Adds an explicit `ds:` to memory operands that have no segment override.
 ///
 /// Uses a 3-char sliding window instead of materialising a `Vec<char>`.
-fn ensure_ds_segment(text: &str) -> String {
+pub fn ensure_ds_segment(text: &str) -> String {
     let mut result = String::with_capacity(text.len() + 16);
     let mut prev: [char; 3] = ['\0', '\0', '\0'];
-    let mut seen = 0usize;
 
-    for c in text.chars() {
+    for (seen, c) in text.chars().enumerate() {
         if c == '[' {
             let has_seg = seen >= 3
                 && prev[2] == ':'
@@ -254,9 +184,66 @@ fn ensure_ds_segment(text: &str) -> String {
             result.push(c);
         }
         prev = [prev[1], prev[2], c];
-        seen += 1;
     }
     result
+}
+
+/// Rebases in-image immediate and memory displacement operands when an image base override is active.
+pub fn rebase_instruction_text(app: &App, instr: &iced_x86::Instruction, text: &str) -> String {
+    let delta = app.rebase_delta();
+    if delta == 0 {
+        return text.to_string();
+    }
+
+    let mut result = text.to_string();
+
+    for op in 0..instr.op_count() {
+        match instr.op_kind(op) {
+            iced_x86::OpKind::Immediate32
+            | iced_x86::OpKind::Immediate64
+            | iced_x86::OpKind::Immediate32to64 => {
+                let imm = instr.immediate(op);
+                let rebased = app.rebase_va(imm);
+                if rebased != imm {
+                    let old_upper = format!("0x{:X}", imm);
+                    let old_lower = format!("0x{:x}", imm);
+                    let new_upper = format!("0x{:X}", rebased);
+                    result = result.replace(&old_upper, &new_upper).replace(&old_lower, &new_upper);
+                }
+            }
+            iced_x86::OpKind::Memory => {
+                let disp = instr.memory_displacement64();
+                if disp != 0 {
+                    let rebased = app.rebase_va(disp);
+                    if rebased != disp {
+                        let old_upper = format!("0x{:X}", disp);
+                        let old_lower = format!("0x{:x}", disp);
+                        let new_upper = format!("0x{:X}", rebased);
+                        result = result.replace(&old_upper, &new_upper).replace(&old_lower, &new_upper);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    result
+}
+
+/// Formats the instruction text identically to how it is displayed on screen,
+/// trimming redundant hex leading zeros, rebasing addresses, ensuring ds: prefix, resolving imports,
+/// normalizing commas, and removing raw `short` jump keywords.
+pub fn clean_instruction_text(app: &App, instr: &iced_x86::Instruction, raw_text: &str) -> String {
+    let trimmed = trim_hex_leading_zeros(raw_text);
+    let rebased = rebase_instruction_text(app, instr, &trimmed);
+    let ds_text = ensure_ds_segment(&rebased);
+    let import_text = apply_import_symbol(app, instr, &ds_text);
+    import_text
+        .replace(" short ", " ")
+        .replace(", ", ",")
+        .replace(',', ", ")
+        .replace("(bad)", "???")
+        .replace("bad", "???")
 }
 
 /// Text for the comment column, in priority order: the user's own comment, the
@@ -301,7 +288,6 @@ fn string_comment_from_text(app: &App, text: &str) -> Option<String> {
                 continue;
             }
             if let Ok(va) = u64::from_str_radix(digits, 16)
-                && va >= 0x400000
                 && let Some(found) = try_get_string_at_va(app, va)
             {
                 return Some(found);
@@ -380,6 +366,8 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
     let segment_fg = dt.segment_fg;
     let import_bg = dt.import_bg;
     let import_fg = dt.import_fg;
+    let ret_bg = dt.ret_bg;
+    let ret_fg = dt.ret_fg;
 
     let mut in_mem_operand = false;
 
@@ -409,7 +397,7 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
             } else if first_op.starts_with("push") || first_op.starts_with("pop") {
                 token_style = token_style.fg(blue_fg).add_modifier(Modifier::BOLD);
             } else if first_op.starts_with("ret") {
-                token_style = token_style.bg(cyan_bg).fg(black_fg).add_modifier(Modifier::BOLD);
+                token_style = token_style.bg(ret_bg).fg(ret_fg).add_modifier(Modifier::BOLD);
             } else if is_modified {
                 token_style = token_style.fg(red_fg).add_modifier(Modifier::BOLD);
             }
@@ -432,10 +420,10 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
         }
 
         // Check if token starts memory operand mode (e.g. dword, qword, word, byte, ptr, ds:[...)
-        if !in_mem_operand {
-            if lower_tok.contains("dword") || lower_tok.contains("qword") || lower_tok.contains("word") || lower_tok.contains("byte") || lower_tok.contains("ptr") || lower_tok.contains('[') {
-                in_mem_operand = true;
-            }
+        if !in_mem_operand
+            && (lower_tok.contains("dword") || lower_tok.contains("qword") || lower_tok.contains("word") || lower_tok.contains("byte") || lower_tok.contains("ptr") || lower_tok.contains('['))
+        {
+            in_mem_operand = true;
         }
 
         // Sub-token lexer for operands: split words (registers, numbers, keywords)
@@ -562,7 +550,8 @@ fn import_symbol_for(app: &App, instr: &iced_x86::Instruction) -> Option<(u64, S
 
     if instr.is_ip_rel_memory_operand() {
         let va = instr.ip_rel_memory_address();
-        if let Some(label) = app.import_labels.get(&va) {
+        let target = app.rebase_va(va);
+        if let Some(label) = app.import_labels.get(&target) {
             return Some((va, function_name(label)));
         }
     }
@@ -570,10 +559,11 @@ fn import_symbol_for(app: &App, instr: &iced_x86::Instruction) -> Option<(u64, S
     for op in 0..instr.op_count() {
         if instr.op_kind(op) == iced_x86::OpKind::Memory {
             let disp = instr.memory_displacement64();
-            if disp != 0
-                && let Some(label) = app.import_labels.get(&disp)
-            {
-                return Some((disp, function_name(label)));
+            if disp != 0 {
+                let target = app.rebase_va(disp);
+                if let Some(label) = app.import_labels.get(&target) {
+                    return Some((target, function_name(label)));
+                }
             }
         }
     }
@@ -658,10 +648,11 @@ fn thunk_target_label(app: &App, va: u64) -> Option<String> {
     for op in 0..instr.op_count() {
         if instr.op_kind(op) == iced_x86::OpKind::Memory {
             let disp = instr.memory_displacement64();
-            if disp != 0
-                && let Some(label) = app.import_labels.get(&disp)
-            {
-                return Some(label.clone());
+            if disp != 0 {
+                let target = app.rebase_va(disp);
+                if let Some(label) = app.import_labels.get(&target) {
+                    return Some(label.clone());
+                }
             }
         }
     }
@@ -675,17 +666,13 @@ use std::sync::Mutex;
 ///
 /// The cache used to key on `changed_bytes.len()` alone, so overwriting a byte
 /// that had already been edited left the count unchanged and the view kept
-/// showing the previous disassembly. Mixing offsets *and* values in means any
-/// edit invalidates the cache.
-fn changed_bytes_fingerprint(changed: &std::collections::HashMap<usize, u8>) -> u64 {
-    let mut acc = changed.len() as u64;
-    for (&ofs, &val) in changed {
-        let mut h = ofs as u64 ^ 0x9E37_79B9_7F4A_7C15;
-        h = h.rotate_left(7) ^ (val as u64);
-        // XOR keeps the result independent of HashMap iteration order.
-        acc ^= h.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
-    }
-    acc
+/// O(1) fingerprint of changed bytes tracking `app.view_generation`.
+///
+/// Any edit, undo, or redo increments `view_generation`, so comparing this integer
+/// invalidates the cache immediately in O(1) without iterating thousands of HashMap entries per frame.
+#[inline]
+fn changed_bytes_fingerprint(app: &App) -> u64 {
+    app.view_generation
 }
 
 /// Fingerprint of every colour the cached rows were built with.
@@ -776,26 +763,26 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
     let mut page_start = app.reader.page_start;
 
     // Check if cache is valid to skip decoding loop
-    let changed_bytes_key = changed_bytes_fingerprint(&app.hex_view.changed_bytes);
+    let changed_bytes_key = changed_bytes_fingerprint(app);
     let syntax_highlight = app.config.syntax_highlight;
 
     let style_key = style_fingerprint(app);
 
-    if let Ok(guard) = DISASM_CACHE.lock() {
-        if let Some(cached) = guard.as_ref() {
-            if cached.generation == app.view_generation
-                && cached.bitness == bitness
-                && cached.style_key == style_key
-                && cached.page_start == page_start
-                && cached.offset == current_cursor_offset
-                && cached.selection_anchor == app.disasm_selection_anchor
-                && cached.changed_bytes_key == changed_bytes_key
-                && cached.area_width == area.width
-                && cached.area_height == area.height
-                && cached.syntax_highlight == syntax_highlight
-            {
-                // Fast path: Render directly from cached rows
-                let va_col_width = va_col_width(is_64_bit);
+    if let Ok(guard) = DISASM_CACHE.lock()
+        && let Some(cached) = guard.as_ref()
+        && cached.generation == app.view_generation
+        && cached.bitness == bitness
+        && cached.style_key == style_key
+        && cached.page_start == page_start
+        && cached.offset == current_cursor_offset
+        && cached.selection_anchor == app.disasm_selection_anchor
+        && cached.changed_bytes_key == changed_bytes_key
+        && cached.area_width == area.width
+        && cached.area_height == area.height
+        && cached.syntax_highlight == syntax_highlight
+    {
+        // Fast path: Render directly from cached rows
+                let va_col_width = va_col_width(app);
                 let bytes_col_width = BYTES_COL_WIDTH;
                 let disasm_col_width = DISASM_COL_WIDTH;
 
@@ -851,8 +838,6 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
                 frame.render_widget(comment_table, disasm_layout[6]);
                 return;
             }
-        }
-    }
 
     let mut addr_rows: Vec<Row> = Vec::new();
     let mut bytes_rows: Vec<Row> = Vec::new();
@@ -907,29 +892,31 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
         if current_cursor_offset >= visible_end {
             // Scroll forward so the cursor lands on the last visible row.
             //
-            // The previous implementation advanced one instruction at a time and
-            // re-decoded a whole screen of instructions on *every* step, i.e.
-            // O(distance x height) decodes for a single frame - the worst latency
-            // spike in the app when jumping far forward. This does one linear
-            // decode pass and keeps the last `height` instruction boundaries, so
-            // the resulting page_start is the same.
+            // When jumping far forward (e.g. :goto across hundreds of MB),
+            // decoding from `page_start` would linearly decode hundreds of MBs in
+            // the render thread, freezing the UI. Cap the decode window to at most
+            // ~2 screens worth of instructions (height * MAX_INSTR_BYTES * 2),
+            // which guarantees that we decode at most ~2 KB while keeping the last
+            // `height` instruction boundaries for page_start.
+            let max_walk_distance = height.saturating_mul(MAX_INSTR_BYTES).saturating_mul(2).max(2048);
+            let walk_start = if current_cursor_offset.saturating_sub(page_start) > max_walk_distance {
+                current_cursor_offset.saturating_sub(max_walk_distance)
+            } else {
+                page_start
+            };
+
             let walk_end = (current_cursor_offset + MAX_INSTR_BYTES).min(filesize);
-            let walk_bytes = &buffer[page_start..walk_end.max(page_start)];
-            // `get_va(page_start)`, like every other decoder in this function.
-            // This one used `base_va + page_start`, which is only the same thing
-            // when a section's RVA equals its raw file offset - not true for a
-            // normal PE. Only instruction lengths are consumed here, so nothing
-            // visibly broke, but the two formulas had no business differing.
+            let walk_bytes = &buffer[walk_start..walk_end.max(walk_start)];
             let mut walker = Decoder::with_ip(
                 bitness,
                 walk_bytes,
-                app.get_va(page_start),
+                app.get_va(walk_start),
                 DecoderOptions::NONE,
             );
 
             let mut recent: std::collections::VecDeque<usize> =
                 std::collections::VecDeque::with_capacity(height + 1);
-            let mut ofs = page_start;
+            let mut ofs = walk_start;
             let mut landed = false;
 
             for instr in &mut walker {
@@ -1001,7 +988,8 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
         formatter.format(&instr, &mut raw_text);
 
         let trimmed_text = trim_hex_leading_zeros(&raw_text);
-        let instr_text_ds = ensure_ds_segment(&trimmed_text);
+        let rebased_text = rebase_instruction_text(app, &instr, &trimmed_text);
+        let instr_text_ds = ensure_ds_segment(&rebased_text);
         // Import names go into the operand itself, so the substitution happens on
         // the finished text and before the syntax highlighter tokenises it.
         let instr_text_ds = apply_import_symbol(app, &instr, &instr_text_ds);
@@ -1021,13 +1009,9 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
             let _ = write!(hex_bytes_str, "{:02X}", b);
         }
 
-        let va_col_width = va_col_width(is_64_bit);
-        let raw_va_str = format!("{:X}", va);
-        let formatted_va = if is_64_bit {
-            if raw_va_str.len() < 9 { format!("{:09X}", va) } else { raw_va_str }
-        } else {
-            format!("{:08X}", va)
-        };
+        let va_col_width = va_col_width(app);
+        let digits = (va_col_width as usize).saturating_sub(2).max(if is_64_bit { 9 } else { 8 });
+        let formatted_va = format!("{:0width$X}", va, width = digits);
         let va_str = format!("{:^width$}", formatted_va, width = va_col_width as usize);
 
         let (sel_start, sel_end) = if let Some(anchor) = app.disasm_selection_anchor {
@@ -1091,7 +1075,7 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
         }
     }
 
-    let va_col_width = va_col_width(is_64_bit);
+    let va_col_width = va_col_width(app);
     let bytes_col_width = BYTES_COL_WIDTH;
     let disasm_col_width = DISASM_COL_WIDTH;
 
@@ -1831,5 +1815,73 @@ mod page_fixup_tests {
             "page must start on an instruction boundary, got 0x{:X}",
             app.reader.page_start
         );
+    }
+
+    #[test]
+    fn test_ret_instruction_styling_bright_green() {
+        let app = App::new();
+        let line_ret = format_x64dbg_line("ret", false, false, Style::default(), Style::default(), &app);
+        assert_eq!(line_ret.spans[0].style.bg, Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(line_ret.spans[0].style.fg, Some(Color::Rgb(0, 0, 0)));
+
+        let line_retn = format_x64dbg_line("retn 0x10", false, false, Style::default(), Style::default(), &app);
+        assert_eq!(line_retn.spans[0].style.bg, Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(line_retn.spans[0].style.fg, Some(Color::Rgb(0, 0, 0)));
+    }
+
+    #[test]
+    fn test_rebase_instruction_text_push_immediate() {
+        let exe = match std::env::current_exe().ok().and_then(|p| p.to_str().map(str::to_owned)) {
+            Some(p) => p,
+            None => return,
+        };
+        let mut app = App::new();
+        app.config.database = false;
+        if app.load_file(&exe, 0, true).is_err() {
+            return;
+        }
+
+        // Set up 32-bit PE image base at 0x400000 with image size 0x80000
+        if let Some(pe) = app.header_view.pe.as_mut() {
+            if let Some(opt) = pe.optional_header.as_mut() {
+                opt.windows_fields.image_base = 0x400000;
+                opt.windows_fields.size_of_image = 0x80000;
+            }
+        }
+
+        assert_eq!(app.header_image_base(), 0x400000);
+
+        // Rebase from 0x400000 to 0x5A0000 (+0x1A0000)
+        app.image_base_override = Some(0x5A0000);
+        assert_eq!(app.rebase_delta(), 0x1A0000);
+
+        // Decode "push 0x4720A0" (bytes: 68 A0 20 47 00) at 0x5A10D0
+        let bytes = [0x68, 0xA0, 0x20, 0x47, 0x00];
+        let mut decoder = Decoder::with_ip(32, &bytes, 0x5A10D0, DecoderOptions::NONE);
+        let instr = decoder.decode();
+
+        let mut raw_text = String::new();
+        let mut formatter = IntelFormatter::new();
+        formatter.options_mut().set_first_operand_char_index(0);
+        formatter.options_mut().set_hex_prefix("0x");
+        formatter.options_mut().set_hex_suffix("");
+        formatter.options_mut().set_leading_zeroes(false);
+        formatter.format(&instr, &mut raw_text);
+
+        let clean = clean_instruction_text(&app, &instr, &raw_text);
+        assert_eq!(
+            clean,
+            "push 0x6120A0",
+            "push 0x4720A0 must be rebased to push 0x6120A0"
+        );
+
+        // push 0 (immediate 0 is not in-image, should not be rebased)
+        let push_zero = [0x6A, 0x00];
+        let mut decoder_zero = Decoder::with_ip(32, &push_zero, 0x5A10D0, DecoderOptions::NONE);
+        let instr_zero = decoder_zero.decode();
+        raw_text.clear();
+        formatter.format(&instr_zero, &mut raw_text);
+        let clean_zero = clean_instruction_text(&app, &instr_zero, &raw_text);
+        assert_eq!(clean_zero, "push 0");
     }
 }

@@ -51,7 +51,7 @@ pub enum HexPatternByte {
 /// "single concatenated blob" and "token by token" parsing paths below,
 /// so the pairwise-hex-decoding logic only lives in one place.
 fn push_hex_pairs(s: &str, pattern: &mut Vec<HexPatternByte>, match_case: bool) -> Option<()> {
-    if s.is_empty() || s.len() % 2 != 0 {
+    if s.is_empty() || !s.len().is_multiple_of(2) {
         return None;
     }
     for chunk in s.as_bytes().chunks(2) {
@@ -71,22 +71,29 @@ fn push_hex_pairs(s: &str, pattern: &mut Vec<HexPatternByte>, match_case: bool) 
 }
 
 pub fn hex_string_to_pattern(hex_string: &str, match_case: bool) -> Option<Vec<HexPatternByte>> {
-    let cleaned = hex_string.replace("0x", "").replace("0X", "");
-    let tokens: Vec<&str> = cleaned.split_whitespace().collect();
+    let raw_tokens: Vec<&str> = hex_string.split_whitespace().collect();
     let mut pattern = Vec::new();
 
     // A single long token (no internal whitespace) is treated as one
     // concatenated hex blob, e.g. "deadbeef" -> DE AD BE EF.
-    // Everything else (multiple tokens, or a single byte/nibble-sized
-    // token) is parsed token by token, which is what lets wildcards be
-    // mixed in with individual bytes, e.g. "de ?? be".
-    let single_blob = tokens.len() == 1 && tokens[0].len() > 2;
-
-    if single_blob {
-        push_hex_pairs(tokens[0], &mut pattern, match_case)?;
+    let single_raw = if raw_tokens.len() == 1 {
+        let t = raw_tokens[0];
+        let clean = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+        if clean.len() > 2 {
+            Some(clean)
+        } else {
+            None
+        }
     } else {
-        for token in tokens.iter().filter(|t| !t.is_empty()) {
-            match *token {
+        None
+    };
+
+    if let Some(blob) = single_raw {
+        push_hex_pairs(blob, &mut pattern, match_case)?;
+    } else {
+        for token in raw_tokens.iter().filter(|t| !t.is_empty()) {
+            let clean = token.strip_prefix("0x").or_else(|| token.strip_prefix("0X")).unwrap_or(token);
+            match clean {
                 "?" | "??" => pattern.push(HexPatternByte::Wildcard),
                 t if t.len() == 1 => {
                     let byte = u8::from_str_radix(t, 16).ok()?;
@@ -96,7 +103,7 @@ pub fn hex_string_to_pattern(hex_string: &str, match_case: bool) -> Option<Vec<H
                         pattern.push(HexPatternByte::IgnoreCase(byte));
                     }
                 }
-                t if t.len() % 2 == 0 => push_hex_pairs(t, &mut pattern, match_case)?,
+                t if t.len().is_multiple_of(2) => push_hex_pairs(t, &mut pattern, match_case)?,
                 _ => return None,
             }
         }
@@ -154,7 +161,7 @@ pub fn find_all_pattern_matches(app: &mut App, pattern: &[HexPatternByte]) -> Ve
             pattern.iter().enumerate().all(|(i, pat)| match pat {
                 HexPatternByte::Exact(b) => buffer[start_idx + i] == *b,
                 HexPatternByte::IgnoreCase(b) => {
-                    buffer[start_idx + i].to_ascii_lowercase() == b.to_ascii_lowercase()
+                    buffer[start_idx + i].eq_ignore_ascii_case(b)
                 }
                 HexPatternByte::Wildcard => true,
             })

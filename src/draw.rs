@@ -226,13 +226,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         f(app, frame);
     }
 
-    // The replacement box is a second layer over the strings list, so the row being
-    // replaced stays visible behind it.
-    if app.state == UIState::DialogStringEdit
-        && let Some(f) = app.dialog_renderer
-    {
-        f(app, frame);
-    }
     if let Some(f) = app.dialog_2nd_renderer {
         f(app, frame);
     }

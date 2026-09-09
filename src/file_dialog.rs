@@ -115,7 +115,7 @@ impl FileDialogState {
                 name: "..".to_string(),
                 is_dir: true,
                 size: 0,
-                modified_str: "".to_string(),
+                modified_str: String::new(),
                 path: parent.to_path_buf(),
             });
         }
@@ -129,8 +129,8 @@ impl FileDialogState {
                 let name = entry.file_name().to_string_lossy().to_string();
                 let metadata = entry.metadata().ok();
 
-                let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                let is_dir = metadata.as_ref().is_some_and(|m| m.is_dir());
+                let size = metadata.as_ref().map_or(0, |m| m.len());
                 let modified_str = metadata
                     .and_then(|m| m.modified().ok())
                     .map(format_system_time)
@@ -152,8 +152,8 @@ impl FileDialogState {
             }
         }
 
-        dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        dirs.sort_by_key(|a| a.name.to_lowercase());
+        files.sort_by_key(|a| a.name.to_lowercase());
 
         self.items.extend(dirs);
         self.items.extend(files);
@@ -262,8 +262,8 @@ pub fn draw_file_dialog(app: &mut App, frame: &mut Frame) {
     let dialog_bg = derive_dialog_bg(base_bg);
     let dialog_style = theme.dialog.bg(dialog_bg);
 
-    let width = (frame.area().width as u16).saturating_sub(6).clamp(60, 84);
-    let height = (frame.area().height as u16).saturating_sub(4).clamp(16, 26);
+    let width = frame.area().width.saturating_sub(6).clamp(60, 84);
+    let height = frame.area().height.saturating_sub(4).clamp(16, 26);
     let dialog_area = center_widget(width, height, frame.area());
 
     frame.render_widget(Clear, dialog_area);
@@ -312,11 +312,12 @@ pub fn draw_file_dialog(app: &mut App, frame: &mut Frame) {
 
         let name_col_width = (list_area.width as usize).saturating_sub(32).max(18);
 
-        let formatted_name = if item.is_dir {
-            format!("{:<width$}", format!("[{}]", item.name), width = name_col_width)
+        let raw_name = if item.is_dir {
+            format!("[{}]", item.name)
         } else {
-            format!("{:<width$}", item.name, width = name_col_width)
+            item.name.clone()
         };
+        let formatted_name = pad_display_width(&raw_name, name_col_width);
 
         let type_or_size = if item.is_dir {
             format!("{:>12}", crate::i18n::M::LblSubDir.tr(app.config.lang))
@@ -359,6 +360,37 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+fn pad_display_width(text: &str, width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let w = text.width();
+    if w <= width {
+        let mut s = String::with_capacity(text.len() + (width - w));
+        s.push_str(text);
+        for _ in 0..(width - w) {
+            s.push(' ');
+        }
+        s
+    } else {
+        let mut cur_w = 0;
+        let mut s = String::new();
+        for ch in text.chars() {
+            let cw = ch.width().unwrap_or(0);
+            if cur_w + cw > width.saturating_sub(1) {
+                s.push('~');
+                cur_w += 1;
+                break;
+            }
+            s.push(ch);
+            cur_w += cw;
+        }
+        while cur_w < width {
+            s.push(' ');
+            cur_w += 1;
+        }
+        s
     }
 }
 
@@ -421,7 +453,6 @@ pub fn dialog_file_events(app: &mut App, event: &Event) -> Result<bool> {
             || key.code == KeyCode::Backspace
         {
             if let Some(parent) = app.file_dialog.current_dir.parent().map(|p| p.to_path_buf()) {
-                let _ = std::env::set_current_dir(&parent);
                 app.file_dialog = FileDialogState::new(parent);
             }
             return Ok(false);
@@ -469,7 +500,6 @@ pub fn dialog_file_events(app: &mut App, event: &Event) -> Result<bool> {
                 if let Some(item) = app.file_dialog.items.get(app.file_dialog.selected_index).cloned() {
                     if item.is_dir {
                         let new_dir = item.path;
-                        let _ = std::env::set_current_dir(&new_dir);
                         app.file_dialog = FileDialogState::new(new_dir);
                     } else {
                         let path_str = item.path.to_string_lossy().to_string();
@@ -539,7 +569,6 @@ pub fn dialog_drive_events(app: &mut App, key: KeyEvent) -> Result<bool> {
 
 fn confirm_drive_selection(app: &mut App) {
     if let Some(drive) = app.drive_dialog.drives.get(app.drive_dialog.selected_index).cloned() {
-        let _ = std::env::set_current_dir(&drive.path);
         app.file_dialog = FileDialogState::new(&drive.path);
         app.state = UIState::DialogFileDialog;
         app.dialog_renderer = Some(draw_file_dialog);

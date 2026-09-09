@@ -61,10 +61,10 @@ impl Selection {
         match self.direction {
             None => {
                 self.direction = Some(Direction::RightOrDown);
-                self.end = (self.start + step).min(last_offset);
+                self.end = self.start.saturating_add(step).min(last_offset);
             }
-            Some(Direction::LeftOrUp) => self.start = (self.start + step).min(last_offset),
-            Some(Direction::RightOrDown) => self.end = (self.end + step).min(last_offset),
+            Some(Direction::LeftOrUp) => self.start = self.start.saturating_add(step).min(last_offset),
+            Some(Direction::RightOrDown) => self.end = self.end.saturating_add(step).min(last_offset),
         }
         if self.start == self.end {
             self.direction = None;
@@ -72,18 +72,23 @@ impl Selection {
     }
 }
 
+pub const MAX_SELECTION_COPY_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_SELECTION_FILL_BYTES: usize = 16 * 1024 * 1024;
+
 pub fn format_selection_hex(app: &mut App) -> String {
     let bpl = app.config.hex_mode_bytes_per_line.max(1);
     let start = app.hex_view.selection.start.min(app.hex_view.selection.end);
-    let end = app.hex_view.selection.start.max(app.hex_view.selection.end);
+    let raw_end = app.hex_view.selection.start.max(app.hex_view.selection.end);
+    let end = raw_end.min(start.saturating_add(MAX_SELECTION_COPY_BYTES.saturating_sub(1)));
 
-    let mut s = String::with_capacity((end - start + 1) * 3 + 8);
+    let span = end.saturating_sub(start).saturating_add(1);
+    let mut s = String::with_capacity(span.saturating_mul(3).saturating_add(8));
     let mut count = 0usize;
     for offset in start..=end {
         if let Some(byte) = app.read_u8(offset) {
             let _ = write!(s, "{:02X} ", byte);
             count += 1;
-            if count % bpl == 0 {
+            if count.is_multiple_of(bpl) {
                 s.push_str("\r\n");
             }
         }
@@ -94,9 +99,11 @@ pub fn format_selection_hex(app: &mut App) -> String {
 
 fn format_selection_text(app: &mut App, encoding: &'static encoding_rs::Encoding) -> String {
     let start = app.hex_view.selection.start.min(app.hex_view.selection.end);
-    let end = app.hex_view.selection.start.max(app.hex_view.selection.end);
+    let raw_end = app.hex_view.selection.start.max(app.hex_view.selection.end);
+    let end = raw_end.min(start.saturating_add(MAX_SELECTION_COPY_BYTES.saturating_sub(1)));
 
-    let mut bytes = Vec::with_capacity(end.saturating_sub(start) + 1);
+    let span = end.saturating_sub(start).saturating_add(1);
+    let mut bytes = Vec::with_capacity(span);
     for offset in start..=end {
         match app.read_u8(offset) {
             Some(b) => bytes.push(b),
@@ -182,7 +189,7 @@ pub fn format_mouse_selection_dump(app: &mut App, start: usize, end: usize) -> S
             }
         }
 
-        result.push_str(" ");
+        result.push(' ');
         result.push_str(&ascii_part);
         result.push_str("\r\n");
 
@@ -196,7 +203,7 @@ pub fn color_block_at_cursor(app: &mut App) {
     let offset = app.hex_view.offset;
 
     for block in &mut app.hex_view.blocks {
-        if offset >= block.start && offset <= block.end {
+        if (block.start..=block.end).contains(&offset) {
             block.set_random_color();
             let (start, end) = (block.start, block.end);
             crate::app::App::log(
@@ -222,6 +229,14 @@ pub fn color_block_at_cursor(app: &mut App) {
 }
 
 pub fn fill_selection_with(app: &mut App, value: u8) {
+    let start = app.hex_view.selection.start.min(app.hex_view.selection.end);
+    let end = app.hex_view.selection.start.max(app.hex_view.selection.end);
+    let span = end.saturating_sub(start).saturating_add(1);
+    if span > MAX_SELECTION_FILL_BYTES {
+        app.error(format!("Fill selection exceeds maximum limit of {} MB", MAX_SELECTION_FILL_BYTES / (1024 * 1024)));
+        return;
+    }
+
     let mut count = 0usize;
     for offset in app.hex_view.selection {
         crate::hex::edit::record_edit(app, offset, value);
@@ -250,9 +265,9 @@ pub fn select_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.goto(new_offset);
         }
         KeyCode::Right => {
-            let new_offset = app.hex_view.offset + 1;
+            let new_offset = app.hex_view.offset.saturating_add(1);
 
-            if new_offset >= app.file_info.size {
+            if new_offset >= app.file_info.buffer_len() {
                 return Ok(true);
             }
 

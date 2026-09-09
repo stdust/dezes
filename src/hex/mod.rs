@@ -15,3 +15,5 @@ pub mod selection;
 pub mod strings;
 pub mod pattern_engine;
 pub mod replace_dialog;
+pub mod patches_dialog;
+pub mod bookmark;

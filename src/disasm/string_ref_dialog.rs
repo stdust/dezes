@@ -12,8 +12,9 @@ use tui_input::Input;
 use crate::{app::App, editor::{AppView, UIState}};
 use super::string_ref::{scan_string_references, StringRefItem};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EncodingFilter {
+    #[default]
     All,
     Ascii,
     Utf8,
@@ -185,7 +186,9 @@ fn fixed_centered_rect(width: u16, height: u16, r: Rect) -> Rect {
 }
 
 pub fn draw_string_ref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
-    let popup_area = fixed_centered_rect(96, 22, area);
+    let width = (area.width * 9 / 10).max(96).min(area.width);
+    let height = (area.height * 9 / 10).max(22).min(area.height);
+    let popup_area = fixed_centered_rect(width, height, area);
 
     // Clear background
     frame.render_widget(Clear, popup_area);
@@ -225,7 +228,15 @@ pub fn draw_string_ref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
 
     // 1. String References Table (Address | Disassembly | Text string)
     let is_64 = app.is_64();
-    let addr_col_len = if is_64 { 16 } else { 8 };
+    let addr_col_len = if is_64 {
+        let max_len = dialog.items.iter()
+            .map(|item| item.va_str_64.len())
+            .max()
+            .unwrap_or(9);
+        (max_len.max(crate::i18n::M::LblAddress.tr(app.config.lang).chars().count())) as u16
+    } else {
+        8
+    };
 
     let header_cells = [
         Cell::new(crate::i18n::M::LblAddress.tr(app.config.lang))
@@ -349,11 +360,12 @@ pub fn draw_string_ref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 }
 
-fn measure_string_budget(buffer: &[u8], offset: usize, is_utf16: bool) -> usize {
+fn measure_string_capacity(buffer: &[u8], offset: usize, is_utf16: bool) -> (usize, usize) {
     if offset >= buffer.len() {
-        return 0;
+        return (0, 0);
     }
     let slice = &buffer[offset..];
+    let term_size = if is_utf16 { 2 } else { 1 };
     if is_utf16 {
         let mut len = 0;
         for chunk in slice.chunks_exact(2) {
@@ -365,7 +377,16 @@ fn measure_string_budget(buffer: &[u8], offset: usize, is_utf16: bool) -> usize 
                 break;
             }
         }
-        len
+        let mut total_len = len;
+        // Count contiguous trailing 00 padding bytes
+        while offset + total_len + 1 < buffer.len() && buffer[offset + total_len] == 0 && buffer[offset + total_len + 1] == 0 {
+            total_len += 2;
+            if total_len >= 1024 {
+                break;
+            }
+        }
+        let budget = total_len.saturating_sub(term_size);
+        (budget, total_len)
     } else {
         let mut len = 0;
         for &b in slice {
@@ -377,7 +398,16 @@ fn measure_string_budget(buffer: &[u8], offset: usize, is_utf16: bool) -> usize 
                 break;
             }
         }
-        len
+        let mut total_len = len;
+        // Count contiguous trailing 00 padding bytes
+        while offset + total_len < buffer.len() && buffer[offset + total_len] == 0 {
+            total_len += 1;
+            if total_len >= 1024 {
+                break;
+            }
+        }
+        let budget = total_len.saturating_sub(term_size);
+        (budget, total_len)
     }
 }
 
@@ -397,13 +427,17 @@ pub fn open_string_ref_edit(app: &mut App) {
         return;
     };
 
-    let raw_text = item.string_text.trim_matches('"').to_string();
     let is_utf16 = item.encoding_kind == "UTF-16LE";
+    let raw_text = if is_utf16 && item.string_text.starts_with("L\"") && item.string_text.ends_with('"') {
+        item.string_text[2..item.string_text.len() - 1].to_string()
+    } else {
+        item.string_text.trim_matches('"').to_string()
+    };
 
     let buffer = app.file_info.get_buffer_ref();
-    let budget = measure_string_budget(buffer, item.string_offset, is_utf16);
-    let budget = if budget == 0 {
-        crate::util::encode_text(
+    let (budget, total_capacity) = measure_string_capacity(buffer, item.string_offset, is_utf16);
+    let (budget, total_capacity) = if total_capacity == 0 {
+        let raw_len = crate::util::encode_text(
             &raw_text,
             match item.encoding_kind {
                 "CP949" => encoding_rs::EUC_KR,
@@ -412,9 +446,11 @@ pub fn open_string_ref_edit(app: &mut App) {
                 _ => encoding_rs::UTF_8,
             },
         )
-        .len()
+        .len();
+        let term_size = if is_utf16 { 2 } else { 1 };
+        (raw_len, raw_len + term_size)
     } else {
-        budget
+        (budget, total_capacity)
     };
 
     let encoding = match item.encoding_kind {
@@ -430,6 +466,7 @@ pub fn open_string_ref_edit(app: &mut App) {
     app.hex_view.string_edit = crate::hex::strings::StringEdit {
         offset: item.string_offset,
         budget,
+        total_capacity,
         row: usize::MAX,
         encoding,
         input: tui_input::Input::new(raw_text).with_cursor(cursor),
@@ -623,12 +660,12 @@ pub fn dialog_string_ref_events(app: &mut App, event: &Event) -> Result<bool> {
                     app.dialog_2nd_renderer = Some(crate::hex::strings::dialog_strings_draw);
                 }
 
-                if let Some(target_ofs) = selected_string_offset {
-                    if let Some(pos) = app.hex_view.strings_filtered.iter().position(|&idx| {
+                if let Some(target_ofs) = selected_string_offset
+                    && let Some(pos) = app.hex_view.strings_filtered.iter().position(|&idx| {
                         app.strings.get(idx).map(|s| s.offset) == Some(target_ofs)
-                    }) {
-                        app.list_state.select(Some(pos));
-                    }
+                    })
+                {
+                    app.list_state.select(Some(pos));
                 }
                 return Ok(false);
             }
@@ -798,7 +835,7 @@ mod follow_tests {
             va,
             string_offset,
             string_va,
-            va_str_64: format!("{:016X}", va),
+            va_str_64: if va >= 0x1_0000_0000 { format!("{:X}", va) } else { format!("{:08X}", va) },
             va_str_32: format!("{:08X}", va),
             instr_text: "lea rdx,[0x140002000]".to_string(),
             string_text: "\"hello\"".to_string(),
@@ -929,6 +966,35 @@ mod follow_tests {
         assert!(view == AppView::Hex);
         assert_eq!(offset, 0x200);
     }
+
+    #[test]
+    fn string_ref_64bit_renders_without_leading_zeros() {
+        let mut app = match app_with_pe() {
+            Some(a) => a,
+            None => return,
+        };
+        one_item_at(&mut app, 0x5EB18, 0x14005EB18, 0x2000, 0x140002000);
+
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).expect("terminal");
+        terminal.draw(|f| {
+            let area = f.area();
+            draw_string_ref_dialog(&mut app, f, area);
+        }).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("14005EB18"));
+        assert!(!rendered.contains("000000014005EB18"));
+    }
 }
 #[cfg(test)]
 mod copy_tests {
@@ -942,7 +1008,7 @@ mod copy_tests {
             va,
             string_offset,
             string_va: 0x140000000 + string_offset as u64,
-            va_str_64: format!("{:016X}", va),
+            va_str_64: if va >= 0x1_0000_0000 { format!("{:X}", va) } else { format!("{:08X}", va) },
             va_str_32: format!("{:08X}", va),
             instr_text: "lea rdx,[0x140002000]".to_string(),
             string_text: format!("\"{}\"", text),
@@ -959,7 +1025,7 @@ mod copy_tests {
 
         assert_eq!(
             item_as_tsv(&it, true),
-            "0000000140001234\tlea rdx,[0x140002000]\tASCII \"hello\"\t000A1A38"
+            "140001234\tlea rdx,[0x140002000]\tASCII \"hello\"\t000A1A38"
         );
         // A 32-bit image gets the narrow column, the same as the table.
         let it32 = item(0x600, 0x40001234, 0xA1A38, "hello");
@@ -1055,5 +1121,35 @@ mod copy_tests {
         }
 
         assert_eq!(app.disasm_string_ref_dialog.filter_input.value(), "ycY");
+    }
+
+    #[test]
+    fn string_ref_edit_budget_includes_trailing_nulls_on_scy() {
+        let path = "C:\\Users\\Administrator\\Desktop\\pecmd\\dumped_SCY.exe";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut app = App::new();
+        app.config.database = false;
+        if app.load_file(path, 0, false).is_err() {
+            return;
+        }
+        let items = crate::disasm::string_ref::scan_string_references(&app);
+        app.disasm_string_ref_dialog.items = items;
+        app.disasm_string_ref_dialog.update_filter();
+
+        let pos = app.disasm_string_ref_dialog.filtered_indices.iter().position(|&idx| {
+            app.disasm_string_ref_dialog.items[idx].string_offset == 0x1206A8
+        });
+        assert!(pos.is_some(), "Expected string ref for 0x1206A8");
+        app.disasm_string_ref_dialog.selected_index = pos.unwrap();
+
+        let key_f4 = KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE);
+        let _ = dialog_string_ref_events(&mut app, &Event::Key(key_f4));
+
+        assert!(app.state == UIState::DialogStringEdit);
+        assert_eq!(app.hex_view.string_edit.budget, 46);
+        assert_eq!(app.hex_view.string_edit.total_capacity, 48);
+        assert_eq!(app.hex_view.string_edit.input.value(), "分辨率 %d×%d 颜色%d位 刷新率%d");
     }
 }

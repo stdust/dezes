@@ -8,7 +8,7 @@ impl App {
     }
 
     pub fn goto_with_history(&mut self, offset: usize, record_history: bool) {
-        if offset >= self.file_info.size {
+        if offset >= self.file_info.buffer_len() {
             return;
         }
 

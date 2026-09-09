@@ -23,6 +23,7 @@ use ratatui::{
 };
 
 use crate::{app::App, editor::UIState};
+use unicode_width::UnicodeWidthStr;
 
 /// Width of the selection slot: `[` + four hex digits + `]`.
 const SELECTION_WIDTH: usize = 6;
@@ -78,6 +79,8 @@ pub fn status_bar_draw(app: &mut App, frame: &mut Frame, area: Rect) {
         UIState::HexSelection => Cow::Borrowed("SELECT"),
         UIState::DialogAbout => Cow::Borrowed("ABOUT"),
         UIState::DialogCalculator => Cow::Borrowed("CALC"),
+        UIState::DialogConfirmReload => Cow::Borrowed("RELOAD"),
+        UIState::DialogConfirmDeleteSection => Cow::Borrowed("DELETE SECTION"),
         UIState::DialogBase => Cow::Borrowed("BASE"),
         UIState::DialogComment => Cow::Borrowed("COMMENT"),
         UIState::DialogEncoding => Cow::Borrowed("ENCODING1"),
@@ -91,12 +94,16 @@ pub fn status_bar_draw(app: &mut App, frame: &mut Frame, area: Rect) {
         UIState::DialogNames | UIState::DialogNamesRegex => Cow::Borrowed("NAMES"),
         UIState::DialogStrings | UIState::DialogStringEdit => Cow::Borrowed("STRINGS"),
         UIState::DialogModifyBlock => Cow::Borrowed("MODIFY"),
+        UIState::DialogBookmarks => Cow::Borrowed("BOOKMARKS"),
+        UIState::DialogBookmarkInput => Cow::Borrowed("BOOKMARK"),
+        UIState::DialogPatches => Cow::Borrowed("PATCHES"),
         UIState::DialogReplacePattern => Cow::Borrowed("REPLACE/PATTERN"),
         UIState::DialogFindPattern => Cow::Borrowed("FIND/PATTERN"),
         UIState::DialogXref => Cow::Borrowed("XREF"),
         UIState::DialogStringRef => Cow::Borrowed("STR REFS"),
         UIState::DialogAssemble => Cow::Borrowed("ASSEMBLE"),
         UIState::DialogSectionSize => Cow::Borrowed("SECTION"),
+        UIState::DialogDumpSection => Cow::Borrowed("DUMP SECTION"),
         UIState::DialogFileDialog => Cow::Borrowed("FILE"),
         UIState::DialogDriveSelect => Cow::Borrowed("DRIVE"),
         UIState::Command => Cow::Borrowed("COMMAND"),
@@ -104,11 +111,8 @@ pub fn status_bar_draw(app: &mut App, frame: &mut Frame, area: Rect) {
     };
 
     let match_count_str = if !app.hex_view.search.matches.is_empty() {
-        if let Some(idx) = app.hex_view.search.match_index {
-            format!(" ({}/{})", idx + 1, app.hex_view.search.matches.len())
-        } else {
-            format!(" (0/{})", app.hex_view.search.matches.len())
-        }
+        let idx = app.hex_view.search.match_index.map_or(0, |i| i + 1);
+        format!(" ({}/{})", idx, app.hex_view.search.matches.len())
     } else {
         String::new()
     };
@@ -117,11 +121,10 @@ pub fn status_bar_draw(app: &mut App, frame: &mut Frame, area: Rect) {
 
     // Floored, not rounded: rounding showed 100% while there was still up to
     // half a percent of the file left below the cursor.
-    let percent = if app.file_info.size == 0 {
-        0
-    } else {
-        (app.hex_view.offset * 100 / app.file_info.size).min(100)
-    };
+    let percent = (app.hex_view.offset * 100)
+        .checked_div(app.file_info.size)
+        .unwrap_or(0)
+        .min(100);
 
     // Bracketed so it reads as a badge on the filename rather than as part of it:
     // `sample.bin [Read Only]`, not `sample.bin Read Only`.
@@ -141,13 +144,18 @@ pub fn status_bar_draw(app: &mut App, frame: &mut Frame, area: Rect) {
     // the block is right-aligned, so a field that appears and disappears pushes
     // everything to its left sideways. This one sits fifth, so marking a block
     // used to shift the IME, encoding, mode and file type fields all at once.
-    let sel_len = app
-        .hex_view
-        .selection
-        .end
-        .saturating_sub(app.hex_view.selection.start);
-    let selected_str = if app.state == UIState::HexSelection || sel_len > 0 {
-        format!("[{:>4X}]", sel_len)
+    let (sel_start, sel_end) = (
+        app.hex_view.selection.start.min(app.hex_view.selection.end),
+        app.hex_view.selection.start.max(app.hex_view.selection.end),
+    );
+    let has_selection = app.state == UIState::HexSelection || sel_start != sel_end;
+    let selected_str = if has_selection {
+        let sel_len = sel_end.saturating_sub(sel_start) + 1;
+        if app.config.block_base == 10 {
+            format!("[{:>4}]", sel_len)
+        } else {
+            format!("[{:>4X}]", sel_len)
+        }
     } else {
         " ".repeat(SELECTION_WIDTH)
     };
@@ -211,7 +219,7 @@ pub fn status_bar_draw(app: &mut App, frame: &mut Frame, area: Rect) {
     // made them overwrite each other once they no longer fit side by side; the
     // right-hand block is the one that must stay readable, so it keeps its width
     // and the file name gets clipped.
-    let right_w = (right_text.chars().count() as u16).min(area.width);
+    let right_w = (right_text.width() as u16).min(area.width);
     let zones = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(0), Constraint::Length(right_w)])
@@ -485,4 +493,41 @@ mod slot_width_tests {
             assert!(label.chars().count() <= MODE_WIDTH, "'{}' exceeds slot", label);
         }
     }
+
+    #[test]
+    fn test_selection_block_base_formatting() {
+        let sel_len: usize = 256;
+        let hex_formatted = format!("[{:>4X}]", sel_len);
+        let dec_formatted = format!("[{:>4}]", sel_len);
+        assert_eq!(hex_formatted, "[ 100]");
+        assert_eq!(dec_formatted, "[ 256]");
+        assert_eq!(hex_formatted.chars().count(), SELECTION_WIDTH);
+        assert_eq!(dec_formatted.chars().count(), SELECTION_WIDTH);
+    }
+
+    #[test]
+    fn test_selection_length_calculation() {
+        let mut app = loaded_app();
+
+        // 4 bytes selection (forward: 0x10 to 0x13)
+        app.hex_view.selection.start = 0x10;
+        app.hex_view.selection.end = 0x13;
+        app.state = UIState::Normal;
+        let rendered = render(&mut app, 120);
+        assert!(rendered.contains("[   4]"), "expected [   4], got: {}", rendered);
+
+        // 4 bytes selection (backward: 0x13 to 0x10)
+        app.hex_view.selection.start = 0x13;
+        app.hex_view.selection.end = 0x10;
+        let rendered = render(&mut app, 120);
+        assert!(rendered.contains("[   4]"), "expected [   4], got: {}", rendered);
+
+        // 1 byte selection in HexSelection mode (start == end)
+        app.hex_view.selection.start = 0x10;
+        app.hex_view.selection.end = 0x10;
+        app.state = UIState::HexSelection;
+        let rendered = render(&mut app, 120);
+        assert!(rendered.contains("[   1]"), "expected [   1], got: {}", rendered);
+    }
 }
+

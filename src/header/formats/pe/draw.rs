@@ -2,7 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::Modifier,
-    widgets::{Block, Borders, Cell, Clear, List, ListItem, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState},
 };
 
 use crate::app::App;
@@ -70,15 +70,14 @@ pub fn pe_draw(app: &mut App, frame: &mut Frame, area: Rect) {
     let bg_block = Block::default().style(main_style);
     frame.render_widget(bg_block, area);
 
-    // 7 Sidebar Categories (PE Header titles updated according to user request)
-    let categories = vec![
-        format!("1. DOS Header"),
-        format!("2. COFF Header"),
-        format!("3. Optional Header"),
-        format!("4. Data Directories"),
+    // 6 Sidebar Categories
+    let categories = [
+        "1. DOS Header".to_string(),
+        "2. COFF Header".to_string(),
+        "3. Optional Header".to_string(),
+        "4. Data Directories".to_string(),
         format!("5. Section ({})", pe_ref.sections.len()),
         format!("6. Import Directory ({})", pe_ref.imports.len()),
-        format!("7. Section Tools"),
     ];
 
     let max_categories = categories.len();
@@ -154,18 +153,35 @@ pub fn pe_draw(app: &mut App, frame: &mut Frame, area: Rect) {
                 .map(|(idx, field)| {
                     let (name, val) = (&field.name, &field.value);
                     let is_row_sel = idx == app.header_view.detail_index;
+                    let is_dirty = (field.offset..field.offset + field.size.max(1))
+                        .any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs));
+
+                    let display_name = if is_dirty {
+                        format!("* {}", name)
+                    } else {
+                        name.clone()
+                    };
+
+                    let name_style = if is_dirty {
+                        app.config.theme.changed_bytes.add_modifier(Modifier::BOLD)
+                    } else {
+                        main_style.add_modifier(Modifier::BOLD)
+                    };
+
                     let val_style = if is_row_sel {
                         if is_detail_active {
                             highlight_style.add_modifier(Modifier::BOLD)
                         } else {
                             main_style.add_modifier(Modifier::REVERSED)
                         }
+                    } else if is_dirty {
+                        app.config.theme.changed_bytes
                     } else {
                         main_style
                     };
 
                     Row::new(vec![
-                        Cell::new(name.as_str()).style(main_style.add_modifier(Modifier::BOLD)),
+                        Cell::new(display_name).style(name_style),
                         Cell::new(val.as_str()).style(val_style),
                     ])
                     .style(main_style)
@@ -235,14 +251,36 @@ pub fn pe_draw(app: &mut App, frame: &mut Frame, area: Rect) {
                     let (row_style, cell_style) =
                         selection_styles(&app.config.theme, is_row_sel, is_detail_active);
 
-                    let pick = |col: usize| {
-                        if is_row_sel && sel_col == col { cell_style } else { row_style }
+                    let dd_base = crate::header::formats::pe::OptionalHeaderLayout::from_pe(pe_ref).data_directory(idx);
+                    let rva_dirty = (dd_base..dd_base + 4).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs));
+                    let size_dirty = (dd_base + 4..dd_base + 8).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs));
+
+                    let display_name = if rva_dirty || size_dirty {
+                        format!("* {}", name)
+                    } else {
+                        name.clone()
+                    };
+
+                    let pick = |col: usize, dirty: bool| {
+                        if is_row_sel && sel_col == col {
+                            cell_style
+                        } else if dirty {
+                            app.config.theme.changed_bytes.add_modifier(Modifier::BOLD)
+                        } else {
+                            row_style
+                        }
+                    };
+
+                    let name_style = if rva_dirty || size_dirty {
+                        app.config.theme.changed_bytes.add_modifier(Modifier::BOLD)
+                    } else {
+                        row_style
                     };
 
                     Row::new(vec![
-                        Cell::new(name.as_str()).style(row_style),
-                        Cell::new(rva.as_str()).style(pick(0)),
-                        Cell::new(size.as_str()).style(pick(1)),
+                        Cell::new(display_name).style(name_style),
+                        Cell::new(rva.as_str()).style(pick(0, rva_dirty)),
+                        Cell::new(size.as_str()).style(pick(1, size_dirty)),
                     ])
                     .style(row_style)
                 })
@@ -265,7 +303,26 @@ pub fn pe_draw(app: &mut App, frame: &mut Frame, area: Rect) {
             frame.render_stateful_widget(table, detail_area, &mut state);
         }
         4 => {
-            // Section Table (Matches User Image 1 without underline on unselected cells)
+            let sec_count = pe_ref.sections.len();
+            // 6 tool rows + 2 borders + 1 footer/message row
+            let tools_needed = 6 + 2 + 1;
+            let tools_height = (tools_needed as u16)
+                .min(detail_area.height.saturating_sub(6))
+                .max(4);
+
+            let vert_split = Layout::vertical([
+                Constraint::Fill(1),
+                Constraint::Length(tools_height),
+            ]);
+            let [table_area, tools_box_area] = detail_area.layout(&vert_split);
+
+            let is_in_table = is_detail_active && app.header_view.detail_index < sec_count;
+            let is_in_tools = is_detail_active && app.header_view.detail_index >= sec_count;
+
+            let table_border_style = if is_in_table { active_border_style } else { inactive_border_style };
+            let tools_border_style = if is_in_tools { active_border_style } else { inactive_border_style };
+
+            // --- 1. Section Table ---
             let mut sec_rows = Vec::new();
             for (sec_idx, sec) in pe_ref.sections.iter().enumerate() {
                 let sec_name = sec.name().unwrap_or("???");
@@ -280,17 +337,18 @@ pub fn pe_draw(app: &mut App, frame: &mut Frame, area: Rect) {
                 ));
             }
 
-            let len = sec_rows.len();
-            if app.header_view.detail_index >= len && len > 0 {
-                app.header_view.detail_index = len - 1;
-            }
+            let sel_table_idx = if app.header_view.detail_index < sec_count {
+                app.header_view.detail_index
+            } else {
+                app.header_view.tools_section_index.min(sec_count.saturating_sub(1))
+            };
 
             let sel_col = app.header_view.detail_col_index.min(5);
-            let visible_rows = detail_capacity(detail_area);
+            let visible_rows = detail_capacity(table_area);
             app.header_view.last_detail_rows = visible_rows;
             let (start_idx, end_idx) = crate::header::formats::pe::fields::visible_window(
-                len,
-                app.header_view.detail_index,
+                sec_count,
+                sel_table_idx,
                 visible_rows,
             );
 
@@ -300,22 +358,45 @@ pub fn pe_draw(app: &mut App, frame: &mut Frame, area: Rect) {
                 .skip(start_idx)
                 .take(end_idx.saturating_sub(start_idx))
                 .map(|(idx, (num, name, vsize, voff, rsize, roff, flags))| {
-                    let is_row_sel = idx == app.header_view.detail_index;
+                    let is_row_sel = idx == sel_table_idx;
                     let (row_style, cell_style) =
-                        selection_styles(&app.config.theme, is_row_sel, is_detail_active);
+                        selection_styles(&app.config.theme, is_row_sel, is_in_table);
 
-                    let make_cell_style = |c_idx: usize| {
-                        if is_row_sel && sel_col == c_idx { cell_style } else { row_style }
+                    let size_of_opt_hdr = pe_ref.coff_header.size_of_optional_header as usize;
+                    let sec_base = pe_ref.dos_header.pe_pointer as usize + 24 + size_of_opt_hdr + idx * 40;
+
+                    let d_name = (sec_base..sec_base + 8).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs));
+                    let d_vsize = (sec_base + 8..sec_base + 12).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs));
+                    let d_voff = (sec_base + 12..sec_base + 16).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs));
+                    let d_rsize = (sec_base + 16..sec_base + 20).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs));
+                    let d_roff = (sec_base + 20..sec_base + 24).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs));
+                    let d_flags = (sec_base + 36..sec_base + 40).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs));
+                    let any_dirty = d_name || d_vsize || d_voff || d_rsize || d_roff || d_flags;
+
+                    let display_num = if any_dirty {
+                        format!("* {}", num)
+                    } else {
+                        num.clone()
+                    };
+
+                    let make_cell_style = |c_idx: usize, dirty: bool| {
+                        if is_row_sel && is_in_table && sel_col == c_idx {
+                            cell_style
+                        } else if dirty {
+                            app.config.theme.changed_bytes.add_modifier(Modifier::BOLD)
+                        } else {
+                            row_style
+                        }
                     };
 
                     Row::new(vec![
-                        Cell::new(num.as_str()).style(row_style),
-                        Cell::new(name.as_str()).style(make_cell_style(0)),
-                        Cell::new(vsize.as_str()).style(make_cell_style(1)),
-                        Cell::new(voff.as_str()).style(make_cell_style(2)),
-                        Cell::new(rsize.as_str()).style(make_cell_style(3)),
-                        Cell::new(roff.as_str()).style(make_cell_style(4)),
-                        Cell::new(flags.as_str()).style(make_cell_style(5)),
+                        Cell::new(display_num).style(if any_dirty { app.config.theme.changed_bytes.add_modifier(Modifier::BOLD) } else { row_style }),
+                        Cell::new(name.as_str()).style(make_cell_style(0, d_name)),
+                        Cell::new(vsize.as_str()).style(make_cell_style(1, d_vsize)),
+                        Cell::new(voff.as_str()).style(make_cell_style(2, d_voff)),
+                        Cell::new(rsize.as_str()).style(make_cell_style(3, d_rsize)),
+                        Cell::new(roff.as_str()).style(make_cell_style(4, d_roff)),
+                        Cell::new(flags.as_str()).style(make_cell_style(5, d_flags)),
                     ])
                     .style(row_style)
                 })
@@ -331,20 +412,130 @@ pub fn pe_draw(app: &mut App, frame: &mut Frame, area: Rect) {
                 Constraint::Length(14),
             ];
 
-            let detail_block = Block::default()
+            let table_block = Block::default()
                 .borders(Borders::ALL)
-                .border_style(detail_border_style)
-                .style(main_style);
+                .border_style(table_border_style)
+                .style(main_style)
+                .title(format!(" Sections ({}) ", sec_count));
 
             let table = Table::new(rows, widths)
-                .block(detail_block)
+                .block(table_block)
                 .header(Row::new(vec!["#", "Name", "Virtual Size", "Virtual Offset", "Raw Size", "Raw Offset", "Characteristics"]).style(main_style.add_modifier(Modifier::BOLD)));
 
             let mut state = TableState::default();
-            if len > 0 {
-                state.select(Some(app.header_view.detail_index.saturating_sub(start_idx)));
+            if sec_count > 0 {
+                state.select(Some(sel_table_idx.saturating_sub(start_idx)));
             }
-            frame.render_stateful_widget(table, detail_area, &mut state);
+            frame.render_stateful_widget(table, table_area, &mut state);
+
+            // --- 2. Section Tools Box ---
+            let selected_sec_idx = app.header_view.tools_section_index.min(sec_count.saturating_sub(1));
+            let selected_sec = pe_ref.sections.get(selected_sec_idx);
+            let selected_sec_name = selected_sec.and_then(|s| s.name().ok()).unwrap_or("?");
+            let last_sec = pe_ref.sections.last();
+            let last_sec_name = last_sec.and_then(|s| s.name().ok()).unwrap_or("?");
+
+            let stem = std::path::Path::new(&app.file_info.path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("file");
+            let clean_name = selected_sec_name.trim_start_matches('.').replace('/', "_");
+
+            let section_alignment = pe_ref
+                .optional_header
+                .as_ref()
+                .map(|o| o.windows_fields.section_alignment.max(1) as u64)
+                .unwrap_or(0x1000);
+            let max_end_va = pe_ref
+                .sections
+                .iter()
+                .map(|s| s.virtual_address as u64 + (s.virtual_size as u64).max(s.size_of_raw_data as u64))
+                .max()
+                .unwrap_or(0);
+            let expected_size_of_image = crate::header::formats::pe::section_tools::align_up(max_end_va, section_alignment);
+
+            let titles = [
+                crate::i18n::M::SecToolAlignOffsetsTitle.tr(app.config.lang),
+                crate::i18n::M::SecToolAddSectionTitle.tr(app.config.lang),
+                crate::i18n::M::SecToolDumpSectionTitle.tr(app.config.lang),
+                crate::i18n::M::SecToolDeleteLastSectionTitle.tr(app.config.lang),
+                crate::i18n::M::SecToolFixSizeOfImageTitle.tr(app.config.lang),
+                crate::i18n::M::SecToolRemoveAslrTitle.tr(app.config.lang),
+            ];
+
+            let expected_size_str = format!("{:X}", expected_size_of_image);
+            let descs = [
+                crate::i18n::M::SecToolAlignOffsetsDesc.tr(app.config.lang).to_string(),
+                crate::i18n::M::SecToolAddSectionDesc.tr(app.config.lang).to_string(),
+                crate::i18n::fill(
+                    crate::i18n::M::SecToolDumpSectionDesc.tr(app.config.lang),
+                    &[selected_sec_name, stem, &clean_name],
+                ),
+                crate::i18n::fill(
+                    crate::i18n::M::SecToolDeleteLastSectionDesc.tr(app.config.lang),
+                    &[last_sec_name],
+                ),
+                crate::i18n::fill(
+                    crate::i18n::M::SecToolFixSizeOfImageDesc.tr(app.config.lang),
+                    &[&expected_size_str],
+                ),
+                crate::i18n::M::SecToolRemoveAslrDesc.tr(app.config.lang).to_string(),
+            ];
+
+            use unicode_width::UnicodeWidthStr;
+            let max_title_w = titles.iter().map(|t| UnicodeWidthStr::width(*t)).max().unwrap_or(25);
+
+            let tool_items: Vec<String> = titles
+                .iter()
+                .zip(descs.iter())
+                .map(|(title, desc)| {
+                    let tw = UnicodeWidthStr::width(*title);
+                    let pad_len = max_title_w.saturating_sub(tw) + 2;
+                    let pad = " ".repeat(pad_len);
+                    format!("{}{}{}", title, pad, desc)
+                })
+                .collect();
+
+            let tools_title = format!(" {} ", crate::i18n::M::SecToolsTitle.tr(app.config.lang));
+            let tools_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(tools_border_style)
+                .style(main_style)
+                .title(tools_title);
+            let tools_inner = tools_block.inner(tools_box_area);
+            frame.render_widget(tools_block, tools_box_area);
+
+            let tools_split = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]);
+            let [items_area, message_area] = tools_inner.layout(&tools_split);
+
+            let active_tool_idx = if is_in_tools {
+                Some(app.header_view.detail_index.saturating_sub(sec_count))
+            } else {
+                None
+            };
+
+            let list_items: Vec<ListItem> = tool_items
+                .iter()
+                .enumerate()
+                .map(|(idx, text)| {
+                    let is_sel = active_tool_idx == Some(idx);
+                    let item_style = if is_sel {
+                        highlight_style.add_modifier(Modifier::BOLD)
+                    } else {
+                        main_style
+                    };
+                    let prefix = if is_sel { "> " } else { "  " };
+                    ListItem::new(format!("{}{}", prefix, text)).style(item_style)
+                })
+                .collect();
+
+            let tools_list = List::new(list_items);
+            frame.render_widget(tools_list, items_area);
+
+            if let Some(msg) = &app.header_view.tools_last_message {
+                let para = Paragraph::new(format!("  * {}", msg)).style(app.config.theme.highlight.add_modifier(Modifier::BOLD));
+                frame.render_widget(para, message_area);
+            }
         }
         5 => {
             // Import Directory Table
@@ -431,93 +622,6 @@ pub fn pe_draw(app: &mut App, frame: &mut Frame, area: Rect) {
                 state.select(Some(app.header_view.detail_index.saturating_sub(start_idx)));
             }
             frame.render_stateful_widget(table, detail_area, &mut state);
-        }
-        6 => {
-            // Section Tools: a short menu of section-editing actions rather
-            // than a data table, since there's nothing to browse - just
-            // things to trigger.
-            let mut action_rows: Vec<(String, String)> = Vec::new();
-            match pe_ref.sections.get(app.header_view.tools_section_index) {
-                // Names the section it will act on. The tool works on whichever row
-                // the Section tab was left on, which is invisible from here - so
-                // "Set PointerToRawData = VirtualAddress" left the user guessing
-                // which of six sections was about to change.
-                Some(section) => action_rows.push((
-                    "Align Offset to VA".to_string(),
-                    format!(
-                        "Set '{}'.PointerToRawData = VirtualAddress (0x{:X})",
-                        section.name().unwrap_or("?"),
-                        section.virtual_address
-                    ),
-                )),
-                None => action_rows.push((
-                    "Align Offset to VA".to_string(),
-                    "No sections - select one in the Section tab first".to_string(),
-                )),
-            }
-            action_rows.push((
-                "Add New Section".to_string(),
-                "Append a new section of a given size (default 0x1000)".to_string(),
-            ));
-
-            let len = action_rows.len();
-            if app.header_view.detail_index >= len {
-                app.header_view.detail_index = len.saturating_sub(1);
-            }
-
-            // The result message goes *inside* the box, on its last row.
-            //
-            // It used to be a strip below the box, which made the box one row
-            // shorter than the sidebar beside it and put the text where the bottom
-            // border should have been - it read as a rendering fault rather than as
-            // confirmation, which is why running the action looked like it had done
-            // nothing.
-            let has_message = app.header_view.tools_last_message.is_some();
-            let footer_height = if has_message { 1 } else { 0 };
-
-            let rows: Vec<Row> = action_rows
-                .iter()
-                .enumerate()
-                .map(|(idx, (name, desc))| {
-                    let is_row_sel = idx == app.header_view.detail_index;
-                    let style = if is_row_sel {
-                        if is_detail_active {
-                            highlight_style.add_modifier(Modifier::BOLD)
-                        } else {
-                            main_style.add_modifier(Modifier::REVERSED)
-                        }
-                    } else {
-                        main_style
-                    };
-                    Row::new(vec![
-                        Cell::new(name.as_str()).style(main_style.add_modifier(Modifier::BOLD)),
-                        Cell::new(desc.as_str()).style(style),
-                    ])
-                    .style(main_style)
-                })
-                .collect();
-
-            let widths = [Constraint::Length(20), Constraint::Fill(1)];
-            let detail_block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(detail_border_style)
-                .style(main_style);
-            let inner = detail_block.inner(detail_area);
-            frame.render_widget(detail_block, detail_area);
-
-            let split = Layout::vertical([Constraint::Fill(1), Constraint::Length(footer_height)]);
-            let [table_area, message_area] = inner.layout(&split);
-
-            let table = Table::new(rows, widths)
-                .header(Row::new(vec!["Action", "Description"]).style(main_style.add_modifier(Modifier::BOLD)));
-
-            frame.render_widget(table, table_area);
-
-            if let Some(msg) = &app.header_view.tools_last_message {
-                use ratatui::widgets::Paragraph;
-                let para = Paragraph::new(msg.as_str()).style(main_style.add_modifier(Modifier::BOLD));
-                frame.render_widget(para, message_area);
-            }
         }
         _ => {}
     }
@@ -753,5 +857,28 @@ mod selection_visibility_tests {
             inverted < band,
             "the whole row is inverted, so the focused column is not distinguishable"
         );
+    }
+
+    #[test]
+    fn section_tools_i18n_korean_and_chinese() {
+        use crate::i18n::{Lang, M};
+
+        // Korean verification
+        assert_eq!(M::SecToolsTitle.tr(Lang::Ko), "섹션 도구");
+        assert_eq!(M::SecToolAlignOffsetsTitle.tr(Lang::Ko), "모든 섹션 VA 정렬 [a]");
+        assert_eq!(M::SecToolAddSectionTitle.tr(Lang::Ko), "새 섹션 추가 [n]");
+        assert_eq!(M::SecToolDumpSectionTitle.tr(Lang::Ko), "섹션 파일로 덤프 [d]");
+        assert_eq!(M::SecToolDeleteLastSectionTitle.tr(Lang::Ko), "마지막 섹션 삭제 [Del]");
+        assert_eq!(M::SecToolFixSizeOfImageTitle.tr(Lang::Ko), "SizeOfImage 보정 [f]");
+        assert_eq!(M::SecToolRemoveAslrTitle.tr(Lang::Ko), "ASLR 제거 [r]");
+
+        // Chinese verification
+        assert_eq!(M::SecToolsTitle.tr(Lang::Zh), "节工具");
+        assert_eq!(M::SecToolAlignOffsetsTitle.tr(Lang::Zh), "对齐所有节到 VA [a]");
+        assert_eq!(M::SecToolAddSectionTitle.tr(Lang::Zh), "添加新节 [n]");
+        assert_eq!(M::SecToolDumpSectionTitle.tr(Lang::Zh), "转储节到文件 [d]");
+        assert_eq!(M::SecToolDeleteLastSectionTitle.tr(Lang::Zh), "删除最后一个节 [Del]");
+        assert_eq!(M::SecToolFixSizeOfImageTitle.tr(Lang::Zh), "修复 SizeOfImage [f]");
+        assert_eq!(M::SecToolRemoveAslrTitle.tr(Lang::Zh), "移除 ASLR [r]");
     }
 }

@@ -39,6 +39,7 @@ pub struct FindDialog {
     pub error_message: Option<String>,
     pub status_message: Option<String>,
     pub match_case: bool,
+    pub history: crate::input_history::HistoryQueue<crate::input_history::DialogHistoryEntry>,
 }
 
 impl FindDialog {
@@ -52,6 +53,7 @@ impl FindDialog {
         self.error_message = None;
         self.status_message = None;
         self.match_case = false;
+        self.history.reset_nav();
     }
 
     #[allow(dead_code)]
@@ -250,14 +252,71 @@ pub fn dialog_find_events(app: &mut App, event: &Event) -> Result<bool> {
                 app.state = UIState::Normal;
                 return Ok(false);
             }
-            // Changing field drops the block: it belonged to the field being left.
-            KeyCode::Tab | KeyCode::Down => {
+            KeyCode::Tab => {
                 app.hex_view.find_dialog.focus = app.hex_view.find_dialog.focus.next();
                 app.hex_view.find_dialog.anchor = None;
                 return Ok(false);
             }
-            KeyCode::BackTab | KeyCode::Up => {
+            KeyCode::BackTab => {
                 app.hex_view.find_dialog.focus = app.hex_view.find_dialog.focus.prev();
+                app.hex_view.find_dialog.anchor = None;
+                return Ok(false);
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let focus = app.hex_view.find_dialog.focus;
+                let val = match focus {
+                    EditDialogFocus::Enc1 => app.hex_view.find_dialog.input_enc1.value().to_string(),
+                    EditDialogFocus::Utf8 => app.hex_view.find_dialog.input_utf8.value().to_string(),
+                    EditDialogFocus::Utf16Le => app.hex_view.find_dialog.input_utf16le.value().to_string(),
+                    EditDialogFocus::Hex => app.hex_view.find_dialog.input_hex.value().to_string(),
+                };
+                let cur_entry = crate::input_history::DialogHistoryEntry { focus, value: val };
+                if let Some(entry) = app.hex_view.find_dialog.history.navigate_up(&cur_entry) {
+                    app.hex_view.find_dialog.focus = entry.focus;
+                    app.hex_view.find_dialog.anchor = None;
+                    let cur_len = entry.value.chars().count();
+                    match entry.focus {
+                        EditDialogFocus::Enc1 => app.hex_view.find_dialog.input_enc1 = Input::new(entry.value).with_cursor(cur_len),
+                        EditDialogFocus::Utf8 => app.hex_view.find_dialog.input_utf8 = Input::new(entry.value).with_cursor(cur_len),
+                        EditDialogFocus::Utf16Le => app.hex_view.find_dialog.input_utf16le = Input::new(entry.value).with_cursor(cur_len),
+                        EditDialogFocus::Hex => app.hex_view.find_dialog.input_hex = Input::new(entry.value).with_cursor(cur_len),
+                    }
+                    let enc1 = app.text_view.table;
+                    app.hex_view.find_dialog.sync_from_focus(enc1);
+                }
+                return Ok(false);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let focus = app.hex_view.find_dialog.focus;
+                let val = match focus {
+                    EditDialogFocus::Enc1 => app.hex_view.find_dialog.input_enc1.value().to_string(),
+                    EditDialogFocus::Utf8 => app.hex_view.find_dialog.input_utf8.value().to_string(),
+                    EditDialogFocus::Utf16Le => app.hex_view.find_dialog.input_utf16le.value().to_string(),
+                    EditDialogFocus::Hex => app.hex_view.find_dialog.input_hex.value().to_string(),
+                };
+                let cur_entry = crate::input_history::DialogHistoryEntry { focus, value: val };
+                if let Some(entry) = app.hex_view.find_dialog.history.navigate_down(&cur_entry) {
+                    app.hex_view.find_dialog.focus = entry.focus;
+                    app.hex_view.find_dialog.anchor = None;
+                    let cur_len = entry.value.chars().count();
+                    match entry.focus {
+                        EditDialogFocus::Enc1 => app.hex_view.find_dialog.input_enc1 = Input::new(entry.value).with_cursor(cur_len),
+                        EditDialogFocus::Utf8 => app.hex_view.find_dialog.input_utf8 = Input::new(entry.value).with_cursor(cur_len),
+                        EditDialogFocus::Utf16Le => app.hex_view.find_dialog.input_utf16le = Input::new(entry.value).with_cursor(cur_len),
+                        EditDialogFocus::Hex => app.hex_view.find_dialog.input_hex = Input::new(entry.value).with_cursor(cur_len),
+                    }
+                    let enc1 = app.text_view.table;
+                    app.hex_view.find_dialog.sync_from_focus(enc1);
+                }
+                return Ok(false);
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::NONE) => {
+                app.hex_view.find_dialog.focus = app.hex_view.find_dialog.focus.prev();
+                app.hex_view.find_dialog.anchor = None;
+                return Ok(false);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::NONE) => {
+                app.hex_view.find_dialog.focus = app.hex_view.find_dialog.focus.next();
                 app.hex_view.find_dialog.anchor = None;
                 return Ok(false);
             }
@@ -392,6 +451,19 @@ fn execute_find(app: &mut App, forward: bool) {
             }
         }
     };
+
+    let search_val = match focus {
+        EditDialogFocus::Hex => app.hex_view.find_dialog.input_hex.value().to_string(),
+        EditDialogFocus::Enc1 => app.hex_view.find_dialog.input_enc1.value().to_string(),
+        EditDialogFocus::Utf8 => app.hex_view.find_dialog.input_utf8.value().to_string(),
+        EditDialogFocus::Utf16Le => app.hex_view.find_dialog.input_utf16le.value().to_string(),
+    };
+    if !search_val.trim().is_empty() {
+        app.hex_view.find_dialog.history.push(crate::input_history::DialogHistoryEntry {
+            focus,
+            value: search_val,
+        });
+    }
 
     if let Some(ofs) = search_pattern(app, &pattern) {
         let msg = found_at_message(app, ofs);
@@ -541,5 +613,123 @@ mod sync_tests {
 
         assert_eq!(dialog.input_utf8.value(), "");
         assert_eq!(dialog.input_hex.value(), "48??4A", "the pattern itself is kept");
+    }
+
+    #[test]
+    fn test_find_dialog_history_navigation_and_sync() {
+        let mut dialog = FindDialog::default();
+        dialog.focus = EditDialogFocus::Utf8;
+        dialog.input_utf8 = Input::new("DraftPattern".to_string());
+        dialog.sync_from_focus(encoding_rs::UTF_8);
+
+        // Push two search history items
+        dialog.history.push(crate::input_history::DialogHistoryEntry {
+            focus: EditDialogFocus::Hex,
+            value: "4D5A9000".to_string(),
+        });
+        dialog.history.push(crate::input_history::DialogHistoryEntry {
+            focus: EditDialogFocus::Utf8,
+            value: "Kernel32".to_string(),
+        });
+
+        // 1st Up: "Kernel32"
+        let cur_entry = crate::input_history::DialogHistoryEntry {
+            focus: dialog.focus,
+            value: dialog.input_utf8.value().to_string(),
+        };
+        let res = dialog.history.navigate_up(&cur_entry).unwrap();
+        assert_eq!(res.focus, EditDialogFocus::Utf8);
+        assert_eq!(res.value, "Kernel32");
+        dialog.focus = res.focus;
+        dialog.input_utf8 = Input::new(res.value);
+        dialog.sync_from_focus(encoding_rs::UTF_8);
+        assert_eq!(dialog.input_hex.value(), "4B65726E656C3332");
+
+        // 2nd Up: "4D5A9000" in Hex
+        let cur_entry2 = crate::input_history::DialogHistoryEntry {
+            focus: dialog.focus,
+            value: dialog.input_utf8.value().to_string(),
+        };
+        let res2 = dialog.history.navigate_up(&cur_entry2).unwrap();
+        assert_eq!(res2.focus, EditDialogFocus::Hex);
+        assert_eq!(res2.value, "4D5A9000");
+        dialog.focus = res2.focus;
+        dialog.input_hex = Input::new(res2.value);
+        dialog.sync_from_focus(encoding_rs::UTF_8);
+        assert_eq!(dialog.input_hex.value(), "4D5A9000");
+
+        // Down: returns "Kernel32"
+        let cur_entry3 = crate::input_history::DialogHistoryEntry {
+            focus: dialog.focus,
+            value: dialog.input_hex.value().to_string(),
+        };
+        let res3 = dialog.history.navigate_down(&cur_entry3).unwrap();
+        assert_eq!(res3.value, "Kernel32");
+
+        // Down again: restores draft
+        let cur_entry4 = crate::input_history::DialogHistoryEntry {
+            focus: dialog.focus,
+            value: res3.value,
+        };
+        let res4 = dialog.history.navigate_down(&cur_entry4).unwrap();
+        assert_eq!(res4.value, "DraftPattern");
+    }
+
+    #[test]
+    fn test_find_dialog_events_ctrl_and_plain_arrows() {
+        use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
+
+        let mut app = App::new();
+        app.hex_view.find_dialog.reset();
+        app.hex_view.find_dialog.focus = EditDialogFocus::Enc1;
+
+        // Push an entry to history
+        app.hex_view.find_dialog.history.push(crate::input_history::DialogHistoryEntry {
+            focus: EditDialogFocus::Hex,
+            value: "EBFE".to_string(),
+        });
+
+        let plain_down = Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        let plain_up = Event::Key(KeyEvent {
+            code: KeyCode::Up,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        let ctrl_up = Event::Key(KeyEvent {
+            code: KeyCode::Up,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        let ctrl_down = Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+
+        // Plain Down moves focus from Enc1 to Utf8
+        let _ = dialog_find_events(&mut app, &plain_down);
+        assert_eq!(app.hex_view.find_dialog.focus, EditDialogFocus::Utf8);
+
+        // Plain Up moves focus back to Enc1
+        let _ = dialog_find_events(&mut app, &plain_up);
+        assert_eq!(app.hex_view.find_dialog.focus, EditDialogFocus::Enc1);
+
+        // Ctrl+Up navigates history: loads "EBFE" in Hex
+        let _ = dialog_find_events(&mut app, &ctrl_up);
+        assert_eq!(app.hex_view.find_dialog.focus, EditDialogFocus::Hex);
+        assert_eq!(app.hex_view.find_dialog.input_hex.value(), "EBFE");
+
+        // Ctrl+Down restores draft
+        let _ = dialog_find_events(&mut app, &ctrl_down);
+        assert_eq!(app.hex_view.find_dialog.focus, EditDialogFocus::Enc1);
+        assert_eq!(app.hex_view.find_dialog.input_enc1.value(), "");
     }
 }

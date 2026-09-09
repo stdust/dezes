@@ -148,7 +148,7 @@ impl ModifyDialog {
 
         let new_col = (col + dx).rem_euclid(cols as isize);
         let mut new_row = row + dy;
-        let max_rows = ((total + cols - 1) / cols) as isize;
+        let max_rows = total.div_ceil(cols) as isize;
         new_row = new_row.rem_euclid(max_rows);
 
         let mut next_idx = (new_row * cols as isize + new_col) as usize;
@@ -310,8 +310,8 @@ pub fn draw_modify_dialog(app: &mut App, frame: &mut Frame) {
         let chars: Vec<char> = val_display.chars().collect();
         let mut spans = vec![Span::styled(format!(" {}: [", crate::i18n::M::LblValue.tr(app.config.lang)), val_style)];
 
-        for i in 0..chars.len() {
-            let ch_str = chars[i].to_string();
+        for (i, &ch) in chars.iter().enumerate() {
+            let ch_str = ch.to_string();
             let in_block = sel.is_some_and(|(s, e)| i >= s && i < e);
             if i == cursor_pos {
                 spans.push(Span::styled(ch_str, highlight_style.add_modifier(Modifier::UNDERLINED | Modifier::BOLD)));
@@ -338,8 +338,8 @@ pub fn draw_modify_dialog(app: &mut App, frame: &mut Frame) {
         let chars: Vec<char> = step_display.chars().collect();
         let mut spans = vec![Span::styled(format!(" {}: [", crate::i18n::M::LblStep.tr(app.config.lang)), step_style)];
 
-        for i in 0..chars.len() {
-            let ch_str = chars[i].to_string();
+        for (i, &ch) in chars.iter().enumerate() {
+            let ch_str = ch.to_string();
             let in_block = sel.is_some_and(|(s, e)| i >= s && i < e);
             if i == cursor_pos {
                 spans.push(Span::styled(ch_str, highlight_style.add_modifier(Modifier::UNDERLINED | Modifier::BOLD)));
@@ -499,7 +499,18 @@ pub fn apply_block_modification(app: &mut App) {
         step_str.parse::<u64>().unwrap_or(1)
     };
 
-    let mut bytes = Vec::new();
+    let span = end.saturating_sub(start).saturating_add(1);
+    if span > crate::hex::selection::MAX_SELECTION_FILL_BYTES {
+        let max_mb = crate::hex::selection::MAX_SELECTION_FILL_BYTES / (1024 * 1024);
+        crate::app::App::log(
+            app,
+            format!("Block too large to modify ({} bytes > {}MB limit)", span, max_mb),
+        );
+        crate::beep!();
+        return;
+    }
+
+    let mut bytes = Vec::with_capacity(span.min(1024 * 1024));
     for offset in start..=end {
         let b_opt = app.hex_view.changed_bytes.get(&offset).copied().or_else(|| app.read_u8(offset));
 
@@ -570,18 +581,16 @@ pub fn apply_block_modification(app: &mut App) {
                         current_key = current_key.wrapping_add(step);
                     }
                     8 => {
-                        if chunk.len() == 8 {
-                            let mut arr = [0u8; 8];
-                            for i in 0..8 {
-                                arr[i] = chunk[i].1;
-                            }
-                            let val = u64::from_le_bytes(arr) ^ current_key;
-                            let res_bytes = val.to_le_bytes();
-                            for i in 0..8 {
-                                chunk[i].1 = res_bytes[i];
-                            }
-                            current_key = current_key.wrapping_add(step);
+                        let mut arr = [0u8; 8];
+                        for i in 0..8 {
+                            arr[i] = chunk[i].1;
                         }
+                        let val = u64::from_le_bytes(arr) ^ current_key;
+                        let res_bytes = val.to_le_bytes();
+                        for i in 0..8 {
+                            chunk[i].1 = res_bytes[i];
+                        }
+                        current_key = current_key.wrapping_add(step);
                     }
                     _ => {}
                 }
@@ -597,7 +606,7 @@ pub fn apply_block_modification(app: &mut App) {
                             ModifyOp::Add => val.wrapping_add(operand as u8),
                             ModifyOp::Sub => val.wrapping_sub(operand as u8),
                             ModifyOp::Mul => val.wrapping_mul(operand as u8),
-                            ModifyOp::Div => if operand != 0 { val / (operand as u8) } else { val },
+                            ModifyOp::Div => val.checked_div(operand as u8).unwrap_or(val),
                             ModifyOp::Xor => val ^ (operand as u8),
                             ModifyOp::Or => val | (operand as u8),
                             ModifyOp::And => val & (operand as u8),
@@ -614,7 +623,7 @@ pub fn apply_block_modification(app: &mut App) {
                             ModifyOp::Add => val.wrapping_add(op_val),
                             ModifyOp::Sub => val.wrapping_sub(op_val),
                             ModifyOp::Mul => val.wrapping_mul(op_val),
-                            ModifyOp::Div => if op_val != 0 { val / op_val } else { val },
+                            ModifyOp::Div => val.checked_div(op_val).unwrap_or(val),
                             ModifyOp::Xor => val ^ op_val,
                             ModifyOp::Or => val | op_val,
                             ModifyOp::And => val & op_val,
@@ -633,7 +642,7 @@ pub fn apply_block_modification(app: &mut App) {
                             ModifyOp::Add => val.wrapping_add(op_val),
                             ModifyOp::Sub => val.wrapping_sub(op_val),
                             ModifyOp::Mul => val.wrapping_mul(op_val),
-                            ModifyOp::Div => if op_val != 0 { val / op_val } else { val },
+                            ModifyOp::Div => val.checked_div(op_val).unwrap_or(val),
                             ModifyOp::Xor => val ^ op_val,
                             ModifyOp::Or => val | op_val,
                             ModifyOp::And => val & op_val,
@@ -647,29 +656,27 @@ pub fn apply_block_modification(app: &mut App) {
                         }
                     }
                     8 => {
-                        if chunk.len() == 8 {
-                            let mut arr = [0u8; 8];
-                            for i in 0..8 {
-                                arr[i] = chunk[i].1;
-                            }
-                            let mut val = u64::from_le_bytes(arr);
-                            let op_val = operand;
-                            val = match op {
-                                ModifyOp::Add => val.wrapping_add(op_val),
-                                ModifyOp::Sub => val.wrapping_sub(op_val),
-                                ModifyOp::Mul => val.wrapping_mul(op_val),
-                                ModifyOp::Div => if op_val != 0 { val / op_val } else { val },
-                                ModifyOp::Xor => val ^ op_val,
-                                ModifyOp::Or => val | op_val,
-                                ModifyOp::And => val & op_val,
-                                ModifyOp::ShiftLeft => val << (op_val & 63),
-                                ModifyOp::ShiftRight => val >> (op_val & 63),
-                                _ => val,
-                            };
-                            let res_bytes = val.to_le_bytes();
-                            for i in 0..8 {
-                                chunk[i].1 = res_bytes[i];
-                            }
+                        let mut arr = [0u8; 8];
+                        for i in 0..8 {
+                            arr[i] = chunk[i].1;
+                        }
+                        let mut val = u64::from_le_bytes(arr);
+                        let op_val = operand;
+                        val = match op {
+                            ModifyOp::Add => val.wrapping_add(op_val),
+                            ModifyOp::Sub => val.wrapping_sub(op_val),
+                            ModifyOp::Mul => val.wrapping_mul(op_val),
+                            ModifyOp::Div => val.checked_div(op_val).unwrap_or(val),
+                            ModifyOp::Xor => val ^ op_val,
+                            ModifyOp::Or => val | op_val,
+                            ModifyOp::And => val & op_val,
+                            ModifyOp::ShiftLeft => val << (op_val & 63),
+                            ModifyOp::ShiftRight => val >> (op_val & 63),
+                            _ => val,
+                        };
+                        let res_bytes = val.to_le_bytes();
+                        for i in 0..8 {
+                            chunk[i].1 = res_bytes[i];
                         }
                     }
                     _ => {}

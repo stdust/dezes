@@ -39,7 +39,7 @@ impl StringEncoding {
             Self::Ascii => "ASCII",
             Self::Utf8 => "UTF-8",
             Self::Cp949 => "CP949(KO)",
-            Self::Cp936 => "CP936(ZH)",
+            Self::Cp936 => "CP936(CN)",
             Self::Utf16 => "UTF-16LE",
         }
     }
@@ -90,8 +90,8 @@ impl FoundString {
 pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
     let dialog_style = app.config.theme.dialog;
 
-    let width = frame.area().width / 2;
-    let height = frame.area().height / 2 + 4;
+    let width = (frame.area().width * 3 / 4).max(78).min(frame.area().width);
+    let height = (frame.area().height * 3 / 4).max(20).min(frame.area().height);
     let dialog_area = center_widget(width, height, frame.area());
 
     let strings_count = if app.strings.len() == app.config.maximum_strings_to_show {
@@ -215,14 +215,28 @@ pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
     }
 }
 
+pub const MAX_REGEX_PATTERN_LEN: usize = 500;
+pub const MAX_REGEX_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
+pub const MAX_REGEX_NEST_LIMIT: u32 = 50;
+
+pub fn build_safe_regex(pattern: &str) -> Option<Regex> {
+    if pattern.is_empty() || pattern.len() > MAX_REGEX_PATTERN_LEN {
+        return None;
+    }
+    RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .size_limit(MAX_REGEX_SIZE_LIMIT)
+        .nest_limit(MAX_REGEX_NEST_LIMIT)
+        .build()
+        .ok()
+}
+
 pub fn matches_the_empty_string(pattern: &str) -> bool {
     let pattern = pattern.trim();
     if pattern.is_empty() {
         return false;
     }
-    RegexBuilder::new(pattern)
-        .case_insensitive(true)
-        .build()
+    build_safe_regex(pattern)
         .map(|re| re.is_match(""))
         .unwrap_or(false)
 }
@@ -233,10 +247,7 @@ pub fn update_strings_filter(app: &mut App) {
     let compiled = if pattern.is_empty() {
         None
     } else {
-        RegexBuilder::new(&pattern)
-            .case_insensitive(true)
-            .build()
-            .ok()
+        build_safe_regex(&pattern)
     };
     let lower = pattern.to_lowercase();
 
@@ -281,7 +292,7 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
             } else {
                 let total = app.hex_view.strings_filtered.len();
                 if total > 0 {
-                    let height = (app.screen.height / 2 + 4).min(app.screen.height);
+                    let height = 20u16.min(app.screen.height);
                     let dialog_y = app.screen.y + (app.screen.height.saturating_sub(height)) / 2;
                     let list_y = dialog_y + 1;
                     let visible = (height.saturating_sub(5)) as usize;
@@ -501,6 +512,7 @@ fn strings_filter_field(app: &mut App) -> (&mut tui_input::Input, &mut Option<us
 pub struct StringEdit {
     pub offset: usize,
     pub budget: usize,
+    pub total_capacity: usize,
     pub row: usize,
     pub encoding: StringEncoding,
     pub input: tui_input::Input,
@@ -514,6 +526,19 @@ fn string_edit_field(app: &mut App) -> (&mut tui_input::Input, &mut Option<usize
         &mut app.hex_view.string_edit.input,
         &mut app.hex_view.string_edit.anchor,
     )
+}
+
+pub fn count_trailing_zeros(buffer: &[u8], offset: usize, is_utf16: bool) -> usize {
+    let mut count = 0;
+    let max_extra = 512;
+    while offset + count < buffer.len() && buffer[offset + count] == 0 && count < max_extra {
+        count += 1;
+    }
+    if is_utf16 {
+        count & !1
+    } else {
+        count
+    }
 }
 
 pub fn open_string_edit(app: &mut App) {
@@ -541,10 +566,20 @@ pub fn open_string_edit(app: &mut App) {
         app.hex_view.strings_encoding
     };
 
+    let is_utf16 = initial_encoding == StringEncoding::Utf16;
+    let term_size = if is_utf16 { 2 } else { 1 };
+    let extra_zeros = {
+        let buffer = app.file_info.get_buffer_ref();
+        count_trailing_zeros(buffer, found.offset + found.size, is_utf16)
+    };
+    let total_capacity = found.size + extra_zeros;
+    let budget = total_capacity.saturating_sub(term_size);
+
     let cursor = found.content.chars().count();
     app.hex_view.string_edit = StringEdit {
         offset: found.offset,
-        budget: found.size,
+        budget,
+        total_capacity,
         row,
         encoding: initial_encoding,
         input: tui_input::Input::new(found.content.clone()).with_cursor(cursor),
@@ -564,6 +599,7 @@ fn commit_string_edit(app: &mut App) {
 
     let text = app.hex_view.string_edit.input.value().to_string();
     let budget = app.hex_view.string_edit.budget;
+    let total_capacity = app.hex_view.string_edit.total_capacity.max(budget);
     let offset = app.hex_view.string_edit.offset;
     let encoding = app.hex_view.string_edit.encoding;
 
@@ -586,11 +622,15 @@ fn commit_string_edit(app: &mut App) {
     }
 
     for (i, byte) in bytes.iter().enumerate() {
-        crate::hex::edit::record_edit(app, offset + i, *byte);
+        if let Some(target_ofs) = offset.checked_add(i) {
+            crate::hex::edit::record_edit(app, target_ofs, *byte);
+        }
     }
-    let padding = budget - bytes.len();
-    for i in bytes.len()..budget {
-        crate::hex::edit::record_edit(app, offset + i, 0);
+    let padding = total_capacity.saturating_sub(bytes.len());
+    for i in bytes.len()..total_capacity {
+        if let Some(target_ofs) = offset.checked_add(i) {
+            crate::hex::edit::record_edit(app, target_ofs, 0);
+        }
     }
 
     let row = app.hex_view.string_edit.row;
@@ -626,12 +666,13 @@ fn commit_string_edit(app: &mut App) {
 
 pub fn dialog_string_edit_draw(app: &mut App, frame: &mut Frame) {
     let edit = &app.hex_view.string_edit;
-    let width = 64.min(frame.area().width.saturating_sub(4)).max(28);
+    let width = 72.min(frame.area().width.saturating_sub(4)).max(28);
     let error_rows = match &edit.error {
         None => 0,
         Some(error) => {
+            use unicode_width::UnicodeWidthStr;
             let inner = width.saturating_sub(2).max(1) as usize;
-            ((error.chars().count() + inner - 1) / inner).clamp(1, 4) as u16
+            error.width().div_ceil(inner).clamp(1, 4) as u16
         }
     };
     let height = 3 + error_rows;
@@ -804,10 +845,7 @@ impl Commands {
         let re = if app.string_regex.trim().is_empty() {
             None
         } else {
-            RegexBuilder::new(&app.string_regex)
-                .case_insensitive(true)
-                .build()
-                .ok()
+            build_safe_regex(&app.string_regex)
         };
         let re = re.as_ref();
 
@@ -816,30 +854,39 @@ impl Commands {
         let encoding = app.hex_view.strings_encoding;
 
         let buf_len = app.file_info.get_buffer_ref().len();
-        let ranges: Vec<std::ops::Range<usize>> = if encoding == StringEncoding::Ascii {
-            vec![0..buf_len]
+        let data = if encoding == StringEncoding::Ascii {
+            Vec::new()
         } else {
-            let data = crate::disasm::sections::data_sections(app, buf_len);
-            if data.is_empty() {
-                vec![0..buf_len]
-            } else {
-                data.iter().map(|s| s.start..s.end).collect()
-            }
+            crate::disasm::sections::xref_sections(app, buf_len)
         };
 
         let buffer = app.file_info.get_buffer();
         let mut out = Vec::new();
 
-        for range in ranges {
+        if encoding == StringEncoding::Ascii {
+            scan_ascii(buffer, min, cap, re, &mut out);
+        } else if data.is_empty() {
+            let range = 0..buf_len;
             match encoding {
-                StringEncoding::Ascii => scan_ascii(buffer, min, cap, re, &mut out),
+                StringEncoding::Ascii => unreachable!(),
                 StringEncoding::Utf8 => scan_utf8(buffer, range, min, cap, re, &mut out),
                 StringEncoding::Cp949 => scan_dbcs(buffer, range, &CP949, min, cap, re, &mut out),
                 StringEncoding::Cp936 => scan_dbcs(buffer, range, &CP936, min, cap, re, &mut out),
                 StringEncoding::Utf16 => scan_utf16(buffer, range, min, cap, re, &mut out),
             }
-            if out.len() >= cap {
-                break;
+        } else {
+            for s in &data {
+                let range = s.start..s.end;
+                match encoding {
+                    StringEncoding::Ascii => unreachable!(),
+                    StringEncoding::Utf8 => scan_utf8(buffer, range, min, cap, re, &mut out),
+                    StringEncoding::Cp949 => scan_dbcs(buffer, range, &CP949, min, cap, re, &mut out),
+                    StringEncoding::Cp936 => scan_dbcs(buffer, range, &CP936, min, cap, re, &mut out),
+                    StringEncoding::Utf16 => scan_utf16(buffer, range, min, cap, re, &mut out),
+                }
+                if out.len() >= cap {
+                    break;
+                }
             }
         }
 
@@ -969,6 +1016,7 @@ fn scan_dbcs(
 }
 
 fn scan_ascii(buffer: &[u8], min: usize, cap: usize, re: Option<&Regex>, out: &mut Vec<FoundString>) {
+    const MAX_CANDIDATE_LEN: usize = 4096;
     let mut siz = 0usize;
     let mut candidate = String::new();
 
@@ -976,9 +1024,19 @@ fn scan_ascii(buffer: &[u8], min: usize, cap: usize, re: Option<&Regex>, out: &m
         if is_ascii_text(*byte) {
             candidate.push(*byte as char);
             siz += 1;
+            if siz >= MAX_CANDIDATE_LEN {
+                if siz >= min && accepts(re, &candidate) {
+                    out.push(FoundString::new(offset.saturating_add(1).saturating_sub(siz), &candidate, siz));
+                    if out.len() >= cap {
+                        return;
+                    }
+                }
+                candidate.clear();
+                siz = 0;
+            }
         } else {
             if siz >= min && accepts(re, &candidate) {
-                out.push(FoundString::new(offset - siz, &candidate, siz));
+                out.push(FoundString::new(offset.saturating_sub(siz), &candidate, siz));
                 if out.len() >= cap {
                     return;
                 }
@@ -1017,38 +1075,22 @@ fn scan_utf8(
                     break;
                 }
             } else {
-                let remaining = &buffer[end..len];
-                if let Ok(valid_str) = std::str::from_utf8(remaining) {
-                    if let Some(first_char) = valid_str.chars().next() {
-                        let char_len = first_char.len_utf8();
-                        if !first_char.is_control() {
-                            end += char_len;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                } else {
-                    let mut valid_len = 0;
-                    for char_bytes in 2..=4 {
-                        if end + char_bytes <= len {
-                            if let Ok(s) = std::str::from_utf8(&buffer[end..end + char_bytes]) {
-                                if let Some(c) = s.chars().next() {
-                                    if !c.is_control() {
-                                        valid_len = char_bytes;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if valid_len > 0 {
-                        end += valid_len;
-                    } else {
-                        break;
-                    }
+                let expected_len = match b {
+                    0xC2..=0xDF => 2,
+                    0xE0..=0xEF => 3,
+                    0xF0..=0xF4 => 4,
+                    _ => 0,
+                };
+                if expected_len > 0
+                    && end + expected_len <= len
+                    && let Ok(s) = std::str::from_utf8(&buffer[end..end + expected_len])
+                    && let Some(c) = s.chars().next()
+                    && !c.is_control()
+                {
+                    end += expected_len;
+                    continue;
                 }
+                break;
             }
         }
 
@@ -1059,14 +1101,14 @@ fn scan_utf8(
 
         let run = &buffer[start..end];
         let terminated = end == buffer.len() || buffer[end] == 0;
-        if terminated {
-            if let Ok(text) = std::str::from_utf8(run) {
-                if text.chars().count() >= min && accepts(re, text) {
-                    out.push(FoundString::new(start, text, run.len()));
-                    if out.len() >= cap {
-                        return;
-                    }
-                }
+        if terminated
+            && let Ok(text) = std::str::from_utf8(run)
+            && text.chars().count() >= min
+            && accepts(re, text)
+        {
+            out.push(FoundString::new(start, text, run.len()));
+            if out.len() >= cap {
+                return;
             }
         }
 
@@ -1330,6 +1372,7 @@ mod strings_scan_tests {
         app.hex_view.string_edit = StringEdit {
             offset: 0,
             budget: 10,
+            total_capacity: 10,
             row: 0,
             encoding: StringEncoding::Ascii,
             input: tui_input::Input::new("한글".to_string()),
@@ -2043,6 +2086,8 @@ mod string_edit_tests {
     fn sample() -> Vec<u8> {
         let mut bytes = vec![0u8; 0x60];
         bytes[0x10..0x1B].copy_from_slice(b"Hello world");
+        bytes[0x1B] = 0; // null terminator
+        bytes[0x1C] = 0xFF; // next data boundary
         bytes[0x30..0x35].copy_from_slice(b"Short");
         bytes
     }
@@ -2107,10 +2152,10 @@ mod string_edit_tests {
         assert_eq!(byte_at(&app, 0x10), Some(b'B'));
         assert_eq!(byte_at(&app, 0x11), Some(b'y'));
         assert_eq!(byte_at(&app, 0x12), Some(b'e'));
-        for offset in 0x13..0x1B {
+        for offset in 0x13..0x1C {
             assert_eq!(byte_at(&app, offset), Some(0), "offset 0x{:X} was not padded", offset);
         }
-        assert_eq!(byte_at(&app, 0x1B), None, "the write ran past the budget");
+        assert_eq!(byte_at(&app, 0x1C), None, "the write ran past the budget");
 
         assert_eq!(app.strings[0].content, "Bye");
         assert!(app.strings[0].display.contains("Bye"));
@@ -2143,6 +2188,8 @@ mod string_edit_tests {
         assert_eq!(korean.len(), 12);
         let mut bytes = vec![0u8; 0x40];
         bytes[0x10..0x10 + korean.len()].copy_from_slice(&korean);
+        bytes[0x10 + korean.len()] = 0; // null terminator
+        bytes[0x10 + korean.len() + 1] = 0xFF; // immediately followed by non-zero
 
         let (dir, mut app) = app_with(&bytes, "cp949");
         app.hex_view.strings_encoding = StringEncoding::Cp949;
@@ -2174,6 +2221,9 @@ mod string_edit_tests {
         let wide: Vec<u8> = "Hello".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
         let mut bytes = vec![0u8; 0x40];
         bytes[0x10..0x10 + wide.len()].copy_from_slice(&wide);
+        bytes[0x10 + wide.len()] = 0; // null terminator low
+        bytes[0x10 + wide.len() + 1] = 0; // null terminator high
+        bytes[0x10 + wide.len() + 2] = 0xFF; // immediately followed by non-zero
 
         let (dir, mut app) = app_with(&bytes, "utf16");
         app.hex_view.strings_encoding = StringEncoding::Utf16;
@@ -2189,7 +2239,7 @@ mod string_edit_tests {
         assert_eq!(byte_at(&app, 0x11), Some(0));
         assert_eq!(byte_at(&app, 0x12), Some(b'i'));
         assert_eq!(byte_at(&app, 0x13), Some(0));
-        for offset in 0x14..0x1A {
+        for offset in 0x14..0x1C {
             assert_eq!(byte_at(&app, offset), Some(0), "0x{:X} was not padded", offset);
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -2235,12 +2285,38 @@ mod string_edit_tests {
         app.hex_view.string_edit.input = tui_input::Input::new("Bye".to_string());
         press_edit(&mut app, KeyCode::Enter);
 
-        assert_eq!(app.hex_view.changed_bytes.len(), 11, "every byte of the budget is staged");
+        assert_eq!(app.hex_view.changed_bytes.len(), 12, "every byte of the total capacity is staged");
         assert_eq!(
             app.hex_view.changed_history.len(),
-            11,
+            12,
             "the undo history has to carry them too"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn utf16_scans_across_executable_sections() {
+        let path = "C:\\Users\\Administrator\\Desktop\\pecmd\\dumped_SCY.exe";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut app = App::new();
+        app.config.database = false;
+        if app.load_file(path, 0, false).is_err() {
+            return;
+        }
+        app.hex_view.strings_encoding = StringEncoding::Utf16;
+        Commands::rescan_strings(&mut app);
+
+        let found = app.strings.iter().position(|s| s.offset == 0x1206A8 && s.content.contains("分辨率"));
+        assert!(found.is_some(), "Expected to find UTF-16 string at 0x1206A8 in .MPRESS1 section");
+
+        app.list_state.select(found);
+        press(&mut app, KeyCode::F(4));
+        assert!(app.state == UIState::DialogStringEdit);
+        // Original string 42 bytes + 6 trailing 00 bytes = 48 bytes total.
+        // Reserving 2 bytes for null terminator (00 00) leaves 46 bytes budget!
+        assert_eq!(app.hex_view.string_edit.budget, 46);
+        assert_eq!(app.hex_view.string_edit.total_capacity, 48);
     }
 }

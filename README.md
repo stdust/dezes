@@ -1,4 +1,4 @@
-# Dezes
+﻿# Dezes
 
 **Dezes** is an advanced, high-performance TUI (Terminal User Interface) **Win32 PE Disassembler and Hex Editor** built in Rust.
 

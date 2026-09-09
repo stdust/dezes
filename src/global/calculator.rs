@@ -96,7 +96,7 @@ fn with_thousands(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -142,9 +142,15 @@ pub struct Calculator {
 
 impl Calculator {
     pub fn push_history(&mut self, entry: String) {
-        if !entry.trim().is_empty() && self.history_set.insert(entry.clone()) {
-            self.history.push(entry);
+        if entry.trim().is_empty() {
+            return;
         }
+        if let Some(pos) = self.history.iter().position(|x| x == &entry) {
+            self.history.remove(pos);
+        } else {
+            self.history_set.insert(entry.clone());
+        }
+        self.history.push(entry);
         self.history_index = None;
     }
     pub fn history_up(&mut self) {
@@ -213,7 +219,8 @@ pub fn dialog_calculator_draw(app: &mut App, frame: &mut Frame) {
             with_thousands(unsigned)
         )
     } else {
-        format!("{}  (Unsigned: {})", with_thousands(unsigned), with_thousands(unsigned))
+        let th = with_thousands(unsigned);
+        format!("{}  (Unsigned: {})", th, th)
     };
 
     let rows = [
@@ -249,8 +256,8 @@ pub fn dialog_calculator_draw(app: &mut App, frame: &mut Frame) {
         .spans,
     );
     lines.push(ratatui::text::Line::from(first));
-    for row in rows.iter().skip(1) {
-        lines.push(ratatui::text::Line::raw(row.clone()));
+    for row in rows.into_iter().skip(1) {
+        lines.push(ratatui::text::Line::raw(row));
     }
 
     frame.render_widget(Clear, area);
@@ -362,6 +369,27 @@ fn load_variables(app: &mut App) {
     );
 }
 
+pub const MAX_CALCULATOR_EXPR_LEN: usize = 1024;
+pub const MAX_CALCULATOR_NESTING: usize = 32;
+
+fn is_safe_expression(expr: &str) -> bool {
+    if expr.len() > MAX_CALCULATOR_EXPR_LEN {
+        return false;
+    }
+    let mut depth = 0usize;
+    for ch in expr.chars() {
+        if ch == '(' {
+            depth += 1;
+            if depth > MAX_CALCULATOR_NESTING {
+                return false;
+            }
+        } else if ch == ')' {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    true
+}
+
 pub fn dialog_calculator_events(app: &mut App, event: &Event) -> Result<bool> {
     if let Event::Key(key) = event {
         match key.code {
@@ -381,6 +409,11 @@ pub fn dialog_calculator_events(app: &mut App, event: &Event) -> Result<bool> {
             }
             KeyCode::Enter => {
                 let input_expr = app.calculator.input.value().to_string();
+
+                if !is_safe_expression(&input_expr) {
+                    app.error("Expression is too long or too deeply nested".to_string());
+                    return Ok(false);
+                }
 
                 load_variables(app);
 

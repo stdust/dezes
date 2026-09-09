@@ -79,7 +79,7 @@ pub(crate) fn parse_hex_or_text_bytes(
         }
         let parts: Vec<&str> = line_trim.split_whitespace().collect();
         // Skip header lines like "00 01 02 03 04 05..."
-        if parts.first().map_or(false, |p| p.eq_ignore_ascii_case("00") && parts.get(1).map_or(false, |p2| p2.eq_ignore_ascii_case("01"))) {
+        if parts.first().is_some_and(|p| p.eq_ignore_ascii_case("00")) && parts.get(1).is_some_and(|p2| p2.eq_ignore_ascii_case("01")) {
             is_dump_format = true;
             continue;
         }
@@ -106,15 +106,15 @@ pub(crate) fn parse_hex_or_text_bytes(
 
     if is_dump_format && !dump_bytes.is_empty() {
         return dump_bytes;
-    } else {
-        // Per character, through the same helper the keyboard uses, so a
-        // multi-byte character comes out in the column's encoding rather than
-        // UTF-8.
-        clean
-            .chars()
-            .flat_map(|c| crate::util::encode_char(c, encoding))
-            .collect()
     }
+
+    // Per character, through the same helper the keyboard uses, so a
+    // multi-byte character comes out in the column's encoding rather than
+    // UTF-8.
+    clean
+        .chars()
+        .flat_map(|c| crate::util::encode_char(c, encoding))
+        .collect()
 }
 
 /// Where a plain movement key would take the cursor, or `None` if this key
@@ -206,20 +206,26 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             } else {
                 crate::beep!();
             }
-        } else if let Some(ofs) = app.hex_view.changed_history.pop() {
-            if let Some(val) = app.hex_view.changed_bytes.remove(&ofs) {
-                app.hex_view.redo_history.push((ofs, val));
-            }
-
-            crate::app::App::log(app, format!("Undid change at offset 0x{:X}", ofs));
         } else {
-            crate::beep!();
+            let mut undid = false;
+            while let Some(ofs) = app.hex_view.changed_history.pop() {
+                if let Some(val) = app.hex_view.changed_bytes.remove(&ofs) {
+                    app.hex_view.redo_history.push((ofs, val));
+                    app.view_generation = app.view_generation.wrapping_add(1);
+                    crate::app::App::log(app, format!("Undid change at offset 0x{:X}", ofs));
+                    undid = true;
+                    break;
+                }
+            }
+            if !undid {
+                crate::beep!();
+            }
         }
     }
 
     fn perform_redo(app: &mut App) {
         if let Some((ofs, val)) = app.hex_view.redo_history.pop() {
-            crate::hex::edit::record_edit(app, ofs, val);
+            crate::hex::edit::record_edit_redo(app, ofs, val);
             crate::app::App::log(app, format!("Redid change at offset 0x{:X}", ofs));
         } else {
             crate::beep!();
@@ -255,12 +261,35 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     }
 
 
-    /// Copies the active block, in the terms of the column it was selected in.
-    ///
-    /// This is the old 'y' (vi yank) body, now on Ctrl+C so that Normal mode and
-    /// edit mode - which has always used Ctrl+C - agree.
+    /// Copies the active block, or current byte, in the terms of the column it was selected in.
     fn copy_selection_to_clipboard(app: &mut App) {
         if app.hex_view.selection.start == app.hex_view.selection.end {
+            let ofs = app.hex_view.offset;
+            let buffer = app.file_info.get_buffer_ref();
+            if ofs < buffer.len() {
+                let b = app.hex_view.changed_bytes.get(&ofs).copied().unwrap_or(buffer[ofs]);
+                let (text, what) = match app.hex_view.selection_target {
+                    crate::editor::EditingTarget::Hex => (format!("{:02X}", b), "1 hex byte".to_string()),
+                    crate::editor::EditingTarget::Enc1 => {
+                        let ch = if b.is_ascii_graphic() || b == b' ' {
+                            (b as char).to_string()
+                        } else {
+                            format!("{:02X}", b)
+                        };
+                        (ch, format!("1 byte as {}", app.text_view.table.name()))
+                    }
+                    crate::editor::EditingTarget::Enc2 => {
+                        let ch = if b.is_ascii_graphic() || b == b' ' {
+                            (b as char).to_string()
+                        } else {
+                            format!("{:02X}", b)
+                        };
+                        (ch, format!("1 byte as {}", app.hex_view.get_enc2_table().name()))
+                    }
+                };
+                app.copy_to_clipboard(text, what);
+                return;
+            }
             let message = crate::i18n::M::ErrNothingSelected.tr(app.config.lang).to_string();
             app.error(message);
             return;
@@ -274,10 +303,7 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 format!("{} text", app.hex_view.get_enc2_table().name())
             }
         };
-        if let Ok(clip) = app.clipboard.as_mut() {
-            let _ = clip.set_text(s);
-        }
-        crate::app::App::log(app, format!("Selection copied to clipboard as {}", what));
+        app.copy_to_clipboard(s, format!("selection as {}", what));
     }
 
     fn paste_hex_bytes(app: &mut App) {
@@ -440,10 +466,17 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         {
             paste_hex_bytes(app);
         }
-        // copy the selection (Ctrl+C), replacing the old vi-style 'y' yank. Edit
-        // mode has had this key all along; Normal mode used to differ.
-        KeyCode::Char('c') | KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            copy_selection_to_clipboard(app);
+        // copy the selection (y / Ctrl+C), with Ctrl+Y for redo
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('c') | KeyCode::Char('C')
+            if key.code == KeyCode::Char('y')
+                || key.code == KeyCode::Char('Y')
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && (key.code == KeyCode::Char('y') || key.code == KeyCode::Char('Y')) {
+                perform_redo(app);
+            } else {
+                copy_selection_to_clipboard(app);
+            }
         }
 
         // go to last visited offset
@@ -572,10 +605,6 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         // undo / revert selected block or single step (Ctrl+Z or Alt+Backspace)
         KeyCode::Char('z') | KeyCode::Char('Z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             perform_undo(app);
-        }
-        // redo last undone change (Ctrl+Y)
-        KeyCode::Char('y') | KeyCode::Char('Y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            perform_redo(app);
         }
         // revert just the byte under the cursor (Alt+F3)
         KeyCode::F(3) if key.modifiers.contains(KeyModifiers::ALT) => {

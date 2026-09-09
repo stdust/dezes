@@ -127,6 +127,8 @@ impl Commands {
         }
         app.dialog_renderer = None;
         app.state = UIState::Normal;
+        app.view_generation = app.view_generation.wrapping_add(1);
+        app.persist_annotations();
     }
 }
 
@@ -363,5 +365,26 @@ mod comment_tests {
             entries,
             vec![(0x100, "a2".to_string()), (0x200, "b".to_string())]
         );
+    }
+
+    /// Adding a comment immediately writes out the .dzdb sidecar.
+    #[test]
+    fn comment_auto_persists_to_disk() {
+        let dir = std::env::temp_dir().join(format!("dz6_cmt_persist_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("persist.bin");
+        std::fs::write(&path, vec![0x90; 0x100]).unwrap();
+        let mut app = App::new();
+        app.load_file(path.to_str().unwrap(), 0, false).unwrap();
+        let db_path = app.database_path().expect("db path");
+        Commands::comment(&mut app, 0x10, "persisted note".to_string());
+        assert!(db_path.exists(), "sidecar must exist immediately after adding comment");
+        let content = std::fs::read_to_string(&db_path).unwrap();
+        assert!(content.contains("persisted note"));
+
+        // Deleting comment should update sidecar
+        Commands::comment(&mut app, 0x10, String::new());
+        assert!(!db_path.exists(), "empty sidecar should be removed");
+        let _ = std::fs::remove_file(&path);
     }
 }

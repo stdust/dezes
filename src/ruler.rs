@@ -83,7 +83,7 @@ pub fn ruler_draw(app: &mut App, frame: &mut Frame, area: Rect) {
 
     if app.editor_view == crate::editor::AppView::Disasm {
         // Shared with disasm::draw so the ruler and the table can't drift apart.
-        let va_len = crate::disasm::draw::va_col_width(app.is_64());
+        let va_len = crate::disasm::draw::va_col_width(app);
         let bytes_len = crate::disasm::draw::BYTES_COL_WIDTH;
         let disasm_len = crate::disasm::draw::DISASM_COL_WIDTH;
 

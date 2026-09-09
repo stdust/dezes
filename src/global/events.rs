@@ -1,4 +1,10 @@
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{
+    Frame,
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    layout::{Alignment, Constraint, Direction, Layout},
+    style::Modifier,
+    widgets::{Block, Borders, Clear, Paragraph},
+};
 
 use crate::{app::App, beep, commands, editor::{AppView, UIState}, global};
 
@@ -54,14 +60,32 @@ pub fn handle_global_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.state = UIState::DialogHelp;
             app.dialog_renderer = Some(crate::hex::help::dialog_help_draw);
         }
-        // F8: About / program info. F8 rather than F10 or F11, which terminals
-        // tend to intercept for their own menu and fullscreen bindings.
+        // F8: Reload current file from disk.
+        // If there are unsaved edits, asks for confirmation.
         KeyCode::F(8) => {
-            app.open_about_dialog();
+            if app.file_info.path.is_empty() {
+                beep!();
+                return Ok(true);
+            }
+            if app.hex_view.changed_bytes.is_empty() {
+                if let Err(e) = app.reload_file() {
+                    app.error(format!("Failed to reload: {}", e));
+                }
+            } else {
+                app.state = UIState::DialogConfirmReload;
+                app.dialog_renderer = Some(dialog_confirm_reload_draw);
+            }
         }
         // F9 or Ctrl+O: Open File Dialog
-        KeyCode::F(9) | KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) || key.code == KeyCode::F(9) => {
+        KeyCode::F(9) => {
             app.open_file_dialog();
+        }
+        KeyCode::Char('o') | KeyCode::Char('O') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.open_file_dialog();
+        }
+        // F10: About / program info.
+        KeyCode::F(10) => {
+            app.open_about_dialog();
         }
         // F12: save and quit, same as ':wq'.
         //
@@ -110,12 +134,17 @@ pub fn handle_global_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.return_to_primary_view();
             }
         }
-        // F4: jump to Header view from any view.
+        // F4: jump to Header view from any view (only if PE/ELF header exists).
         //
         // Guarded on ALT so Alt+F4 stays the terminal's "close window" rather than
         // switching views on the way out.
         KeyCode::F(4) if !key.modifiers.contains(KeyModifiers::ALT) => {
             if app.editor_view != AppView::Header {
+                if !app.is_pe() && app.header_view.elf.is_none() && !app.file_info.r#type.starts_with("ELF") {
+                    let msg = crate::i18n::M::ErrNoPEHeader.tr(app.config.lang).to_string();
+                    app.error(msg);
+                    return Ok(true);
+                }
                 if app.editor_view == AppView::Hex || app.editor_view == AppView::Disasm {
                     app.last_primary_view = app.editor_view;
                 }
@@ -141,6 +170,7 @@ pub fn handle_global_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.disasm_string_ref_dialog.items = items;
             app.disasm_string_ref_dialog.filter_input = tui_input::Input::default();
             app.disasm_string_ref_dialog.focus_filter = false;
+            app.disasm_string_ref_dialog.encoding_filter = crate::disasm::string_ref_dialog::EncodingFilter::All;
             app.disasm_string_ref_dialog.selected_index = 0;
             app.disasm_string_ref_dialog.update_filter();
             app.state = UIState::DialogStringRef;
@@ -152,37 +182,56 @@ pub fn handle_global_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.switch_editor_view();
             }
         }
-        // Ctrl+S: save file without quitting
-        KeyCode::Char('s') | KeyCode::Char('S') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            match app.write_to_file() {
-                Ok(()) => {
-                    app.persist_annotations();
-                    App::log(app, "File saved successfully".to_string());
-                }
-                Err(e) => {
-                    let message = crate::i18n::fill(
-                        crate::i18n::M::ErrSaveFailedQuit.tr(app.config.lang),
-                        &[&e.to_string()],
-                    );
-                    app.error(message);
-                }
+        // copy current address to clipboard (Ctrl+X or Ctrl+Shift+X)
+        // In Hex view when show_va is false, copy Hexdump address (file offset). In Disasm or show_va mode, copy VA.
+        KeyCode::Char('x') | KeyCode::Char('X') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.state == UIState::HexSelection {
+                return Ok(false);
             }
+            let is_disasm = app.editor_view == crate::editor::AppView::Disasm;
+            let addr_hex = if is_disasm || app.hex_view.show_va {
+                let va = app.get_va(app.hex_view.offset);
+                format!("{:X}", va)
+            } else {
+                format!("{:X}", app.hex_view.offset)
+            };
+            app.copy_to_clipboard(addr_hex.clone(), format!("address 0x{}", addr_hex));
         }
-        // copy current VA address to clipboard (Ctrl+Shift+X)
-        KeyCode::Char('x') | KeyCode::Char('X')
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT) =>
-        {
-            let va = app.get_va(app.hex_view.offset);
-            let va_hex = format!("{:X}", va);
-            if let Ok(clipboard) = &mut app.clipboard {
-                let _ = clipboard.set_text(va_hex.clone());
-            }
-            App::log(app, format!("Copied address 0x{} to clipboard", va_hex));
+        // Ctrl+P: Patches dialog (track & view modified bytes / chunks)
+        KeyCode::Char('p') | KeyCode::Char('P') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            crate::hex::patches_dialog::open_patches_dialog(app);
         }
         // Ctrl+G: Goto Address (HEX / VA), same key as x64dbg's goto expression.
+        // If a block is selected in Hex/Disasm view, the selected bytes (interpreted as little-endian) are pre-filled.
         KeyCode::Char('g') | KeyCode::Char('G') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             let is_disasm = app.editor_view == crate::editor::AppView::Disasm;
-            let addr_str = if app.hex_view.show_va || is_disasm {
+            let hex_has_selection = app.editor_view == crate::editor::AppView::Hex
+                && (app.hex_view.selection.start != app.hex_view.selection.end);
+            let disasm_has_selection = is_disasm && app.disasm_selection_anchor.is_some();
+
+            let read_selection_le_u64 = |app: &App, start: usize, end: usize| -> u64 {
+                let buffer = app.file_info.get_buffer_ref();
+                let len = end.saturating_add(1).saturating_sub(start).min(8);
+                let mut val: u64 = 0;
+                for i in 0..len {
+                    let ofs = start + i;
+                    if ofs >= buffer.len() { break; }
+                    let b = app.hex_view.changed_bytes.get(&ofs).copied().unwrap_or(buffer[ofs]);
+                    val |= (b as u64) << (i * 8);
+                }
+                val
+            };
+
+            let addr_str = if hex_has_selection {
+                let start = app.hex_view.selection.start.min(app.hex_view.selection.end);
+                let end = app.hex_view.selection.start.max(app.hex_view.selection.end);
+                format!("{:X}", read_selection_le_u64(app, start, end))
+            } else if disasm_has_selection {
+                let anchor = app.disasm_selection_anchor.unwrap();
+                let start = anchor.min(app.hex_view.offset);
+                let end = anchor.max(app.hex_view.offset);
+                format!("{:X}", read_selection_le_u64(app, start, end))
+            } else if app.hex_view.show_va || is_disasm {
                 let va = app.get_va(app.hex_view.offset);
                 format!("{:X}", va)
             } else {
@@ -192,14 +241,21 @@ pub fn handle_global_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.goto_input = tui_input::Input::new(addr_str);
             app.goto_selection_all = true;
             app.goto_selection_anchor = None;
+            app.goto_history.reset_nav();
             app.dialog_renderer = Some(crate::goto_dialog::dialog_goto_draw);
         }
         // '-' key or Ctrl + Left: Jump Backward to previous cursor position
-        KeyCode::Char('-') | KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) || key.code == KeyCode::Char('-') => {
+        KeyCode::Char('-') => {
+            app.jump_back();
+        }
+        KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.jump_back();
         }
         // '+' key or Ctrl + Right: Jump Forward to next cursor position
-        KeyCode::Char('+') | KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) || key.code == KeyCode::Char('+') => {
+        KeyCode::Char('+') => {
+            app.jump_forward();
+        }
+        KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.jump_forward();
         }
         // Alt+Left: reopen the result list the last Enter jumped out of, with the
@@ -330,12 +386,89 @@ pub fn handle_global_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.dialog_renderer = Some(crate::hex::find_dialog::draw_find_dialog);
         }
         // Ctrl + R: Cross References (Xrefs) Search & Popup Dialog (Hex & Disasm Views)
-        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('r') | KeyCode::Char('R') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             crate::disasm::xref_dialog::open_xref_dialog(app);
+        }
+        // Alt + N: Names / Comments list dialog (Hex, Disasm & other views)
+        KeyCode::Char('n') | KeyCode::Char('N') if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.state = UIState::DialogNames;
+            app.dialog_renderer = Some(crate::hex::names::dialog_names_draw);
+            if app.hex_view.names_list_state.selected().is_none() {
+                app.hex_view.names_list_state.select_first();
+            }
+        }
+        // Alt + B: Bookmarks list dialog (Hex, Disasm & other views)
+        KeyCode::Char('b') | KeyCode::Char('B') if key.modifiers.contains(KeyModifiers::ALT) => {
+            crate::hex::bookmark::open_bookmarks_dialog(app);
+        }
+        // Ctrl + D: Quick add bookmark at current cursor offset
+        KeyCode::Char('d') | KeyCode::Char('D') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            crate::hex::bookmark::open_add_bookmark_dialog(app, app.hex_view.offset);
         }
         _ => {}
     }
     Ok(false)
+}
+
+pub fn dialog_confirm_reload_draw(app: &mut App, frame: &mut Frame) {
+    let lang = app.config.lang;
+    let title = format!(" {} ", crate::i18n::M::ReloadTitle.tr(lang));
+    let prompt = crate::i18n::M::ConfirmReloadPrompt.tr(lang);
+    let options = crate::i18n::M::ConfirmReloadOptions.tr(lang);
+
+    let area = crate::hex::field_box::centered_rect_above(64, 7, frame.area());
+    frame.render_widget(Clear, area);
+
+    let dialog_style = app.config.theme.dialog;
+    let block = Block::default()
+        .title(title)
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .style(dialog_style)
+        .border_style(dialog_style.add_modifier(Modifier::BOLD));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // prompt
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // options
+            Constraint::Length(1), // blank
+        ])
+        .split(inner);
+
+    let prompt_para = Paragraph::new(prompt)
+        .alignment(Alignment::Center)
+        .style(dialog_style);
+    frame.render_widget(prompt_para, chunks[1]);
+
+    let options_para = Paragraph::new(options)
+        .alignment(Alignment::Center)
+        .style(app.config.theme.highlight);
+    frame.render_widget(options_para, chunks[3]);
+}
+
+pub fn dialog_confirm_reload_events(app: &mut App, key: KeyEvent) -> Result<bool> {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            app.dialog_renderer = None;
+            app.state = UIState::Normal;
+            if let Err(e) = app.reload_file() {
+                app.error(format!("Failed to reload: {}", e));
+            }
+            Ok(true)
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            app.dialog_renderer = None;
+            app.state = UIState::Normal;
+            Ok(true)
+        }
+        _ => Ok(true),
+    }
 }
 
 #[cfg(test)]
@@ -358,6 +491,17 @@ mod view_toggle_tests {
         app
     }
 
+    fn app_with_pe() -> Option<App> {
+        let exe = std::env::current_exe().ok()?.to_str()?.to_string();
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(&exe, 0, true).ok()?;
+        if !app.is_pe() {
+            return None;
+        }
+        Some(app)
+    }
+
     fn press(app: &mut App, code: KeyCode) {
         let key = KeyEvent {
             code,
@@ -368,11 +512,22 @@ mod view_toggle_tests {
         let _ = crate::global::events::handle_global_events(app, key);
     }
 
+    /// F4 on a non-PE file must refuse to enter Header view and show an error message.
+    #[test]
+    fn f4_on_non_pe_shows_error_and_stays() {
+        let mut app = app_with_file();
+        assert_eq!(app.editor_view, AppView::Hex);
+
+        press(&mut app, KeyCode::F(4));
+        assert_eq!(app.editor_view, AppView::Hex, "must not switch to Header view on non-PE");
+        assert!(app.status_error.is_some(), "must set an error message");
+    }
+
     /// F4 and F7 are toggles. Pressing them in the view they open used to do
     /// nothing, so the only way out was Esc.
     #[test]
     fn f4_returns_from_the_header_view() {
-        let mut app = app_with_file();
+        let Some(mut app) = app_with_pe() else { return };
         assert_eq!(app.editor_view, AppView::Hex);
 
         press(&mut app, KeyCode::F(4));
@@ -397,7 +552,7 @@ mod view_toggle_tests {
     /// secondary one.
     #[test]
     fn the_return_remembers_disasm() {
-        let mut app = app_with_file();
+        let Some(mut app) = app_with_pe() else { return };
         app.editor_view = AppView::Disasm;
         app.last_primary_view = AppView::Disasm;
         app.prev_editor_view = AppView::Disasm;
@@ -471,5 +626,118 @@ mod result_return_tests {
             assert!(app.state == UIState::Normal, "a list opened in {:?}", view);
             assert!(app.dialog_renderer.is_none());
         }
+    }
+
+    #[test]
+    fn ctrl_g_prefills_selected_bytes_as_little_endian() {
+        let dir = std::env::temp_dir().join(format!("dz6_ctrlg_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bin");
+        let bytes = vec![
+            0x6A, 0xE6, 0x11, 0x40, 0x01, 0x00, 0x00, 0x00, // 0..8 -> 0x14011E66A
+            0x18, 0x29, 0x12, 0x40, 0x01,                   // 8..13 -> 0x140122918 (5 bytes)
+        ];
+        std::fs::write(&path, &bytes).unwrap();
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().unwrap(), 0, true).unwrap();
+
+        // Select 8 bytes (0..7)
+        app.hex_view.selection.start = 0;
+        app.hex_view.selection.end = 7;
+        let key = KeyEvent { code: KeyCode::Char('g'), modifiers: KeyModifiers::CONTROL, kind: KeyEventKind::Press, state: KeyEventState::NONE };
+        let _ = crate::global::events::handle_global_events(&mut app, key);
+        assert!(app.state == UIState::DialogGoto);
+        assert_eq!(app.goto_input.value(), "14011E66A");
+
+        // Select 5 bytes (8..12)
+        app.hex_view.selection.start = 8;
+        app.hex_view.selection.end = 12;
+        let _ = crate::global::events::handle_global_events(&mut app, key);
+        assert_eq!(app.goto_input.value(), "140122918");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ctrl_x_copies_address_to_clipboard() {
+        let dir = std::env::temp_dir().join(format!("dz6_ctrlx_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bin");
+        std::fs::write(&path, vec![0x90u8; 0x100]).unwrap();
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().unwrap(), 0, true).unwrap();
+        app.hex_view.offset = 0x20;
+
+        let key = KeyEvent { code: KeyCode::Char('x'), modifiers: KeyModifiers::CONTROL, kind: KeyEventKind::Press, state: KeyEventState::NONE };
+
+        // Hex mode without show_va: copies hexdump offset (0x20)
+        app.editor_view = AppView::Hex;
+        app.hex_view.show_va = false;
+        let _ = crate::global::events::handle_global_events(&mut app, key);
+        assert!(app.logs.last().unwrap().contains("Copied address 0x20"));
+
+        // Hex mode with show_va: copies VA
+        app.hex_view.show_va = true;
+        app.image_base_override = Some(0x140000000);
+        let _ = crate::global::events::handle_global_events(&mut app, key);
+        assert!(app.logs.last().unwrap().contains("Copied address 0x140000020"));
+
+        // Disasm mode: copies VA
+        app.editor_view = AppView::Disasm;
+        let _ = crate::global::events::handle_global_events(&mut app, key);
+        assert!(app.logs.last().unwrap().contains("Copied address 0x140000020"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn f8_reloads_file_and_f10_opens_about() {
+        let dir = std::env::temp_dir().join(format!("dz6_f8_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("reload_test.bin");
+        std::fs::write(&path, vec![0x11u8; 0x100]).unwrap();
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().unwrap(), 0, false).unwrap();
+        app.hex_view.offset = 0x10;
+
+        // F10 opens About dialog
+        let key_f10 = KeyEvent { code: KeyCode::F(10), modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE };
+        let _ = crate::global::events::handle_global_events(&mut app, key_f10);
+        assert_eq!(app.state, UIState::DialogAbout);
+        app.state = UIState::Normal;
+
+        // Modify file on disk externally
+        app.file_info.mmap = None;
+        std::fs::write(&path, vec![0x22u8; 0x200]).unwrap();
+
+        // Clean reload with F8
+        let key_f8 = KeyEvent { code: KeyCode::F(8), modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE };
+        let _ = crate::global::events::handle_global_events(&mut app, key_f8);
+        assert_eq!(app.file_info.size, 0x200);
+        assert_eq!(app.hex_view.offset, 0x10);
+
+        // Make an in-memory modification
+        app.hex_view.changed_bytes.insert(0x05, 0x99);
+        let _ = crate::global::events::handle_global_events(&mut app, key_f8);
+        assert_eq!(app.state, UIState::DialogConfirmReload);
+
+        // Cancel reload with 'n'
+        let key_n = KeyEvent { code: KeyCode::Char('n'), modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE };
+        let _ = crate::global::events::dialog_confirm_reload_events(&mut app, key_n);
+        assert_eq!(app.state, UIState::Normal);
+        assert_eq!(app.hex_view.changed_bytes.len(), 1);
+
+        // Trigger F8 again and confirm with 'y'
+        let _ = crate::global::events::handle_global_events(&mut app, key_f8);
+        assert_eq!(app.state, UIState::DialogConfirmReload);
+        let key_y = KeyEvent { code: KeyCode::Char('y'), modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE };
+        let _ = crate::global::events::dialog_confirm_reload_events(&mut app, key_y);
+        assert_eq!(app.state, UIState::Normal);
+        assert!(app.hex_view.changed_bytes.is_empty());
+        app.file_info.mmap = None;
+        let _ = std::fs::remove_file(&path);
     }
 }

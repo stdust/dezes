@@ -54,7 +54,7 @@ pub fn selection(input: &Input, anchor: Option<usize>) -> Option<(usize, usize)>
 }
 
 /// The text before, inside and after the selection.
-pub fn split<'a>(input: &'a Input, anchor: Option<usize>) -> (&'a str, &'a str, &'a str) {
+pub fn split(input: &Input, anchor: Option<usize>) -> (&str, &str, &str) {
     let value = input.value();
     match selection(input, anchor) {
         None => (value, "", ""),
@@ -189,7 +189,7 @@ pub fn handle_key(app: &mut App, field: Field, event: &Event) -> bool {
             KeyCode::Char('v') | KeyCode::Char('V') => {
                 // One line only: a newline in a single-line box would be invisible
                 // and would break every regex it landed in.
-                let pasted = app
+                let mut pasted = app
                     .clipboard
                     .as_mut()
                     .ok()
@@ -198,6 +198,10 @@ pub fn handle_key(app: &mut App, field: Field, event: &Event) -> bool {
                     .unwrap_or_default();
                 if pasted.is_empty() {
                     return false;
+                }
+                const MAX_PASTE_CHARS: usize = 4096;
+                if pasted.chars().count() > MAX_PASTE_CHARS {
+                    pasted = pasted.chars().take(MAX_PASTE_CHARS).collect();
                 }
                 let (input, anchor) = field(app);
                 return replace_selection(input, anchor, &pasted);

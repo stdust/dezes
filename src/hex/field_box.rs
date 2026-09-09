@@ -39,24 +39,29 @@ pub struct FieldRow<'a> {
 
 /// Width of the longest label among `rows`, used to line up every `:` and `[`.
 pub fn label_width(labels: &[&str]) -> usize {
-    labels.iter().map(|l| l.chars().count()).max().unwrap_or(0)
+    use unicode_width::UnicodeWidthStr;
+    labels.iter().map(|l| l.width()).max().unwrap_or(0)
 }
 
 /// `"  <label> : ["` - the fixed part of a field row, before the value.
 pub fn field_prefix(label: &str, label_width: usize) -> String {
-    format!("  {:<width$} : [", label, width = label_width)
+    use unicode_width::UnicodeWidthStr;
+    let w = label.width();
+    let pad = label_width.saturating_sub(w);
+    format!("  {}{:<pad$} : [", label, "", pad = pad)
 }
 
 /// Outer box size for `n_fields` rows plus `status_rows` status lines, sized so
 /// every field lines up per [`field_prefix`] / [`CONTENT_WIDTH`] /
 /// [`TRAILING_MARGIN`].
 pub fn box_size_rows(label_width: usize, n_fields: usize, status_rows: usize, avail: Rect) -> (u16, u16) {
-    // Computed the same way `field_prefix` builds its string, so the box is
-    // always exactly wide enough for it: "  " (2) + label (padded to
-    // `label_width`) + " : [" (4).
-    let prefix_len = field_prefix("", label_width).chars().count();
-    let inner_width = (prefix_len + CONTENT_WIDTH + 1 + TRAILING_MARGIN) as u16; // +1 "]"
-    let width = (inner_width + 2).min(avail.width); // +2 outer border
+    use unicode_width::UnicodeWidthStr;
+    let prefix_width = UnicodeWidthStr::width(field_prefix("", label_width).as_str());
+    let mut inner_width = prefix_width + CONTENT_WIDTH + 1 + TRAILING_MARGIN;
+    if status_rows > 0 {
+        inner_width = inner_width.max(68);
+    }
+    let width = (inner_width as u16 + 2).min(avail.width); // +2 outer border
 
     // Leading blank line + one row per field + trailing blank line (+ status lines).
     //
@@ -224,7 +229,7 @@ pub fn draw_field_row(
     }
 
     let prefix = field_prefix(field.label, label_width);
-    let prefix_len = prefix.chars().count();
+    let prefix_width = unicode_width::UnicodeWidthStr::width(prefix.as_str());
     let mut spans = vec![Span::styled(prefix, label_style)];
 
     if let Some((sel_start, sel_end)) = field.selection {
@@ -258,7 +263,7 @@ pub fn draw_field_row(
         // the character-based `scroll` would put the cursor in the wrong column
         // once a wide character is scrolled past.
         let cursor_x = line_area.x
-            + prefix_len as u16
+            + prefix_width as u16
             + (field.input.visual_cursor().saturating_sub(scroll_cols)) as u16;
         Some((cursor_x, line_area.y))
     } else {

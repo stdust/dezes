@@ -73,7 +73,7 @@ pub fn code_sections(app: &App, buffer_len: usize) -> Vec<CodeSection> {
             sections.push(CodeSection {
                 start,
                 end,
-                va: image_base + sec.virtual_address as u64,
+                va: image_base.wrapping_add(sec.virtual_address as u64),
             });
         }
     }
@@ -92,6 +92,7 @@ pub fn code_sections(app: &App, buffer_len: usize) -> Vec<CodeSection> {
 
 /// `IMAGE_SCN_MEM_EXECUTE`, on its own: a section can be executable without being
 /// marked as containing code.
+#[allow(dead_code)]
 const EXECUTE_FLAG: u32 = 0x2000_0000;
 
 /// Non-executable regions of the file, in file order, with the address each maps
@@ -114,6 +115,7 @@ const EXECUTE_FLAG: u32 = 0x2000_0000;
 /// Yields nothing when there is no PE image: without a section table there is no
 /// way to tell data from code, and reporting the whole file would bury the real
 /// hits.
+#[allow(dead_code)]
 pub fn data_sections(app: &App, buffer_len: usize) -> Vec<CodeSection> {
     let mut sections = Vec::new();
 
@@ -138,7 +140,47 @@ pub fn data_sections(app: &App, buffer_len: usize) -> Vec<CodeSection> {
         sections.push(CodeSection {
             start,
             end,
-            va: image_base + sec.virtual_address as u64,
+            va: image_base.wrapping_add(sec.virtual_address as u64),
+        });
+    }
+
+    sections.sort_unstable_by_key(|s| s.start);
+    sections
+}
+
+/// All regions of the file (both code and data) except `.reloc`, in file order.
+///
+/// Used by the cross-reference search: pointer tables, jump tables, and vtables
+/// can be embedded in executable sections as well as data sections.
+pub fn xref_sections(app: &App, buffer_len: usize) -> Vec<CodeSection> {
+    let mut sections = Vec::new();
+
+    if let Some(pe) = app.header_view.pe.as_ref() {
+        let image_base = app.get_image_base();
+
+        for sec in &pe.sections {
+            let name = sec.name().unwrap_or("");
+            if name == ".reloc" {
+                continue;
+            }
+            let start = sec.pointer_to_raw_data as usize;
+            let end = (start.saturating_add(sec.size_of_raw_data as usize)).min(buffer_len);
+            if start >= buffer_len || start >= end {
+                continue;
+            }
+            sections.push(CodeSection {
+                start,
+                end,
+                va: image_base.wrapping_add(sec.virtual_address as u64),
+            });
+        }
+    }
+
+    if sections.is_empty() && buffer_len > 0 {
+        sections.push(CodeSection {
+            start: 0,
+            end: buffer_len,
+            va: app.get_va(0),
         });
     }
 

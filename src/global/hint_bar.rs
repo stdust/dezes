@@ -167,11 +167,13 @@ fn hints_for(app: &App, page: HintPage) -> Vec<Hint> {
     match page {
         HintPage::Ctrl => vec![
             ro("C", M::Copy),
+            rw("D", M::Bookmarks),
             rw("E", M::Data),
             ro("G", M::Goto),
             ro("B", M::Find),
             rw("K", M::Modify),
             rw("H", M::Replace),
+            ro("P", M::Patches),
             ro("R", M::Xref),
             ro("X", M::Addr),
             rw("Z", M::Undo),
@@ -179,6 +181,7 @@ fn hints_for(app: &App, page: HintPage) -> Vec<Hint> {
             ro("O", M::Open),
         ],
         HintPage::Alt => vec![
+            ro("B", M::Bookmarks),
             ro("E", M::Encoding),
             ro("Shift+E", M::Encoding2),
             ro("H", M::Highlight),
@@ -242,8 +245,9 @@ fn plain_hints(app: &App) -> Vec<Hint> {
             ro("F5", M::Refs),
             ro("F6", M::Strings),
             ro("F7", M::TextView),
-            ro("F8", M::About),
+            ro("F8", M::Reload),
             ro("F9", M::Open),
+            ro("F10", M::About),
             ro_short("F12", M::SaveQuit, M::Save),
         ],
         AppView::Disasm => vec![
@@ -252,8 +256,9 @@ fn plain_hints(app: &App) -> Vec<Hint> {
             ro("F5", M::Refs),
             ro("F6", M::Strings),
             ro("F7", M::TextView),
-            ro("F8", M::About),
+            ro("F8", M::Reload),
             ro("F9", M::Open),
+            ro("F10", M::About),
             ro_short("F12", M::SaveQuit, M::Save),
         ],
         AppView::Text => vec![
@@ -261,8 +266,9 @@ fn plain_hints(app: &App) -> Vec<Hint> {
             ro("F4", M::HeaderView),
             ro("F6", M::Strings),
             ro("F7", M::TextView),
-            ro("F8", M::About),
+            ro("F8", M::Reload),
             ro("F9", M::Open),
+            ro("F10", M::About),
             ro_short("F12", M::SaveQuit, M::Save),
         ],
         AppView::Header => vec![
@@ -271,8 +277,9 @@ fn plain_hints(app: &App) -> Vec<Hint> {
             ro("F5", M::Refs),
             ro("F6", M::Strings),
             ro("F7", M::TextView),
-            ro("F8", M::About),
+            ro("F8", M::Reload),
             ro("F9", M::Open),
+            ro("F10", M::About),
             ro_short("F12", M::SaveQuit, M::Save),
         ],
     }
@@ -409,7 +416,7 @@ mod hint_bar_tests {
             wide
         );
 
-        let tight = text_at(100);
+        let tight = text_at(110);
         assert!(
             tight.contains("F12 Save") && !tight.contains("Save and quit"),
             "the slot should have shortened, got: {:?}",

@@ -23,12 +23,9 @@ pub fn draw_header_edit_dialog(app: &mut App, frame: &mut Frame) {
     let layout = Layout::horizontal([Constraint::Percentage(25), Constraint::Percentage(75)]);
     let [_, detail_area] = vertical_layout[0].layout(&layout);
 
-    let is_name_field = app.header_view.edit_name.ends_with(".Name");
+    let is_name_field = app.header_view.edit_name == "Name" || app.header_view.edit_name.ends_with(".Name");
     let title_str = if is_name_field {
-        crate::i18n::fill(
-            crate::i18n::M::LblSectionNameMax8.tr(app.config.lang),
-            &[&app.header_view.edit_name],
-        )
+        crate::i18n::M::LblSectionNameMax8.tr(app.config.lang).to_string()
     } else {
         format!(" {} ", app.header_view.edit_name)
     };
@@ -130,7 +127,7 @@ pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<
                 let size = app.header_view.edit_size;
 
                 // Refuse to stage bytes outside the file.
-                let span = if app.header_view.edit_name.ends_with(".Name") {
+                let span = if app.header_view.edit_name == "Name" || app.header_view.edit_name.ends_with(".Name") {
                     8
                 } else {
                     size.min(8)
@@ -152,7 +149,7 @@ pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<
                     return Ok(());
                 }
 
-                if app.header_view.edit_name.ends_with(".Name") {
+                if app.header_view.edit_name == "Name" || app.header_view.edit_name.ends_with(".Name") {
                     let name_bytes = input_str.as_bytes();
                     for i in 0..8 {
                         let byte_val = if i < name_bytes.len() {
@@ -182,8 +179,7 @@ pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<
                     if let Some(val) = parsed_val {
                         // Convert value to little-endian bytes and write to changed_bytes
                         let le_bytes = val.to_le_bytes();
-                        for i in 0..size.min(8) {
-                            let byte_val = le_bytes[i];
+                        for (i, &byte_val) in le_bytes[..size.min(8)].iter().enumerate() {
                             crate::hex::edit::record_edit(app, offset + i, byte_val);
                         }
 
@@ -194,6 +190,25 @@ pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<
                                 app.header_view.edit_name, offset, val
                             ),
                         );
+
+                        // Alignment validation warning
+                        if let Some(pe) = &app.header_view.pe {
+                            let (sec_align, file_align) = if let Some(opt) = pe.optional_header {
+                                (opt.windows_fields.section_alignment.max(1) as u64, opt.windows_fields.file_alignment.max(1) as u64)
+                            } else {
+                                (0x1000, 0x200)
+                            };
+
+                            if app.header_view.edit_name.ends_with(".VirtualAddress") && val % sec_align != 0 {
+                                App::log(app, format!("Warning: 0x{:X} is not aligned to SectionAlignment (0x{:X})", val, sec_align));
+                            } else if app.header_view.edit_name.ends_with(".PointerToRawData") && val % file_align != 0 {
+                                App::log(app, format!("Warning: 0x{:X} is not aligned to FileAlignment (0x{:X})", val, file_align));
+                            } else if app.header_view.edit_name == "SectionAlignment" && (val < 0x200 || !val.is_power_of_two()) {
+                                App::log(app, format!("Warning: SectionAlignment 0x{:X} is unusual (expected power of 2 >= 0x200)", val));
+                            } else if app.header_view.edit_name == "FileAlignment" && (val < 0x200 || !val.is_power_of_two()) {
+                                App::log(app, format!("Warning: FileAlignment 0x{:X} is unusual (expected power of 2 >= 0x200)", val));
+                            }
+                        }
 
                         // Re-parse header structure
                         app.update_file_headers_scoped(scope);
@@ -212,7 +227,7 @@ pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<
             }
             _ => {
                 app.goto_selection_all = false;
-                if app.header_view.edit_name.ends_with(".Name") {
+                if app.header_view.edit_name == "Name" || app.header_view.edit_name.ends_with(".Name") {
                     let val_before = app.goto_input.value().to_string();
                     crate::text_field::handle_key(app, header_edit_field, event);
                     if app.goto_input.value().chars().count() > 8 {

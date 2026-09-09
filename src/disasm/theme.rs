@@ -34,7 +34,7 @@ impl Default for DisasmTheme {
     /// The colours a fresh install starts with, before any `disasm.theme` exists.
     ///
     /// Also the base every theme file is applied *onto*, so a file that omits a key
-    /// - an older one written before the key existed - inherits the value here
+    /// (an older one written before the key existed) inherits the value here
     /// rather than something arbitrary.
     fn default() -> Self {
         Self {
@@ -47,7 +47,7 @@ impl Default for DisasmTheme {
             jcc_bg: Color::Rgb(255, 255, 0),        // #FFFF00
             jcc_fg: Color::Rgb(255, 0, 0),          // #FF0000
             push_pop_fg: Color::Rgb(0, 0, 255),      // #0000FF
-            ret_bg: Color::Rgb(0, 255, 255),         // #00FFFF
+            ret_bg: Color::Rgb(0, 255, 0),           // #00FF00
             ret_fg: Color::Rgb(0, 0, 0),            // #000000
             register_fg: Color::Rgb(0, 0x99, 0),     // #009900
             memory_op_fg: Color::Rgb(0x3B, 0x4A, 0x5A), // #3B4A5A
@@ -63,7 +63,18 @@ impl Default for DisasmTheme {
 
 pub fn parse_color_str(s: &str) -> Option<Color> {
     let clean = s.trim();
-    if let Some(digits) = clean.strip_prefix('#') {
+    let hex_candidate = clean
+        .strip_prefix('#')
+        .or_else(|| clean.strip_prefix("0x"))
+        .or_else(|| clean.strip_prefix("0X"))
+        .or_else(|| {
+            if clean.len() == 6 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
+                Some(clean)
+            } else {
+                None
+            }
+        });
+    if let Some(digits) = hex_candidate {
         // `len() == 7` was a *byte* length check, so a 7-byte multi-byte string
         // passed it and then panicked slicing on a non-char boundary.
         if digits.len() == 6 && digits.is_ascii() {
@@ -374,7 +385,7 @@ pub fn disasm_preset(name: &str) -> Option<DisasmTheme> {
             jcc_bg: Color::Rgb(0xF5, 0xD6, 0x4A),
             jcc_fg: Color::Rgb(0xC0, 0x00, 0x2B),
             push_pop_fg: Color::Rgb(0x0A, 0x47, 0xA9),
-            ret_bg: Color::Rgb(0x66, 0xE0, 0xEA),
+            ret_bg: Color::Rgb(0x00, 0xFF, 0x00),
             ret_fg: Color::Rgb(0x00, 0x00, 0x00),
             register_fg: Color::Rgb(0x06, 0x7A, 0x21),
             memory_op_fg: Color::Rgb(0x1F, 0x5F, 0xD0),
@@ -397,8 +408,8 @@ pub fn disasm_preset(name: &str) -> Option<DisasmTheme> {
             jcc_bg: Color::Rgb(0xE3, 0xCE, 0x63),
             jcc_fg: Color::Rgb(0x8E, 0x16, 0x16),
             push_pop_fg: Color::Rgb(0xA8, 0xC8, 0xFF),
-            ret_bg: Color::Rgb(0x7F, 0xD4, 0xDE),
-            ret_fg: Color::Rgb(0x14, 0x18, 0x1A),
+            ret_bg: Color::Rgb(0x00, 0xFF, 0x00),
+            ret_fg: Color::Rgb(0x00, 0x00, 0x00),
             register_fg: Color::Rgb(0x9B, 0xE0, 0xA5),
             memory_op_fg: Color::Rgb(0xA9, 0xCF, 0xFF),
             immediate_fg: Color::Rgb(0xEB, 0xD9, 0xA0),

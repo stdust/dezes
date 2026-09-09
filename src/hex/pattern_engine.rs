@@ -75,7 +75,7 @@ impl HexPattern {
             input.split_whitespace().map(|s| s.to_string()).collect()
         } else {
             let chars: Vec<char> = input.chars().collect();
-            if chars.is_empty() || chars.len() % 2 != 0 {
+            if chars.is_empty() || !chars.len().is_multiple_of(2) {
                 return Err(PatternError::InvalidToken(input.to_string()));
             }
             chars.chunks(2).map(|c| c.iter().collect()).collect()
@@ -134,6 +134,14 @@ impl HexPattern {
     pub fn as_slice(&self) -> &[PatternByte] {
         &self.bytes
     }
+
+    pub fn for_each_literal(&self, mut f: impl FnMut(usize, u8)) {
+        for r in &self.literal_runs {
+            for i in r.clone() {
+                f(i, self.flat[i]);
+            }
+        }
+    }
 }
 
 /// Finds and replaces occurrences of a wildcard hex pattern in a byte slice.
@@ -171,14 +179,20 @@ impl HexReplacer {
         Ok(Self { search, replace, anchor })
     }
 
+    pub const MAX_MATCHES: usize = 100_000;
+
     pub fn pattern_len(&self) -> usize {
         self.search.len()
     }
 
-    /// Find all non-overlapping matches, left to right. Returns start offsets.
-    pub fn find_all(&self, haystack: &[u8]) -> Vec<usize> {
+    pub fn replace_pattern(&self) -> &HexPattern {
+        &self.replace
+    }
+
+    /// Find all non-overlapping matches, left to right, capped by limit.
+    pub fn find_all_capped(&self, haystack: &[u8], limit: usize) -> Vec<usize> {
         let len = self.search.len();
-        if haystack.len() < len {
+        if haystack.len() < len || limit == 0 {
             return Vec::new();
         }
 
@@ -200,6 +214,9 @@ impl HexReplacer {
                     }
                     if matches_at(&self.search, &haystack[start..end]) {
                         out.push(start);
+                        if out.len() >= limit {
+                            break;
+                        }
                         next_allowed = end;
                     }
                 }
@@ -213,11 +230,19 @@ impl HexReplacer {
                 let mut pos = 0;
                 while pos + len <= haystack.len() {
                     out.push(pos);
+                    if out.len() >= limit {
+                        break;
+                    }
                     pos += len;
                 }
                 out
             }
         }
+    }
+
+    /// Find all non-overlapping matches, left to right, capped at MAX_MATCHES.
+    pub fn find_all(&self, haystack: &[u8]) -> Vec<usize> {
+        self.find_all_capped(haystack, Self::MAX_MATCHES)
     }
 
     /// Find the first match at or after `from`. Useful for an interactive
@@ -263,6 +288,7 @@ impl HexReplacer {
     /// Replace all non-overlapping matches in place. Wildcard slots in the
     /// replace pattern leave the original byte untouched. Returns the
     /// offsets that were replaced.
+    #[allow(dead_code)]
     pub fn replace_all(&self, haystack: &mut [u8]) -> Vec<usize> {
         let matches = self.find_all(haystack);
         let len = self.search.len();

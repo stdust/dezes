@@ -20,7 +20,7 @@ impl Lang {
         match self {
             Lang::En => "en",
             Lang::Ko => "ko",
-            Lang::Zh => "zh",
+            Lang::Zh => "cn",
         }
     }
 
@@ -29,7 +29,7 @@ impl Lang {
         match self {
             Lang::En => "en (English)",
             Lang::Ko => "ko (한국어)",
-            Lang::Zh => "zh (中文)",
+            Lang::Zh => "cn (中文)",
         }
     }
 
@@ -38,7 +38,7 @@ impl Lang {
         match name.trim().to_ascii_lowercase().as_str() {
             "en" | "eng" | "english" => Some(Lang::En),
             "ko" | "kr" | "kor" | "korean" | "한국어" => Some(Lang::Ko),
-            "zh" | "cn" | "chs" | "chinese" | "中文" => Some(Lang::Zh),
+            "cn" | "zh" | "chs" | "chinese" | "中文" => Some(Lang::Zh),
             _ => None,
         }
     }
@@ -48,6 +48,7 @@ impl Lang {
 }
 
 /// A translatable message.
+#[allow(dead_code)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum M {
     // Hint bar - function keys
@@ -58,6 +59,11 @@ pub enum M {
     Strings,
     TextView,
     About,
+    Reload,
+    ReloadTitle,
+    ConfirmReloadPrompt,
+    ConfirmReloadOptions,
+    FileReloaded,
     Open,
     Save,
     SaveQuit,
@@ -78,6 +84,7 @@ pub enum M {
     Goto,
     Find,
     Replace,
+    Patches,
     Xref,
     Addr,
     Undo,
@@ -88,6 +95,7 @@ pub enum M {
     Highlight,
     Log,
     Names,
+    Bookmarks,
     RevertByte,
     ImageBase,
     DecodeWidth,
@@ -109,6 +117,7 @@ pub enum M {
     ModifyBlockTitle,
     OperationTitle,
     NamesTitle,
+    NoNames,
     StringsTitle,
     RegexTitle,
     FilterRegexTitle,
@@ -122,7 +131,19 @@ pub enum M {
     OpenFileTitle,
     ImageBaseTitle,
     EditDataTitle,
+    PatchesTitle,
+    PatchesFooterKeys,
+    NoPatches,
     FoundCount,
+    BookmarksTitle,
+    BookmarksFooterKeys,
+    NoBookmarks,
+    BookmarkAddTitle,
+    BookmarkEditTitle,
+    BookmarkInputHint,
+    LblNo,
+    LblLabel,
+    LblPreview,
 
     // Refusals and errors.
     ReadOnlyRefused,
@@ -152,6 +173,7 @@ pub enum M {
     ErrViewNames,
     ErrAddrNames,
     ErrNoCodeSection,
+    ErrNoPEHeader,
     ErrLangNeedsValue,
     ErrUnknownLang,
     ErrUnknownOptionSuggest,
@@ -192,6 +214,8 @@ pub enum M {
     LblInstruction,
     LblDisassembly,
     LblTextString,
+    LblOriginalToPatched,
+    LblSize,
     LblValue,
     LblStep,
     LblSearch,
@@ -218,6 +242,35 @@ pub enum M {
     ErrNoPeHeaders,
     ErrNoOptionalHeader,
     ErrSectionTooBig,
+    DonePointerToRawData,
+    DoneAslrRemoved,
+    NoteAslrNotSet,
+    DoneSectionAdded,
+    SecToolsTitle,
+    SecToolAlignOffsetsTitle,
+    SecToolAlignOffsetsDesc,
+    SecToolAddSectionTitle,
+    SecToolAddSectionDesc,
+    SecToolDumpSectionTitle,
+    SecToolDumpSectionDesc,
+    SecToolDeleteLastSectionTitle,
+    SecToolDeleteLastSectionDesc,
+    SecToolFixSizeOfImageTitle,
+    SecToolFixSizeOfImageDesc,
+    SecToolRemoveAslrTitle,
+    SecToolRemoveAslrDesc,
+    DoneOpenedFile,
+    ErrOpeningFile,
+    DoneSavedLogs,
+    ErrFailedToSaveLog,
+    DoneBytesWritten,
+    DoneSavedAs,
+    DoneLogCopied,
+    DoneLogCleared,
+    DoneAssembledPadded,
+    DoneAssembled,
+    ErrNoXrefsFor,
+    ErrNoTargetAddress,
 
     // Modify Block operations.
     OpAdd,
@@ -274,20 +327,23 @@ impl M {
     #[cfg(test)]
     pub const ALL: &[M] = &[
         M::Help, M::Edit, M::HeaderView, M::Refs, M::Strings, M::TextView, M::About,
+        M::Reload, M::ReloadTitle, M::ConfirmReloadPrompt, M::ConfirmReloadOptions, M::FileReloaded,
         M::Open, M::Save, M::SaveQuit, M::HexView, M::Type, M::Column, M::Case, M::Select, M::Done,
         M::Copy, M::Modify, M::Color, M::Clear, M::Data, M::Goto, M::Find, M::Replace,
-        M::Xref, M::Addr, M::Undo, M::Redo, M::Encoding, M::Encoding2, M::Highlight,
-        M::Log, M::Names, M::RevertByte, M::ImageBase, M::DecodeWidth, M::ReadOnly,
+        M::Patches, M::Xref, M::Addr, M::Undo, M::Redo, M::Encoding, M::Encoding2, M::Highlight,
+        M::Log, M::Names, M::Bookmarks, M::RevertByte, M::ImageBase, M::DecodeWidth, M::ReadOnly,
         M::HelpTitle, M::HelpFooter, M::SettingsTitle, M::SettingsFooter, M::NamesFooter,
         M::MinimumLength, M::NoteByteline, M::NoteCtrlchar, M::NoteEnc1, M::NoteEnc2,
         M::NoteAddr, M::NoteBitness, M::NoteView, M::NoteTheme, M::NoteDb, M::NoteDimctrl,
         M::NoteDimzero, M::NoteWrapscan, M::NoteHighlight, M::NoteHintbar, M::NoteLang,
         M::NoteDisasmColor, M::AboutTitle, M::AboutFooter, M::LogTitle, M::LogFooter,
         M::CalculatorTitle, M::GotoTitle, M::ModifyBlockTitle, M::OperationTitle,
-        M::NamesTitle, M::StringsTitle, M::RegexTitle, M::FilterRegexTitle,
+        M::NamesTitle, M::NoNames, M::StringsTitle, M::RegexTitle, M::FilterRegexTitle,
         M::AssembleTitle, M::AddSectionTitle, M::SelectDriveTitle, M::CommentAtTitle,
         M::XrefTitle, M::XrefLimitReached, M::StringRefsTitle, M::OpenFileTitle,
-        M::ImageBaseTitle, M::EditDataTitle, M::FoundCount,
+        M::ImageBaseTitle, M::EditDataTitle, M::PatchesTitle, M::PatchesFooterKeys, M::NoPatches, M::FoundCount,
+        M::BookmarksTitle, M::BookmarksFooterKeys, M::NoBookmarks, M::BookmarkAddTitle, M::BookmarkEditTitle,
+        M::BookmarkInputHint, M::LblNo, M::LblLabel, M::LblPreview,
         M::ReadOnlyRefused, M::RoEditData, M::RoPaste, M::RoCase, M::RoEditMode,
         M::RoFillZero, M::RoFillNop, M::RoModifyBlock, M::RoAssemble, M::RoNopOut,
         M::RoSectionTools, M::RoStringEdit,
@@ -295,7 +351,7 @@ impl M {
         M::ErrCommentOutside, M::ErrRefusingAssemble, M::ErrFailedAssemble,
         M::ErrSwitchValue, M::ErrNeedsNumberAuto, M::ErrBytelineZero,
         M::ErrNotByteCount, M::ErrNeedsCharacter, M::ErrOneCharacter, M::ErrViewNames,
-        M::ErrAddrNames, M::ErrNoCodeSection, M::ErrLangNeedsValue, M::ErrUnknownLang,
+        M::ErrAddrNames, M::ErrNoCodeSection, M::ErrNoPEHeader, M::ErrLangNeedsValue, M::ErrUnknownLang,
         M::ErrUnknownOptionSuggest, M::ErrUnknownOption, M::ErrNeedsColour,
         M::ErrNotColour, M::ErrUnknownEncoding, M::WarnRegexEmptyOnly,
         M::StringEditTitle, M::ErrStringTooLong, M::ErrAsciiOnly, M::StringReplaced,
@@ -307,13 +363,22 @@ impl M {
         M::LblFileBase, M::ErrNothingToAssemble, M::ErrFileReadOnly, M::ErrAssemblePastEof,
         M::ErrNotAnAddress,
         M::LblType, M::LblAddress, M::LblInstruction, M::LblDisassembly,
-        M::LblTextString, M::LblValue, M::LblStep, M::LblSearch, M::LblReplace,
+        M::LblTextString, M::LblOriginalToPatched, M::LblSize, M::LblValue, M::LblStep, M::LblSearch, M::LblReplace,
         M::LblSubDir, M::LblError, M::ReplacePatternTitle, M::ReplaceHint,
         M::FindPatternTitle, M::FindHint, M::BytesSelected, M::MatchAtOffset, M::MatchAtVa,
         M::ReplacedAt, M::ReplacedCount, M::NotAtAMatch,
         M::FindEnterHex, M::FindInvalidHex, M::FindEnterText,
         M::FindNoMatch, M::SizeHexHint, M::ErrFieldNotNumeric, M::ErrSectionSizeZero, M::ErrNoPeHeaders,
         M::ErrNoOptionalHeader, M::ErrSectionTooBig,
+        M::DonePointerToRawData, M::DoneAslrRemoved, M::NoteAslrNotSet, M::DoneSectionAdded,
+        M::SecToolsTitle, M::SecToolAlignOffsetsTitle, M::SecToolAlignOffsetsDesc,
+        M::SecToolAddSectionTitle, M::SecToolAddSectionDesc, M::SecToolDumpSectionTitle,
+        M::SecToolDumpSectionDesc, M::SecToolDeleteLastSectionTitle, M::SecToolDeleteLastSectionDesc,
+        M::SecToolFixSizeOfImageTitle, M::SecToolFixSizeOfImageDesc, M::SecToolRemoveAslrTitle,
+        M::SecToolRemoveAslrDesc,
+        M::DoneOpenedFile, M::ErrOpeningFile, M::DoneSavedLogs, M::ErrFailedToSaveLog,
+        M::DoneBytesWritten, M::DoneSavedAs, M::DoneLogCopied, M::DoneLogCleared,
+        M::DoneAssembledPadded, M::DoneAssembled,
         M::OpAdd, M::OpSub, M::OpMul, M::OpDiv, M::OpXor, M::OpOr, M::OpAnd, M::OpNot,
         M::OpEndianSwap, M::OpShiftLeft, M::OpShiftRight, M::OpRandom, M::OpRollingXor,
     ];
@@ -336,6 +401,23 @@ impl M {
             M::Strings => ["Strings", "문자열", "字符串"],
             M::TextView => ["Text", "텍스트", "文本"],
             M::About => ["About", "정보", "关于"],
+            M::Reload => ["Reload", "다시 로드", "重新加载"],
+            M::ReloadTitle => ["Reload File (F8)", "파일 다시 로드 (F8)", "重新加载文件 (F8)"],
+            M::ConfirmReloadPrompt => [
+                "Unsaved changes will be discarded. Reload file?",
+                "수정된 내용이 삭제됩니다. 파일을 다시 로드하시겠습니까?",
+                "未保存的修改将被放弃。是否重新加载文件？",
+            ],
+            M::ConfirmReloadOptions => [
+                "[ Y: Yes / Enter ]    [ N: Cancel / Esc ]",
+                "[ Y: 예 / Enter ]    [ N: 취소 / Esc ]",
+                "[ Y: 是 / Enter ]    [ N: 取消 / Esc ]",
+            ],
+            M::FileReloaded => [
+                "File reloaded: {} ({} bytes)",
+                "파일을 다시 로드했습니다: {} ({} 바이트)",
+                "已重新加载文件：{} ({} 字节)",
+            ],
             M::Open => ["Open", "열기", "打开"],
             M::Save => ["Save", "저장", "保存"],
             M::SaveQuit => ["Save and quit", "저장하고 종료", "保存并退出"],
@@ -356,6 +438,7 @@ impl M {
             M::Goto => ["Goto", "이동", "跳转"],
             M::Find => ["Find", "찾기", "查找"],
             M::Replace => ["Replace", "바꾸기", "替换"],
+            M::Patches => ["Patches", "패치", "补丁"],
             M::Xref => ["Xref", "Xref", "交叉引用"],
             M::Addr => ["Addr", "주소", "地址"],
             M::Undo => ["Undo", "되돌리기", "撤销"],
@@ -366,6 +449,7 @@ impl M {
             M::Highlight => ["Hilite", "강조", "高亮"],
             M::Log => ["Log", "로그", "日志"],
             M::Names => ["Names", "주석목록", "注释列表"],
+            M::Bookmarks => ["Bookmarks", "북마크", "书签"],
             M::RevertByte => ["Revert", "복원", "还原"],
             M::ImageBase => ["Base", "베이스", "基址"],
             M::DecodeWidth => ["Width", "비트수", "位宽"],
@@ -412,6 +496,11 @@ impl M {
             M::ModifyBlockTitle => ["Modify Block Data", "블록 데이터 일괄 수정", "批量修改块数据"],
             M::OperationTitle => [" Operation ", " 연산 ", " 运算 "],
             M::NamesTitle => ["Names", "주석 목록", "注释列表"],
+            M::NoNames => [
+                "No names or comments. Press ';' to add one.",
+                "등록된 이름/주석이 없습니다. ';' 키로 추가하세요.",
+                "没有名称或注释。按 ';' 添加。",
+            ],
             M::StringsTitle => ["Strings", "문자열", "字符串"],
             M::RegexTitle => [" Regex ", " 정규식 ", " 正则 "],
             M::FilterRegexTitle => [" Filter regex ", " 정규식 필터 ", " 正则过滤 "],
@@ -433,7 +522,36 @@ impl M {
             M::OpenFileTitle => ["Open File", "파일 열기", "打开文件"],
             M::ImageBaseTitle => ["Image Base", "이미지 베이스", "映像基址"],
             M::EditDataTitle => ["Edit Data at", "데이터 편집", "编辑数据"],
+            M::PatchesTitle => ["Patches", "패치 목록", "补丁列表"],
+            M::PatchesFooterKeys => [
+                " Enter: Jump │ Space: Toggle │ F4: Edit │ Del: Revert │ Ctrl+C: Copy │ Ctrl+Shift+C: Copy All ",
+                " Enter: 이동 │ Space: 활성/비활성 │ F4: 편집 │ Del: 원복 │ Ctrl+C: 한줄복사 │ Ctrl+Shift+C: 전체복사 ",
+                " Enter: 跳转 │ Space: 切换启用/禁用 │ F4: 编辑 │ Del: 还原 │ Ctrl+C: 复制行 │ Ctrl+Shift+C: 复制全部 ",
+            ],
+            M::NoPatches => [
+                "No modified bytes (File is unchanged)",
+                "수정된 바이트가 없습니다 (변경 사항 없음)",
+                "没有修改的字节 (文件未修改)",
+            ],
             M::FoundCount => ["found", "개 찾음", "个"],
+            M::BookmarksTitle => ["Bookmarks", "북마크 목록", "书签列表"],
+            M::BookmarksFooterKeys => [
+                " Enter: Jump │ Ctrl+D: Add │ F2: Edit │ Del: Delete │ Esc: Close ",
+                " Enter: 이동 │ Ctrl+D: 추가 │ F2: 수정 │ Del: 삭제 │ Esc: 닫기 ",
+                " Enter: 跳转 │ Ctrl+D: 添加 │ F2: 编辑 │ Del: 删除 │ Esc: 关闭 ",
+            ],
+            M::NoBookmarks => [
+                "No bookmarks. Press Ctrl+D to add one.",
+                "등록된 북마크가 없습니다. Ctrl+D 로 추가하세요.",
+                "没有书签。按 Ctrl+D 添加。",
+            ],
+            M::BookmarkAddTitle => ["Add Bookmark", "북마크 추가", "添加书签"],
+            M::BookmarkEditTitle => ["Edit Bookmark", "북마크 수정", "编辑书签"],
+            M::BookmarkInputHint => [
+                " Enter: Save │ Esc: Cancel ",
+                " Enter: 저장 │ Esc: 취소 ",
+                " Enter: 保存 │ Esc: 取消 ",
+            ],
 
             M::ReadOnlyRefused => [
                 "Read Only: cannot {}",
@@ -547,6 +665,11 @@ impl M {
                 "이 파일에는 디스어셈블할 코드 섹션이 없습니다",
                 "本文件没有可反汇编的代码节",
             ],
+            M::ErrNoPEHeader => [
+                "this file has no PE header",
+                "이 파일에는 PE 헤더가 없습니다",
+                "本文件没有 PE 头部",
+            ],
             M::ErrLangNeedsValue => [
                 "':set lang' takes {}",
                 "':set lang' 는 다음 중 하나를 받습니다: {}",
@@ -583,9 +706,9 @@ impl M {
                 " 替换 {} 处的字符串 ({} 字节, {}) ",
             ],
             M::ErrStringTooLong => [
-                "Too long: {} bytes needed, {} available - the replacement has to fit where the original sits",
-                "너무 깁니다: {} 바이트 필요, {} 바이트만 사용 가능 - 원본이 있던 자리에 들어가야 합니다",
-                "太长：需要 {} 字节，只有 {} 字节可用 - 替换内容必须放进原文所在位置",
+                "String is too long: {} bytes needed, {} available",
+                "문자열이 깁니다: {} 바이트 필요, {} 바이트 사용 가능",
+                "字符串过长：需要 {} 字节，最多可用 {} 字节",
             ],
             M::ErrAsciiOnly => [
                 "ASCII mode only allows ASCII characters. Use F2 to switch to UTF-8 or CP949 for non-ASCII text",
@@ -594,9 +717,9 @@ impl M {
             ],
             M::LblAllEncodings => ["All", "전체", "全部"],
             M::StringsFooterKeys => [
-                " Ctrl+C: copy line | Ctrl+Shift+C: copy all ",
-                " Ctrl+C: 한줄복사 | Ctrl+Shift+C: 전체복사 ",
-                " Ctrl+C: 复制单行 | Ctrl+Shift+C: 复制全部 ",
+                " F4: Edit | Ctrl+C: copy line | Ctrl+Shift+C: copy all ",
+                " F4: 편집 | Ctrl+C: 한줄복사 | Ctrl+Shift+C: 전체복사 ",
+                " F4: 编辑 | Ctrl+C: 复制单行 | Ctrl+Shift+C: 复制全部 ",
             ],
             M::StringEditFooterKeys => [
                 " Enter save | Esc cancel | Alt+E enc ",
@@ -604,9 +727,9 @@ impl M {
                 " Enter 保存 | Esc 取消 | Alt+E 编码 ",
             ],
             M::RefsFooterKeys => [
-                " Enter: code | Ctrl+Enter: hex | Ctrl+C: copy line | Ctrl+Shift+C: copy all ",
-                " Enter: 코드 | Ctrl+Enter: 헥스 | Ctrl+C: 한줄복사 | Ctrl+Shift+C: 전체복사 ",
-                " Enter: 代码 | Ctrl+Enter: 十六进制 | Ctrl+C: 复制单行 | Ctrl+Shift+C: 复制全部 ",
+                " Enter: code | Ctrl+Enter: hex | F4: Edit | Ctrl+C: copy line | Ctrl+Shift+C: copy all ",
+                " Enter: 코드 | Ctrl+Enter: 헥스 | F4: 편집 | Ctrl+C: 한줄복사 | Ctrl+Shift+C: 전체복사 ",
+                " Enter: 代码 | Ctrl+Enter: 十六进制 | F4: 编辑 | Ctrl+C: 复制单行 | Ctrl+Shift+C: 复制全部 ",
             ],
             M::XrefFooterKeys => [
                 " Enter: jump | Ctrl+C: copy line | Ctrl+Shift+C: copy all ",
@@ -671,9 +794,9 @@ impl M {
                 "没有空间添加新节头 (SizeOfHeaders = 0x{:X} 缺少填充)",
             ],
             M::LblSectionNameMax8 => [
-                " Section Name (max 8 chars): {} ",
-                " 섹션 이름 (최대 8자): {} ",
-                " 节名称 (最多 8 字符)：{} ",
+                " Section Name (max 8 chars) ",
+                " 섹션 이름 (최대 8자) ",
+                " 节名称 (最多 8 字符) ",
             ],
             M::LblFileBase => [
                 " (file: {:X}) ",
@@ -700,12 +823,27 @@ impl M {
                 "'{}' 은(는) 주소가 아닙니다",
                 "'{}' 不是有效的地址",
             ],
+            M::ErrNoXrefsFor => [
+                "No references found for 0x{}",
+                "0x{} 에 대한 참조를 찾을 수 없습니다",
+                "未找到 0x{} 的引用",
+            ],
+            M::ErrNoTargetAddress => [
+                "No valid target address at cursor",
+                "커서 위치에 유효한 대상 주소가 없습니다",
+                "光标处没有有效的目标地址",
+            ],
 
             M::LblType => ["Type", "종류", "类型"],
             M::LblAddress => ["Address", "주소", "地址"],
             M::LblInstruction => ["Instruction", "명령어", "指令"],
             M::LblDisassembly => ["Disassembly", "디스어셈블", "反汇编"],
             M::LblTextString => ["Text string", "문자열", "字符串"],
+            M::LblOriginalToPatched => ["Original -> Patched", "원본 -> 수정됨", "原始内容 -> 修改后"],
+            M::LblSize => ["Size", "크기", "大小"],
+            M::LblNo => ["No.", "번호", "序号"],
+            M::LblLabel => ["Label", "라벨(이름)", "标签"],
+            M::LblPreview => ["Preview", "미리보기", "预览"],
             M::LblValue => ["Val", "값", "值"],
             M::LblStep => ["Step", "증분", "步进"],
             M::LblSearch => ["Search", "찾기", "查找"],
@@ -727,7 +865,7 @@ impl M {
             M::ReplaceHint => [
                 "Enter/F3 next | Shift+F3 prev | Alt+R replace | Alt+A all",
                 "Enter/F3 다음 | Shift+F3 이전 | Alt+R 바꾸기 | Alt+A 모두",
-                "Enter/F3 下一个 | Shift+F3 상一个 | Alt+R 替换 | Alt+A 全部",
+                "Enter/F3 下一个 | Shift+F3 上一个 | Alt+R 替换 | Alt+A 全部",
             ],
             M::MatchAtOffset => [
                 "Match ({}/{}) offset : 0x{}",
@@ -804,6 +942,137 @@ impl M {
                 "결과 섹션이 32비트 PE 한계를 넘습니다",
                 "生成的节超出 32 位 PE 限制",
             ],
+            M::DonePointerToRawData => [
+                "Done: Aligned PointerToRawData to VirtualAddress for all {} sections",
+                "완료: 모든 {}개 섹션의 PointerToRawData를 VirtualAddress로 정렬함",
+                "完成：已将所有 {} 个节的 PointerToRawData 对齐到 VirtualAddress",
+            ],
+            M::DoneAslrRemoved => [
+                "Done: ASLR removed (DllCharacteristics {} -> {})",
+                "완료: ASLR 비활성화됨 (DllCharacteristics {} -> {})",
+                "完成：已移除 ASLR (DllCharacteristics {} -> {})",
+            ],
+            M::NoteAslrNotSet => [
+                "ASLR (0x0040) is not set in DllCharacteristics ({})",
+                "DllCharacteristics ({}) 에 ASLR (0x0040) 플래그가 설정되어 있지 않습니다",
+                "DllCharacteristics ({}) 中未设置 ASLR (0x0040)",
+            ],
+            M::DoneSectionAdded => [
+                "Done: added section '{}' (VA={}, Size={}, RawOffset={})",
+                "완료: 섹션 '{}' 추가됨 (VA={}, Size={}, RawOffset={})",
+                "完成：已添加节 '{}' (VA={}, Size={}, RawOffset={})",
+            ],
+            M::SecToolsTitle => ["Section Tools", "섹션 도구", "节工具"],
+            M::SecToolAlignOffsetsTitle => [
+                "Align Offsets to VA [a]",
+                "모든 섹션 VA 정렬 [a]",
+                "对齐所有节到 VA [a]",
+            ],
+            M::SecToolAlignOffsetsDesc => [
+                "Set PointerToRawData = VA for all sections",
+                "모든 섹션의 PointerToRawData를 VA로 설정",
+                "将所有节的 PointerToRawData 设为 VA",
+            ],
+            M::SecToolAddSectionTitle => [
+                "Add New Section [n]",
+                "새 섹션 추가 [n]",
+                "添加新节 [n]",
+            ],
+            M::SecToolAddSectionDesc => [
+                "Append new section (default 0x1000)",
+                "새 섹션 추가 (기본 0x1000)",
+                "追加新节 (默认 0x1000)",
+            ],
+            M::SecToolDumpSectionTitle => [
+                "Dump Section to File [d]",
+                "섹션 파일로 덤프 [d]",
+                "转储节到文件 [d]",
+            ],
+            M::SecToolDumpSectionDesc => [
+                "Dump '{}' -> {}_{}.bin",
+                "'{}' 덤프 -> {}_{}.bin",
+                "转储 '{}' -> {}_{}.bin",
+            ],
+            M::SecToolDeleteLastSectionTitle => [
+                "Delete Last Section [Del]",
+                "마지막 섹션 삭제 [Del]",
+                "删除最后一个节 [Del]",
+            ],
+            M::SecToolDeleteLastSectionDesc => [
+                "Strip '{}' & truncate file data",
+                "'{}' 제거 및 파일 데이터 자르기",
+                "移除 '{}' 并截断文件数据",
+            ],
+            M::SecToolFixSizeOfImageTitle => [
+                "Fix SizeOfImage [f]",
+                "SizeOfImage 보정 [f]",
+                "修复 SizeOfImage [f]",
+            ],
+            M::SecToolFixSizeOfImageDesc => [
+                "Recalculate SizeOfImage -> 0x{}",
+                "SizeOfImage 재계산 -> 0x{}",
+                "重新计算 SizeOfImage -> 0x{}",
+            ],
+            M::SecToolRemoveAslrTitle => [
+                "Remove ASLR [r]",
+                "ASLR 제거 [r]",
+                "移除 ASLR [r]",
+            ],
+            M::SecToolRemoveAslrDesc => [
+                "Clear DynamicBase flag (0x0040)",
+                "DynamicBase 플래그 해제 (0x0040)",
+                "清除 DynamicBase 标志 (0x0040)",
+            ],
+            M::DoneOpenedFile => [
+                "Opened file '{}'",
+                "'{}' 파일을 열었습니다",
+                "已打开文件 '{}'",
+            ],
+            M::ErrOpeningFile => [
+                "Error opening '{}': {}",
+                "'{}' 파일을 여는 중 오류: {}",
+                "打开文件 '{}' 失败: {}",
+            ],
+            M::DoneSavedLogs => [
+                "Saved logs to {}",
+                "로그를 {}에 저장했습니다",
+                "已将日志保存至 {}",
+            ],
+            M::ErrFailedToSaveLog => [
+                "Failed to save log: {}",
+                "로그 저장 실패: {}",
+                "保存日志失败: {}",
+            ],
+            M::DoneBytesWritten => [
+                "{} bytes written to file successfully",
+                "파일에 {}바이트를 성공적으로 저장했습니다",
+                "已成功将 {} 字节写入文件",
+            ],
+            M::DoneSavedAs => [
+                "Saved as '{}' successfully ({} changes applied)",
+                "'{}'(으)로 저장 완료 ({}개 변경 적용됨)",
+                "已成功另存为 '{}'（已应用 {} 处修改）",
+            ],
+            M::DoneLogCopied => [
+                "Copied the log to clipboard",
+                "로그를 클립보드에 복사했습니다",
+                "已将日志复制到剪贴板",
+            ],
+            M::DoneLogCleared => [
+                "Log cleared ({} line(s) dropped)",
+                "로그가 지워졌습니다 ({}개 행 삭제)",
+                "日志已清除（已删除 {} 行）",
+            ],
+            M::DoneAssembledPadded => [
+                "Assembled {} byte(s) at 0x{}, padded with {} NOP(s) to the next instruction boundary",
+                "{}바이트를 0x{}에 어셈블했습니다 (다음 명령어 경계까지 {}개의 NOP 패딩됨)",
+                "已汇编 {} 字节于 0x{}（用 {} 个 NOP 填充到下一指令边界）",
+            ],
+            M::DoneAssembled => [
+                "Assembled {} byte(s) at 0x{}",
+                "{}바이트를 0x{}에 어셈블했습니다",
+                "已汇编 {} 字节于 0x{}",
+            ],
 
             M::OpAdd => ["Add (+)", "더하기 (+)", "加 (+)"],
             M::OpSub => ["Subtract (-)", "빼기 (-)", "减 (-)"],
@@ -874,3 +1143,27 @@ impl M {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_i18n_translation_matrix_integrity() {
+        for &msg in M::ALL {
+            let [en, ko, zh] = msg.table();
+
+            assert!(!en.is_empty(), "English translation is empty for {:?}", msg);
+            assert!(!ko.is_empty(), "Korean translation is empty for {:?}", msg);
+            assert!(!zh.is_empty(), "Chinese translation is empty for {:?}", msg);
+
+            let zh_has_hangul = zh.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c));
+            assert!(
+                !zh_has_hangul,
+                "Chinese translation contains Hangul for {:?}: '{}'",
+                msg, zh
+            );
+        }
+    }
+}
+

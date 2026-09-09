@@ -20,9 +20,11 @@ pub struct HexView {
     pub ascii_state: TableState,
     // blocks are ByteBlock structs -- ranges with different colors
     pub blocks: Vec<ColoredBlock>,
-    pub bookmarks: Vec<usize>,
+    pub bookmarks: Vec<crate::hex::bookmark::Bookmark>,
     #[serde(skip)]
     pub changed_bytes: HashMap<usize, u8>,
+    #[serde(skip)]
+    pub disabled_bytes: HashMap<usize, u8>,
     #[serde(skip)]
     pub changed_history: Vec<usize>,
     #[serde(skip)]
@@ -51,6 +53,10 @@ pub struct HexView {
     pub modify_dialog: crate::hex::modify_dialog::ModifyDialog,
     #[serde(skip)]
     pub replace_dialog: crate::hex::replace_dialog::ReplaceDialog,
+    #[serde(skip)]
+    pub patches_dialog: crate::hex::patches_dialog::PatchesDialog,
+    #[serde(skip)]
+    pub bookmark_dialog: crate::hex::bookmark::BookmarksDialog,
     #[serde(skip)]
     pub find_dialog: crate::hex::find_dialog::FindDialog,
     /// Offset a Shift+arrow selection was started from.
@@ -167,6 +173,7 @@ impl HexView {
     pub fn reset_for_new_file(&mut self) {
         // Pending edits.
         self.changed_bytes.clear();
+        self.disabled_bytes.clear();
         self.changed_history.clear();
         self.redo_history.clear();
 
@@ -181,6 +188,8 @@ impl HexView {
         self.shift_anchor = None;
         self.nibble_pending = None;
         self.search = Default::default();
+        self.patches_dialog.reset();
+        self.bookmark_dialog = Default::default();
         self.jump_history_back.clear();
         self.jump_history_forward.clear();
         self.last_visited_offset = 0;

@@ -14,7 +14,7 @@ pub struct Config {
     pub maximum_strings_to_show: usize,
     pub minimum_string_length: usize,
     pub search_wrap: bool,
-    /// Interface language (`:set lang en|ko|zh`).
+    /// Interface language (`:set lang en|ko|cn`).
     ///
     /// Only labels move: key names, option names and the status-bar mode labels are
     /// identifiers shared with the documentation, so they stay as they are.
@@ -36,6 +36,7 @@ pub struct Config {
     /// and a raw shellcode dump has nothing to declare a width at all.
     pub bitness_override: Option<u32>,
     pub syntax_highlight: bool,
+    pub backup: bool,
     /// Show the IME conversion-mode indicator (`EN` / `Han`) in the status bar.
     ///
     /// Off by default, and deliberately absent from the `:set` table, the settings
@@ -44,6 +45,8 @@ pub struct Config {
     /// round-trip to the IME process. With this off, that query never happens and
     /// the poller thread is never started.
     pub show_ime: bool,
+    /// Radix for block selection length in status bar: 10 or 16 (`:set block 10|16`). Default 16.
+    pub block_base: u8,
     pub theme: Theme,
     pub disasm_theme: DisasmTheme,
     // pub hex_mode_dword_separator: char,

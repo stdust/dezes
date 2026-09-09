@@ -120,6 +120,8 @@ pub const OPTION_NAMES: &[&str] = &[
     "highlight",
     "hilight",
     "hintbar",
+    "backup",
+    "nobackup",
     "view",
     "disasm_mem",
     "disasm_reg",
@@ -205,10 +207,10 @@ pub fn current_settings(app: &App) -> Vec<Setting> {
         },
         Setting {
             name: "enc2",
-            value: match app.hex_view.enc2_table {
-                Some(table) => table.name().to_string(),
-                None => "none".to_string(),
-            },
+            value: app
+                .hex_view
+                .enc2_table
+                .map_or_else(|| "none".to_string(), |table| table.name().to_string()),
             note: M::NoteEnc2.tr(lang),
         },
         Setting {
@@ -266,6 +268,15 @@ pub fn current_settings(app: &App) -> Vec<Setting> {
             value: on_off(app.config.hint_bar),
             note: M::NoteHintbar.tr(lang),
         },
+        Setting {
+            name: "backup",
+            value: on_off(app.config.backup),
+            note: match lang {
+                crate::i18n::Lang::Ko => "저장 시 원본 .bak 백업 파일 생성 여부 (:set backup on|off)",
+                crate::i18n::Lang::Zh => "保存时是否创建.bak备份文件 (:set backup on|off)",
+                _ => "create .bak backup before saving (:set backup on|off)",
+            },
+        },
     ];
 
     for (target, canonical, _) in DISASM_COLORS {
@@ -320,7 +331,7 @@ pub fn dialog_settings_draw(app: &mut App, frame: &mut Frame) {
     let text = settings_text(app);
     let line_count = text.lines().count() as u16;
 
-    let width = frame.area().width.saturating_sub(4).min(76).max(20);
+    let width = frame.area().width.saturating_sub(4).clamp(20, 76);
     let height = (line_count + 2).min(frame.area().height.saturating_sub(2).max(6));
     let area = center_widget(width, height, frame.area());
 

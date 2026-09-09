@@ -2,6 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Rect},
     style::{Color, Modifier},
+    text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Row, Table, TableState},
 };
 use ratatui::crossterm::event::{Event, KeyCode, KeyModifiers};
@@ -58,15 +59,21 @@ pub fn open_xref_dialog(app: &mut App) {
     // them, so the dialog used to fill with hits that reference nothing. This
     // happens whenever `get_va` has no PE/ELF layout to work from.
     if target_va == 0 {
-        App::log(
-            app,
-            "Xref: no target address at the cursor (address 0)".to_string(),
-        );
-        crate::beep!();
+        let msg = crate::i18n::M::ErrNoTargetAddress.tr(app.config.lang).to_string();
+        app.error(msg);
         return;
     }
 
     let items = find_xrefs(app, target_va);
+    if items.is_empty() {
+        let msg = crate::i18n::fill(
+            crate::i18n::M::ErrNoXrefsFor.tr(app.config.lang),
+            &[&format!("{:X}", target_va)],
+        );
+        app.error(msg);
+        return;
+    }
+
     let truncated = crate::disasm::xref::is_truncated(&items);
     App::log(
         app,
@@ -119,7 +126,7 @@ fn fixed_centered_rect(width: u16, height: u16, r: Rect) -> Rect {
 }
 
 pub fn draw_xref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
-    let popup_area = fixed_centered_rect(82, 18, area);
+    let popup_area = fixed_centered_rect(84, 18, area);
 
     // Clear background
     frame.render_widget(Clear, popup_area);
@@ -152,22 +159,51 @@ pub fn draw_xref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
     frame.render_widget(outer_block, popup_area);
 
     let is_64 = app.is_64();
-    let addr_col_len = if is_64 { 16 } else { 10 };
+    let addr_col_len = if is_64 {
+        let max_len = dialog.items.iter()
+            .map(|item| if item.va >= 0x1_0000_0000 { format!("0x{:X}", item.va).len() } else { 10 })
+            .max()
+            .unwrap_or(11);
+        max_len.max(crate::i18n::M::LblAddress.tr(lang).chars().count())
+    } else {
+        10
+    };
+    let type_col_len = 6usize;
+
+    let sep_style = dialog_style
+        .fg(app.config.theme.dimmed.fg.unwrap_or(Color::DarkGray))
+        .remove_modifier(Modifier::BOLD);
+    let bold_header = dialog_style.add_modifier(Modifier::BOLD);
 
     let header_cells = [
-        Cell::new(crate::i18n::M::LblType.tr(lang)).style(dialog_style.add_modifier(Modifier::BOLD)),
-        Cell::new(crate::i18n::M::LblAddress.tr(lang)).style(dialog_style.add_modifier(Modifier::BOLD)),
-        Cell::new(crate::i18n::M::LblInstruction.tr(lang)).style(dialog_style.add_modifier(Modifier::BOLD)),
+        Cell::from(vec![
+            Line::from(vec![
+                Span::styled(" No.", bold_header),
+                Span::styled("│", sep_style),
+            ]),
+            Line::from(Span::styled("────┼", sep_style)),
+        ]),
+        Cell::from(vec![
+            Line::from(vec![
+                Span::styled(format!(" {:<width$} ", crate::i18n::M::LblType.tr(lang), width = type_col_len), bold_header),
+                Span::styled("│", sep_style),
+            ]),
+            Line::from(Span::styled(format!("{:─>width$}┼", "", width = type_col_len + 2), sep_style)),
+        ]),
+        Cell::from(vec![
+            Line::from(vec![
+                Span::styled(format!(" {:<width$} ", crate::i18n::M::LblAddress.tr(lang), width = addr_col_len), bold_header),
+                Span::styled("│", sep_style),
+            ]),
+            Line::from(Span::styled(format!("{:─>width$}┼", "", width = addr_col_len + 2), sep_style)),
+        ]),
+        Cell::from(vec![
+            Line::from(Span::styled(format!(" {}", crate::i18n::M::LblInstruction.tr(lang)), bold_header)),
+            Line::from(Span::styled("────────────────────────────────────────────────────────────────────────", sep_style)),
+        ]),
     ];
-    let header = Row::new(header_cells).style(dialog_style).bottom_margin(1);
+    let header = Row::new(header_cells).style(dialog_style).height(2);
 
-    // Only the visible slice is turned into rows.
-    //
-    // This used to build a `Row` for all of them - up to `MAX_XREF_ITEMS` (5000),
-    // each cloning its instruction text - on every rendered frame, for a box 18
-    // rows tall. Measured at 11.5 ms per frame in a release build with a full
-    // result list, which is felt on every keystroke while the popup is open.
-    // `string_ref_dialog` already windowed; the two had diverged.
     let visible_rows = inner_area.height.saturating_sub(2) as usize;
     let total = dialog.items.len();
     let (start_idx, end_idx) = visible_window(total, dialog.selected_index, visible_rows);
@@ -177,42 +213,59 @@ pub fn draw_xref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
         let item = &dialog.items[idx];
         let is_selected = idx == dialog.selected_index;
         let row_style = if is_selected {
-            app.config.theme.highlight
+            app.config.theme.highlight.add_modifier(Modifier::BOLD)
         } else {
             dialog_style
         };
 
-        let va_str = if is_64 {
-            format!("0x{:016X}", item.va)
+        let va_str = if is_64 && item.va >= 0x1_0000_0000 {
+            format!("0x{:X}", item.va)
         } else {
             format!("0x{:08X}", item.va)
         };
 
-        let type_style = row_style.fg(Color::Black).add_modifier(Modifier::BOLD);
-
-        let cells = vec![
-            Cell::new(item.ref_type.as_str()).style(type_style),
-            Cell::new(va_str).style(row_style),
-            Cell::new(item.instr_text.clone()).style(row_style),
-        ];
+        let cells = if is_selected {
+            vec![
+                Cell::new(format!(" {:>2} │", idx + 1)).style(row_style),
+                Cell::new(format!(" {:<width$} │", item.ref_type.as_str(), width = type_col_len)).style(row_style),
+                Cell::new(format!(" {:<width$} │", va_str, width = addr_col_len)).style(row_style),
+                Cell::new(format!(" {}", item.instr_text)).style(row_style),
+            ]
+        } else {
+            vec![
+                Cell::from(Line::from(vec![
+                    Span::styled(format!(" {:>2} ", idx + 1), row_style),
+                    Span::styled("│", sep_style),
+                ])).style(row_style),
+                Cell::from(Line::from(vec![
+                    Span::styled(format!(" {:<width$} ", item.ref_type.as_str(), width = type_col_len), row_style),
+                    Span::styled("│", sep_style),
+                ])).style(row_style),
+                Cell::from(Line::from(vec![
+                    Span::styled(format!(" {:<width$} ", va_str, width = addr_col_len), row_style),
+                    Span::styled("│", sep_style),
+                ])).style(row_style),
+                Cell::new(format!(" {}", item.instr_text)).style(row_style),
+            ]
+        };
 
         rows.push(Row::new(cells).style(row_style));
     }
 
     let widths = [
-        Constraint::Length(6),
-        Constraint::Length(addr_col_len),
-        Constraint::Min(20),
+        Constraint::Length(5),
+        Constraint::Length((type_col_len + 3) as u16),
+        Constraint::Length((addr_col_len + 3) as u16),
+        Constraint::Min(0),
     ];
 
     let table = Table::new(rows, widths)
         .header(header)
-        .column_spacing(2)
+        .column_spacing(0)
         .style(dialog_style);
 
     let mut table_state = TableState::default();
     if !dialog.items.is_empty() {
-        // Relative to the windowed slice, not the whole list.
         table_state.select(Some(dialog.selected_index.saturating_sub(start_idx)));
     }
 
@@ -221,8 +274,8 @@ pub fn draw_xref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
 
 /// One row as `type<TAB>address<TAB>instruction`, the three columns on screen.
 fn item_as_tsv(item: &XrefItem, is_64: bool) -> String {
-    let va = if is_64 {
-        format!("{:016X}", item.va)
+    let va = if is_64 && item.va >= 0x1_0000_0000 {
+        format!("{:X}", item.va)
     } else {
         format!("{:08X}", item.va)
     };
@@ -312,21 +365,19 @@ pub fn dialog_xref_events(app: &mut App, event: &Event) -> Result<bool> {
                     let sel = app.disasm_xref_dialog.selected_index;
                     let target_offset = app.disasm_xref_dialog.items[sel].offset;
                     let target_va = app.disasm_xref_dialog.items[sel].va;
-                    // A PTR or RVA hit is a *value* sitting in a data section, not an
-                    // instruction. Landing on it in the Disassembly view would decode
-                    // a pointer table as code, so those go to the Hex view, where
-                    // eight bytes of address read as what they are.
-                    let is_value = matches!(
-                        app.disasm_xref_dialog.items[sel].ref_type,
-                        super::xref::XrefType::Ptr | super::xref::XrefType::Rva
-                    );
-                    if is_value && app.editor_view == crate::editor::AppView::Disasm {
-                        app.editor_view = crate::editor::AppView::Hex;
-                        app.last_primary_view = crate::editor::AppView::Hex;
-                        app.prev_editor_view = crate::editor::AppView::Hex;
-                    }
 
-                    app.reader.page_start = target_offset;
+                    let view = if app.is_executable() {
+                        crate::editor::AppView::Disasm
+                    } else {
+                        crate::editor::AppView::Hex
+                    };
+                    app.editor_view = view;
+                    app.last_primary_view = view;
+                    app.prev_editor_view = view;
+
+                    if view == crate::editor::AppView::Disasm {
+                        app.reader.page_start = target_offset;
+                    }
                     app.goto(target_offset);
                     app.align_page_for_view();
                     App::log(app, format!("Jumped to Xref at 0x{:X}", target_va));
@@ -528,6 +579,23 @@ mod xref_dialog_tests {
         assert!(app.state == UIState::Normal);
         assert!(app.dialog_renderer.is_none());
         assert!(app.disasm_xref_dialog.items.is_empty());
+        assert!(app.status_error.is_some());
+    }
+
+    #[test]
+    fn empty_xrefs_reports_error_and_does_not_open() {
+        let mut app = crate::app::App::new();
+        let dir = std::env::temp_dir().join("dezes_empty_xref");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bin");
+        std::fs::write(&path, vec![0x90; 0x100]).unwrap();
+        app.load_file(path.to_str().unwrap(), 0, true).unwrap();
+        app.file_info.r#type = "PE"; // pretend valid PE
+        super::open_xref_dialog(&mut app);
+        assert!(app.state == UIState::Normal);
+        assert!(app.dialog_renderer.is_none());
+        assert!(app.status_error.is_some());
+        let _ = std::fs::remove_file(&path);
     }
 }
 
@@ -552,7 +620,7 @@ mod xref_copy_tests {
         let it = item(0x140001234);
         assert_eq!(
             item_as_tsv(&it, true),
-            "CALL\t0000000140001234\tcall 0x140001000"
+            "CALL\t140001234\tcall 0x140001000"
         );
         assert_eq!(item_as_tsv(&item(0x40001234), false), "CALL\t40001234\tcall 0x140001000");
     }
@@ -616,5 +684,69 @@ mod xref_copy_tests {
 
         assert!(app.state == UIState::Normal);
         assert!(app.disasm_xref_dialog.items.is_empty());
+    }
+
+    #[test]
+    fn enter_switches_to_disasm_view() {
+        let exe = match std::env::current_exe() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => return,
+        };
+        let mut app = crate::app::App::new();
+        app.config.database = false;
+        if app.load_file(&exe, 0, false).is_err() {
+            return;
+        }
+        app.editor_view = crate::editor::AppView::Hex;
+        app.disasm_xref_dialog.items = vec![item(0x140000010)];
+        app.disasm_xref_dialog.selected_index = 0;
+        app.state = UIState::DialogXref;
+
+        let key = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let _ = dialog_xref_events(&mut app, &Event::Key(key));
+
+        assert!(app.state == UIState::Normal);
+        assert_eq!(app.editor_view, crate::editor::AppView::Disasm);
+    }
+
+    #[test]
+    fn xref_dialog_64bit_renders_without_leading_zeros() {
+        let mut app = crate::app::App::new();
+        app.config.bitness_override = Some(64);
+        app.file_info.r#type = "PE64";
+        app.disasm_xref_dialog.target_va = 0x14005EB18;
+        app.disasm_xref_dialog.items = vec![item(0x14005EB18)];
+        app.state = UIState::DialogXref;
+
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).expect("terminal");
+        terminal.draw(|f| {
+            let area = f.area();
+            draw_xref_dialog(&mut app, f, area);
+        }).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("0x14005EB18"));
+        assert!(!rendered.contains("0x000000014005EB18"));
+        assert!(rendered.contains("│"));
+        assert!(rendered.contains("────┼"));
+
+        let (tsv, _) = all_rows_as_tsv(&app);
+        assert!(tsv.contains("14005EB18"));
+        assert!(!tsv.contains("000000014005EB18"));
     }
 }

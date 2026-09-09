@@ -18,6 +18,27 @@ fn is_quit_command(line: &str) -> bool {
     matches!(head.as_str(), "q" | "quit" | "wq" | "x" | "exit")
 }
 
+/// Only configuration and non-destructive commands are permitted during startup
+/// replay. File writes, saves, log exports, and file-opening commands are blocked
+/// to prevent malicious `.dzsrc` execution.
+pub fn is_safe_startup_command(line: &str) -> bool {
+    if is_quit_command(line) {
+        return false;
+    }
+    let raw = line.trim_start_matches(':');
+    let mut words = raw.split_whitespace();
+    let head = words.next().unwrap_or("").to_ascii_lowercase();
+
+    if matches!(head.as_str(), "w" | "write" | "wb" | "o" | "open") {
+        return false;
+    }
+    if head == "log" && let Some(sub) = words.next() && sub.eq_ignore_ascii_case("save") {
+        return false;
+    }
+
+    true
+}
+
 impl App {
     /// Reads `.dzsrc` (or the older `.dz6init`), running each line as a command.
     ///
@@ -62,15 +83,16 @@ impl App {
         if found_path.is_none() {
             let default_path = exe_dir.join(crate::app::INIT_FILE);
             let default_content = "# dezes initialization configuration\n";
-            if let Ok(_) = fs::write(&default_path, default_content) {
+            if fs::write(&default_path, default_content).is_ok() {
                 App::log(self, format!("Created default .dzsrc at: {}", default_path.display()));
                 found_path = Some(default_path);
             }
         }
 
-        if let Some(path) = found_path {
-            if let Ok(data) = fs::read_to_string(&path) {
-                App::log(self, format!("Loading startup config from: {}", path.display()));
+        if let Some(path) = found_path
+            && let Ok(data) = fs::read_to_string(&path)
+        {
+            App::log(self, format!("Loading startup config from: {}", path.display()));
                 self.initfile_loaded = Some(path.clone());
                 self.loading_initfile = true;
                 for cmdline in data.lines() {
@@ -80,10 +102,10 @@ impl App {
                         continue;
                     }
 
-                    if is_quit_command(trimmed) {
+                    if !is_safe_startup_command(trimmed) {
                         App::log(
                             self,
-                            format!("Ignoring '{}' in startup config: it would quit at startup", trimmed),
+                            format!("Ignoring disallowed or quit command '{}' in startup config", trimmed),
                         );
                         continue;
                     }
@@ -104,7 +126,6 @@ impl App {
                 }
                 self.dialog_renderer = None;
             }
-        }
 
         Ok(())
     }
@@ -262,6 +283,30 @@ mod initfile_tests {
         assert!(!is_quit_command("quiet"));
         assert!(!is_quit_command(""));
     }
+
+    #[test]
+    fn dangerous_commands_are_blocked_at_startup() {
+        use super::is_safe_startup_command;
+        for line in [
+            "w", ":w", "w file.bin", ":write file.bin", "wb", ":wb",
+            "o evil.bin", ":open evil.bin",
+            "log save out.txt", ":log save C:\\evil.log",
+            "q", ":q", "quit", ":quit", "wq", ":wq", "x", ":x", "exit",
+        ] {
+            assert!(!is_safe_startup_command(line), "'{}' should be blocked", line);
+        }
+
+        for line in [
+            "set theme dark",
+            "set backup off",
+            "set enc1 cp949",
+            ":set wrapscan on",
+            "disasmtheme grey",
+            "cmt 1000 note",
+        ] {
+            assert!(is_safe_startup_command(line), "'{}' should be allowed", line);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -342,11 +387,11 @@ set byteline 16
     #[test]
     fn decoration_around_the_value_is_left_alone() {
         let existing = "  :set lang en   # my language\n";
-        let merged = merge_initfile(Some(existing), "UTF-8", "none", "zh", "dark", "dark");
+        let merged = merge_initfile(Some(existing), "UTF-8", "none", "cn", "dark", "dark");
 
         let line = merged.lines().next().expect("a line");
         assert!(line.starts_with("  :set lang "), "prefix lost: {:?}", line);
-        assert!(line.contains("zh"), "value not replaced: {:?}", line);
+        assert!(line.contains("cn"), "value not replaced: {:?}", line);
         assert!(line.contains("# my language"), "comment lost: {:?}", line);
     }
 

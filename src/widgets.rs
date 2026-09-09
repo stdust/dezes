@@ -5,6 +5,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::util::center_widget;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(PartialEq)]
 pub enum MessageType {
@@ -63,7 +64,7 @@ impl ListChoice {
         let dialog_height = (self.choices.len() as u16 + 2).min(area.height);
         
         // Calculate width dynamically: longest choice + padding
-        let max_choice_width = self.choices.iter().map(|s| s.len()).max().unwrap_or(0) as u16;
+        let max_choice_width = self.choices.iter().map(|s| s.width()).max().unwrap_or(0) as u16;
         let dialog_width = (max_choice_width + 12).max(area.width / 3).min(area.width);
         
         // Calculate centered position, then shift it upwards dynamically based on height (roughly 2 lines for standard heights)

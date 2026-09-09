@@ -1,8 +1,76 @@
 use std::error::Error;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::app::App;
+
+#[derive(serde::Deserialize, Default)]
+struct DatabaseFile {
+    #[serde(default)]
+    pub bookmarks: Vec<crate::hex::bookmark::Bookmark>,
+    #[serde(default)]
+    pub blocks: Vec<crate::hex::blocks::ColoredBlock>,
+    #[serde(default)]
+    pub comments: std::collections::HashMap<usize, String>,
+    #[serde(default)]
+    pub comment_name_list: Vec<crate::hex::comment::Comment>,
+}
+
+/// Serializes bookmarks, blocks, and comments into a clean, compact, and sorted TOML string.
+/// - Bookmarks are formatted as inline tables: `[{ offset = ..., label = "..." }, ...]`, sorted by offset.
+/// - Blocks are formatted under `[[blocks]]`.
+/// - Comments are formatted under `[comments]`, sorted by offset in ascending order.
+/// - Redundant `[[comment_name_list]]` is omitted completely.
+pub fn serialize_annotations(
+    bookmarks: &[crate::hex::bookmark::Bookmark],
+    blocks: &[crate::hex::blocks::ColoredBlock],
+    comments: &std::collections::HashMap<usize, String>,
+) -> Result<String, Box<dyn Error>> {
+    let mut out = String::new();
+
+    if !bookmarks.is_empty() {
+        let mut sorted_bm = bookmarks.to_vec();
+        sorted_bm.sort_by_key(|b| b.offset);
+
+        out.push_str("bookmarks = [\n");
+        for b in sorted_bm {
+            if b.label.is_empty() {
+                out.push_str(&format!("    {{ offset = {} }},\n", b.offset));
+            } else {
+                let escaped_label = toml::Value::String(b.label);
+                out.push_str(&format!("    {{ offset = {}, label = {} }},\n", b.offset, escaped_label));
+            }
+        }
+        out.push_str("]\n\n");
+    }
+
+    if !blocks.is_empty() {
+        #[derive(serde::Serialize)]
+        struct BlocksWrapper<'a> {
+            blocks: &'a [crate::hex::blocks::ColoredBlock],
+        }
+        let blocks_str = toml::to_string_pretty(&BlocksWrapper { blocks })?;
+        out.push_str(&blocks_str);
+        out.push_str("\n\n");
+    }
+
+    if !comments.is_empty() {
+        let sorted_comments: std::collections::BTreeMap<usize, String> = comments
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
+        #[derive(serde::Serialize)]
+        struct CommentsWrapper<'a> {
+            comments: &'a std::collections::BTreeMap<usize, String>,
+        }
+        let comments_str = toml::to_string_pretty(&CommentsWrapper { comments: &sorted_comments })?;
+        out.push_str(&comments_str);
+        out.push('\n');
+    }
+
+    Ok(out.trim_start().trim_end().to_string() + "\n")
+}
 
 impl App {
     /// Where this file's annotations are stored: `<file>.dzdb`, in the same
@@ -74,7 +142,11 @@ impl App {
             return Ok(());
         }
 
-        let toml_string = toml::to_string_pretty(&self.hex_view)?;
+        let toml_string = serialize_annotations(
+            &self.hex_view.bookmarks,
+            &self.hex_view.blocks,
+            &self.hex_view.comments,
+        )?;
 
         // Written beside the file, with no fallback. The old code fell back to
         // the startup directory when that failed, which silently scattered
@@ -126,7 +198,20 @@ impl App {
         // The startup directory is read purely for sidecars left there by older
         // builds; load used to *prefer* it, so with a copy in both places every
         // reload restored the stale one.
-        let data = match fs::read_to_string(&target_db) {
+        const MAX_DATABASE_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB guard
+
+        let read_safe_db = |p: &Path| -> io::Result<String> {
+            let meta = fs::metadata(p)?;
+            if meta.len() > MAX_DATABASE_FILE_SIZE {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Database file exceeds maximum size limit (10MB)",
+                ));
+            }
+            fs::read_to_string(p)
+        };
+
+        let data = match read_safe_db(&target_db) {
             Ok(data) => data,
             Err(e) => {
                 // Older names and locations, in order. Load used to *prefer* the
@@ -134,7 +219,7 @@ impl App {
                 // restored the stale one.
                 let mut found = None;
                 for legacy in self.legacy_database_paths() {
-                    if let Ok(data) = fs::read_to_string(&legacy) {
+                    if let Ok(data) = read_safe_db(&legacy) {
                         found = Some(data);
                         break;
                     }
@@ -148,22 +233,27 @@ impl App {
 
         // Only the four persisted fields are copied across, instead of
         // replacing the whole `HexView`.
-        //
-        // The old `self.hex_view = toml::from_str(...)` also reset every
-        // `#[serde(skip)]` field to its default, which is how `:set enc2` from
-        // the init file was silently discarded: it is read at startup, then
-        // opening a file with a sidecar wiped `enc2_table` back to
-        // `None`. Highlights, the VA/offset display mode and the search state
-        // were being cleared the same way.
-        //
-        // This also answers the old TODO here ("other fields might be loaded if
-        // they are defined in the TOML file") - a hand-edited or stale sidecar
-        // can no longer inject anything beyond these four.
-        let loaded: crate::hex::hex_view::HexView = toml::from_str(&data)?;
+        let loaded: DatabaseFile = toml::from_str(&data)?;
         self.hex_view.blocks = loaded.blocks;
         self.hex_view.bookmarks = loaded.bookmarks;
-        self.hex_view.comment_name_list = loaded.comment_name_list;
         self.hex_view.comments = loaded.comments;
+
+        if !self.hex_view.comments.is_empty() {
+            let mut list: Vec<crate::hex::comment::Comment> = self.hex_view.comments
+                .iter()
+                .map(|(&k, v)| crate::hex::comment::Comment {
+                    offset: k,
+                    comment: v.clone(),
+                })
+                .collect();
+            list.sort_by_key(|c| c.offset);
+            self.hex_view.comment_name_list = list;
+        } else {
+            self.hex_view.comment_name_list = loaded.comment_name_list;
+            for c in &self.hex_view.comment_name_list {
+                self.hex_view.comments.insert(c.offset, c.comment.clone());
+            }
+        }
 
         self.hex_view.editing_hex = true; // otherwise it defaults to false if a sidecar exists for the target
         self.sanitize_database();
@@ -176,7 +266,7 @@ impl App {
     /// `HexView`, so a stale or hand-edited one could hand block/bookmark ranges
     /// past EOF to the draw loops and the selection logic.
     fn sanitize_database(&mut self) {
-        let size = self.file_info.size;
+        let size = self.file_info.buffer_len();
         if size == 0 {
             self.hex_view.blocks.clear();
             self.hex_view.bookmarks.clear();
@@ -194,7 +284,8 @@ impl App {
         // `[` and `]` navigation relies on this ordering.
         self.hex_view.blocks.sort_by_key(|b| b.start);
 
-        self.hex_view.bookmarks.retain(|ofs| *ofs <= last);
+        self.hex_view.bookmarks.retain(|b| b.offset <= last);
+        self.hex_view.bookmarks.sort_by_key(|b| b.offset);
         self.hex_view.comment_name_list.retain(|c| c.offset <= last);
         self.hex_view.comments.retain(|ofs, _| *ofs <= last);
     }
@@ -250,7 +341,7 @@ mod load_file_reset_tests {
         app.config.database = false; // isolate from any real .dz6 on disk
 
         app.load_file(&a, 0, true).expect("open A");
-        app.hex_view.bookmarks.push(0x100);
+        app.hex_view.bookmarks.push(crate::hex::bookmark::Bookmark { offset: 0x100, label: String::new() });
         app.hex_view.comments.insert(0x100, "note".to_string());
         app.hex_view.blocks.push(ColoredBlock::default());
 
@@ -383,7 +474,7 @@ mod sidecar_precedence_tests {
         loaded.expect("open sample");
         assert_eq!(
             bookmarks,
-            vec![16],
+            vec![crate::hex::bookmark::Bookmark { offset: 16, label: String::new() }],
             "the sidecar beside the file must win over the one in the startup directory"
         );
     }
@@ -789,5 +880,80 @@ mod annotation_persistence_tests {
             !scratch.dir.join("nodb.bin.dzdb").exists(),
             "':set nodb' must mean no sidecar"
         );
+    }
+
+    #[test]
+    fn test_serialize_annotations_compact_and_sorted() {
+        use crate::hex::bookmark::Bookmark;
+        use std::collections::HashMap;
+
+        let bookmarks = vec![
+            Bookmark { offset: 336, label: "33".to_string() },
+            Bookmark { offset: 80, label: "dd".to_string() },
+            Bookmark { offset: 176, label: "1".to_string() },
+        ];
+        let mut comments = HashMap::new();
+        comments.insert(296, "하이하이 40013e".to_string());
+        comments.insert(176, "하이하이".to_string());
+
+        let toml_str = super::serialize_annotations(&bookmarks, &[], &comments).unwrap();
+
+        // 1. bookmarks should be sorted by offset (80 -> 176 -> 336)
+        let expected_bookmarks = "bookmarks = [\n    { offset = 80, label = \"dd\" },\n    { offset = 176, label = \"1\" },\n    { offset = 336, label = \"33\" },\n]";
+        assert!(toml_str.contains(expected_bookmarks), "bookmarks should be formatted compactly and sorted");
+
+        // 2. comment_name_list must NOT exist
+        assert!(!toml_str.contains("comment_name_list"), "comment_name_list should not be serialized");
+
+        // 3. comments must be sorted (176 before 296)
+        let pos_176 = toml_str.find("176 = \"하이하이\"").expect("must contain 176");
+        let pos_296 = toml_str.find("296 = \"하이하이 40013e\"").expect("must contain 296");
+        assert!(pos_176 < pos_296, "176 must appear before 296 in sorted comments");
+
+        // 4. round trip deserialization
+        let loaded: super::DatabaseFile = toml::from_str(&toml_str).unwrap();
+        assert_eq!(loaded.bookmarks.len(), 3);
+        assert_eq!(loaded.bookmarks[0].offset, 80);
+        assert_eq!(loaded.bookmarks[0].label, "dd");
+        assert_eq!(loaded.comments.len(), 2);
+        assert_eq!(loaded.comments.get(&176).unwrap(), "하이하이");
+        assert_eq!(loaded.comments.get(&296).unwrap(), "하이하이 40013e");
+    }
+
+    #[test]
+    fn test_legacy_format_with_comment_name_list_loads_correctly() {
+        let legacy_toml = r#"
+[[bookmarks]]
+offset = 80
+label = "dd"
+
+[[bookmarks]]
+offset = 176
+label = "1"
+
+[[bookmarks]]
+offset = 336
+label = "33"
+
+[[comment_name_list]]
+offset = 176
+comment = "하이하이"
+
+[[comment_name_list]]
+offset = 296
+comment = "하이하이 40013e"
+
+[comments]
+296 = "하이하이 40013e"
+176 = "하이하이"
+"#;
+        let loaded: super::DatabaseFile = toml::from_str(legacy_toml).unwrap();
+        assert_eq!(loaded.bookmarks.len(), 3);
+        assert_eq!(loaded.bookmarks[0].offset, 80);
+        assert_eq!(loaded.bookmarks[1].offset, 176);
+        assert_eq!(loaded.bookmarks[2].offset, 336);
+        assert_eq!(loaded.comments.len(), 2);
+        assert_eq!(loaded.comments.get(&176).unwrap(), "하이하이");
+        assert_eq!(loaded.comments.get(&296).unwrap(), "하이하이 40013e");
     }
 }

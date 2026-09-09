@@ -116,14 +116,12 @@ fn tab_program_headers_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 .elf_state
                 .program_header_table_state
                 .selected()
+                && let Some(elf) = app.header_view.elf.as_ref()
+                && let Some(phdr) = elf.phdrs.get(idx)
             {
-                if let Some(elf) = app.header_view.elf.as_ref() {
-                    if let Some(phdr) = elf.phdrs.get(idx) {
-                        let ofs = phdr.p_offset;
-                        app.goto(ofs as usize);
-                        app.editor_view = AppView::Hex;
-                    }
-                }
+                let ofs = phdr.p_offset;
+                app.goto(ofs as usize);
+                app.editor_view = AppView::Hex;
             }
         }
         KeyCode::Char('G') => {
@@ -147,7 +145,7 @@ fn tab_sections_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.header_view
                     .elf_state
                     .sections_table_state
-                    .select_cell(Some((0, 1)));
+                    .select_cell(Some((0, 0)));
             } else {
                 app.header_view.elf_state.sections_table_state.select_next();
             }
@@ -171,14 +169,12 @@ fn tab_sections_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 .elf_state
                 .sections_table_state
                 .selected()
+                && let Some(elf) = app.header_view.elf.as_ref()
+                && let Some(sec) = elf.sections.get(idx)
             {
-                if let Some(elf) = app.header_view.elf.as_ref() {
-                    if let Some(sec) = elf.sections.get(idx) {
-                        let ofs = sec.sh_offset;
-                        app.goto(ofs as usize);
-                        app.editor_view = AppView::Hex;
-                    }
-                }
+                let ofs = sec.sh_offset;
+                app.goto(ofs as usize);
+                app.editor_view = AppView::Hex;
             }
         }
         KeyCode::Char('G') => {
@@ -226,14 +222,12 @@ fn tab_symbols_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 .elf_state
                 .symbols_table_state
                 .selected()
+                && let Some(elf) = app.header_view.elf.as_ref()
+                && let Some(sym) = elf.symtab.get(idx)
             {
-                if let Some(elf) = app.header_view.elf.as_ref() {
-                    if let Some(sym) = elf.symtab.get(idx) {
-                        let ofs = sym.st_value as usize;
-                        app.goto(ofs);
-                        app.editor_view = AppView::Hex;
-                    }
-                }
+                let ofs = sym.st_value as usize;
+                app.goto(ofs);
+                app.editor_view = AppView::Hex;
             }
         }
         KeyCode::Char('G') => {

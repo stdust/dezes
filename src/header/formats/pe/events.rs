@@ -10,9 +10,8 @@ use crate::header::formats::pe::OptionalHeaderLayout;
 /// Number of Data Directory entries a PE optional header can hold.
 pub const DATA_DIRECTORY_COUNT: usize = 16;
 
-/// Sidebar categories: DOS, COFF, Optional, Data Directories, Sections, Imports,
-/// Section Tools.
-pub const SIDEBAR_CATEGORIES: usize = 7;
+/// Sidebar categories: DOS, COFF, Optional, Data Directories, Sections, Imports.
+pub const SIDEBAR_CATEGORIES: usize = 6;
 
 /// Runs the Section Tools action on `row`.
 ///
@@ -20,10 +19,7 @@ pub const SIDEBAR_CATEGORIES: usize = 7;
 /// things.
 pub fn run_section_tool(app: &mut App, row: usize) {
     match row {
-        0 => crate::header::formats::pe::section_tools::align_offset_to_va(
-            app,
-            app.header_view.tools_section_index,
-        ),
+        0 => crate::header::formats::pe::section_tools::align_offset_to_va(app),
         1 => {
             if app.file_info.is_read_only {
                 app.read_only_error(crate::i18n::M::RoSectionTools);
@@ -34,6 +30,10 @@ pub fn run_section_tool(app: &mut App, row: usize) {
                     Some(crate::header::formats::pe::section_tools::draw_section_size_dialog);
             }
         }
+        2 => crate::header::formats::pe::section_tools::open_dump_section_dialog(app),
+        3 => crate::header::formats::pe::section_tools::prompt_delete_last_section(app),
+        4 => crate::header::formats::pe::section_tools::fix_size_of_image(app),
+        5 => crate::header::formats::pe::section_tools::remove_aslr(app),
         _ => {}
     }
 }
@@ -79,17 +79,16 @@ pub fn field_at_cursor(app: &App) -> Option<KvField> {
             }
         }
         4 => {
-            let sec = pe.sections.get(idx)?;
-            let sec_name = sec.name().unwrap_or("Section");
+            pe.sections.get(idx)?;
             let size_of_opt_hdr = pe.coff_header.size_of_optional_header as usize;
             let sec_base = pe.dos_header.pe_pointer as usize + 24 + size_of_opt_hdr + idx * 40;
             match app.header_view.detail_col_index {
-                0 => Some(KvField::cell(sec_base, 8, format!("{}.Name", sec_name))),
-                1 => Some(KvField::cell(sec_base + 8, 4, format!("{}.VirtualSize", sec_name))),
-                2 => Some(KvField::cell(sec_base + 12, 4, format!("{}.VirtualAddress", sec_name))),
-                3 => Some(KvField::cell(sec_base + 16, 4, format!("{}.SizeOfRawData", sec_name))),
-                4 => Some(KvField::cell(sec_base + 20, 4, format!("{}.PointerToRawData", sec_name))),
-                5 => Some(KvField::cell(sec_base + 36, 4, format!("{}.Characteristics", sec_name))),
+                0 => Some(KvField::cell(sec_base, 8, "Name".to_string())),
+                1 => Some(KvField::cell(sec_base + 8, 4, "VirtualSize".to_string())),
+                2 => Some(KvField::cell(sec_base + 12, 4, "VirtualAddress".to_string())),
+                3 => Some(KvField::cell(sec_base + 16, 4, "SizeOfRawData".to_string())),
+                4 => Some(KvField::cell(sec_base + 20, 4, "PointerToRawData".to_string())),
+                5 => Some(KvField::cell(sec_base + 36, 4, "Characteristics".to_string())),
                 _ => None,
             }
         }
@@ -120,11 +119,12 @@ fn max_detail_index(app: &App) -> usize {
             })
             .unwrap_or(0),
         3 => DATA_DIRECTORY_COUNT - 1,
+        // Category 4: sections + 6 tools
         4 => app
             .header_view
             .pe
             .as_ref()
-            .map(|pe| pe.sections.len().saturating_sub(1))
+            .map(|pe| pe.sections.len().saturating_add(6).saturating_sub(1))
             .unwrap_or(0),
         5 => app
             .header_view
@@ -132,8 +132,6 @@ fn max_detail_index(app: &App) -> usize {
             .as_ref()
             .map(|pe| pe.imports.len().saturating_sub(1))
             .unwrap_or(0),
-        // Section Tools: "Align Offset to VA" and "Add New Section".
-        6 => 1,
         _ => usize::MAX,
     }
 }
@@ -149,7 +147,10 @@ fn detail_page_step(app: &App) -> usize {
 fn set_detail_index(app: &mut App, index: usize) {
     app.header_view.detail_index = index.min(max_detail_index(app));
     if app.header_view.sidebar_index == 4 {
-        app.header_view.tools_section_index = app.header_view.detail_index;
+        let sec_count = app.header_view.pe.as_ref().map(|p| p.sections.len()).unwrap_or(0);
+        if app.header_view.detail_index < sec_count {
+            app.header_view.tools_section_index = app.header_view.detail_index;
+        }
     }
 }
 
@@ -173,21 +174,29 @@ pub fn view_header_pe_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.header_view.detail_col_index = 0;
         }
         KeyCode::Left if !is_sidebar => {
-            if app.header_view.detail_col_index > 0 {
+            let sec_count = app.header_view.pe.as_ref().map(|p| p.sections.len()).unwrap_or(0);
+            if app.header_view.sidebar_index == 4 && app.header_view.detail_index >= sec_count {
+                app.header_view.active_pane = HeaderPane::Sidebar;
+            } else if app.header_view.detail_col_index > 0 {
                 app.header_view.detail_col_index -= 1;
             } else {
                 app.header_view.active_pane = HeaderPane::Sidebar;
             }
         }
         KeyCode::Right if !is_sidebar => {
-            let max_cols = match app.header_view.sidebar_index {
-                3 => 2, // Data Directories: 2 editable cols (RVA, Size)
-                4 => 6, // Section Headers: 6 editable cols (Name, VSize, VAddr, RSize, RAddr, Flags)
-                5 => 4, // Import Directory: 4 cols
-                _ => 1,
-            };
-            if app.header_view.detail_col_index + 1 < max_cols {
-                app.header_view.detail_col_index += 1;
+            let sec_count = app.header_view.pe.as_ref().map(|p| p.sections.len()).unwrap_or(0);
+            if app.header_view.sidebar_index == 4 && app.header_view.detail_index >= sec_count {
+                // In tools box, right does nothing
+            } else {
+                let max_cols = match app.header_view.sidebar_index {
+                    3 => 2, // Data Directories: 2 editable cols (RVA, Size)
+                    4 => 6, // Section Headers: 6 editable cols (Name, VSize, VAddr, RSize, RAddr, Flags)
+                    5 => 4, // Import Directory: 4 cols
+                    _ => 1,
+                };
+                if app.header_view.detail_col_index + 1 < max_cols {
+                    app.header_view.detail_col_index += 1;
+                }
             }
         }
 
@@ -215,9 +224,6 @@ pub fn view_header_pe_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         // Detail Inspector Navigation
-        //
-        // The page keys and Home/End were missing entirely, which the Import
-        // Directory made obvious: 289 entries reachable only one Down at a time.
         KeyCode::Down if !is_sidebar => {
             set_detail_index(app, app.header_view.detail_index.saturating_add(1));
         }
@@ -239,13 +245,17 @@ pub fn view_header_pe_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             set_detail_index(app, max_detail_index(app));
         }
 
-        // Enter on the Section Tools tab: run the selected action.
-        KeyCode::Enter if !is_sidebar && app.header_view.sidebar_index == 6 => {
-            run_section_tool(app, app.header_view.detail_index);
-        }
-
-        // Enter on Detail Pane: Open Edit Dialog for the Selected Cell Value
+        // Enter on Detail Pane: run tool if in Section Tools, or open edit dialog for cell
         KeyCode::Enter if !is_sidebar => {
+            if app.header_view.sidebar_index == 4 {
+                let sec_count = app.header_view.pe.as_ref().map(|p| p.sections.len()).unwrap_or(0);
+                if app.header_view.detail_index >= sec_count {
+                    let tool_idx = app.header_view.detail_index - sec_count;
+                    run_section_tool(app, tool_idx);
+                    return Ok(false);
+                }
+            }
+
             let Some(field) = field_at_cursor(app) else {
                 crate::beep!();
                 return Ok(false);
@@ -270,12 +280,7 @@ pub fn view_header_pe_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.header_view.edit_name = field.name.clone();
 
             // Prefilled from the *staged* bytes, not the file on disk.
-            //
-            // These used to be `read_u8`/`read_u32`, which go straight to the
-            // mapping and ignore `changed_bytes`, so reopening a field that had
-            // just been edited showed the old value - and pressing Enter on it
-            // wrote that old value straight back over the edit.
-            if field.name.ends_with(".Name") {
+            if field.name == "Name" || field.name.ends_with(".Name") {
                 let mut name_bytes = Vec::new();
                 for i in 0..8 {
                     let b = crate::hex::edit::displayed_byte(app, ofs + i);
@@ -302,8 +307,44 @@ pub fn view_header_pe_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.goto_selection_anchor = None;
             app.state = UIState::DialogHeaderEdit;
         }
-        // 'g' or 'f' on Detail Pane: Jump to offset in Hex View
-        KeyCode::Char('g') | KeyCode::Char('f') if !is_sidebar => {
+
+        // Section Tools shortcuts on Section tab (sidebar 4):
+        // 'a': Align Offsets to VA (all sections)
+        KeyCode::Char('a') | KeyCode::Char('A') if !is_sidebar && app.header_view.sidebar_index == 4 => {
+            run_section_tool(app, 0);
+        }
+
+        // 'n': Add New Section
+        KeyCode::Char('n') | KeyCode::Char('N') if !is_sidebar && app.header_view.sidebar_index == 4 => {
+            run_section_tool(app, 1);
+        }
+
+        // 'd': Dump selected section to file
+        KeyCode::Char('d') | KeyCode::Char('D') if !is_sidebar && app.header_view.sidebar_index == 4 => {
+            let sec_count = app.header_view.pe.as_ref().map(|p| p.sections.len()).unwrap_or(0);
+            if app.header_view.detail_index < sec_count {
+                app.header_view.tools_section_index = app.header_view.detail_index;
+            }
+            run_section_tool(app, 2);
+        }
+
+        // Delete key on Section tab: Prompt to delete last section
+        KeyCode::Delete if !is_sidebar && app.header_view.sidebar_index == 4 => {
+            run_section_tool(app, 3);
+        }
+
+        // 'f': Fix SizeOfImage
+        KeyCode::Char('f') | KeyCode::Char('F') if !is_sidebar && app.header_view.sidebar_index == 4 => {
+            run_section_tool(app, 4);
+        }
+
+        // 'r': Remove ASLR
+        KeyCode::Char('r') | KeyCode::Char('R') if !is_sidebar && app.header_view.sidebar_index == 4 => {
+            run_section_tool(app, 5);
+        }
+
+        // 'g' or 'f' on Detail Pane: Jump to offset in Hex View ('f' on tabs other than Section 4)
+        KeyCode::Char('g') | KeyCode::Char('G') | KeyCode::Char('f') | KeyCode::Char('F') if !is_sidebar => {
             let pe_ref = match &app.header_view.pe {
                 Some(pe) => pe,
                 None => return Ok(false),
@@ -312,10 +353,6 @@ pub fn view_header_pe_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             let mut target_offset: Option<usize> = None;
 
             match app.header_view.sidebar_index {
-                // The key-value tabs jump to the field the cursor is on, resolved
-                // through the same table that draws it. Three hand-maintained
-                // offset lists used to live here and none of them agreed with the
-                // rows on screen.
                 0..=2 => {
                     target_offset = field_at_cursor(app).map(|f| f.offset);
                 }
@@ -323,17 +360,21 @@ pub fn view_header_pe_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                     if let Some(opt) = &pe_ref.optional_header {
                         let data_dirs = &opt.data_directories.data_directories;
                         let idx = app.header_view.detail_index;
-                        if let Some(Some((_, dd))) = data_dirs.get(idx) {
-                            if dd.virtual_address > 0 {
-                                if let Some(ofs) = app.va_to_offset(dd.virtual_address as u64) {
-                                    target_offset = Some(ofs);
-                                }
-                            }
+                        if let Some(Some((_, dd))) = data_dirs.get(idx)
+                            && dd.virtual_address > 0
+                            && let Some(ofs) = app.va_to_offset(dd.virtual_address as u64)
+                        {
+                            target_offset = Some(ofs);
                         }
                     }
                 }
                 4 => {
-                    let idx = app.header_view.detail_index;
+                    let sec_count = pe_ref.sections.len();
+                    let idx = if app.header_view.detail_index < sec_count {
+                        app.header_view.detail_index
+                    } else {
+                        app.header_view.tools_section_index.min(sec_count.saturating_sub(1))
+                    };
                     if let Some(sec) = pe_ref.sections.get(idx) {
                         target_offset = Some(sec.pointer_to_raw_data as usize);
                     }
@@ -431,7 +472,7 @@ mod detail_index_bounds_tests {
             press_down(&mut app);
         }
 
-        assert_eq!(app.header_view.detail_index, sections - 1);
+        assert_eq!(app.header_view.detail_index, sections + 6 - 1);
         // The Section Tools tab tracks the same choice and must stay in range.
         assert_eq!(app.header_view.tools_section_index, sections - 1);
     }

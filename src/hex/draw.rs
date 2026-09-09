@@ -13,19 +13,17 @@ pub fn draw_hex_offsets(app: &mut App, frame: &mut Frame, area: Rect) {
     let show_va = app.hex_view.show_va;
     let is_64 = app.is_64();
 
+    let col_width = app.get_addr_col_width();
+    let digits = if is_64 {
+        col_width.saturating_sub(2).max(9)
+    } else {
+        8
+    };
+
     // Helper formatting function according to user specific digits spec
     let format_addr = |app: &App, ofs: usize| -> String {
         let addr = if show_va { app.get_va(ofs) } else { ofs as u64 };
-        if is_64 {
-            if show_va {
-                let raw = format!("{:X}", addr);
-                if raw.len() < 9 { format!("{:09X}", addr) } else { raw }
-            } else {
-                format!("{:09X}", addr) // 64bit Offset: 000000000 (9 digits padded)
-            }
-        } else {
-            format!("{:08X}", addr) // 32bit VA & Offset: 00000000 (8 digits padded)
-        }
+        format!("{:0width$X}", addr, width = digits)
     };
 
     // `max(1)` guards the division: bytes-per-line reaching 0 (`:set byteline 0`
@@ -37,7 +35,6 @@ pub fn draw_hex_offsets(app: &mut App, frame: &mut Frame, area: Rect) {
     let mut ofs = app.reader.page_start;
     let height = frame.area().height as usize;
 
-    let col_width = app.get_addr_col_width();
     for _ in 0..height {
         let addr_text = format!("{:^width$}", format_addr(app, ofs), width = col_width);
         rows.push(Row::new([addr_text]));
@@ -117,16 +114,16 @@ fn changed_byte_text(b: u8, with_separator: bool) -> String {
 /// list for every byte of every frame.
 #[inline]
 fn block_bg(blocks: &[crate::hex::blocks::ColoredBlock], offset: usize) -> Option<u32> {
-    let mut found = None;
-    for b in blocks {
-        if b.start > offset {
-            break;
-        }
+    if blocks.is_empty() {
+        return None;
+    }
+    let count = blocks.partition_point(|b| b.start <= offset);
+    for b in blocks[..count].iter().rev() {
         if offset <= b.end {
-            found = Some(b.bg_color);
+            return Some(b.bg_color);
         }
     }
-    found
+    None
 }
 
 /// Final style the hex cell at `offset` is drawn with.
@@ -145,9 +142,9 @@ fn cell_style(app: &App, offset: usize, byte: u8, selection_active: bool, main_s
         // on. With 12,000 matches in a file, "3 of 12578" in the status line said
         // nothing about which bytes a Replace All would touch; this shows them.
         app.config.theme.byte_highlight
-    } else if byte == b'\0' && app.config.dim_zeroes {
-        app.config.theme.dimmed
-    } else if !byte.is_ascii_graphic() && app.config.dim_control_chars {
+    } else if (byte == b'\0' && app.config.dim_zeroes)
+        || (!byte.is_ascii_graphic() && app.config.dim_control_chars)
+    {
         app.config.theme.dimmed
     } else {
         main_style
@@ -467,27 +464,27 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                             let code_point = 0x10000
                                 + ((code_unit as u32 - 0xD800) << 10)
                                 + (low_unit as u32 - 0xDC00);
-                            if let Some(c) = char::from_u32(code_point) {
-                                if !c.is_control() && !c.is_whitespace() {
-                                    let cell_char = if c.is_ascii() {
-                                        if c.is_ascii_graphic() { c } else { app.config.hex_mode_non_graphic_char }
-                                    } else {
-                                        c
-                                    };
-                                    let char_width = if cell_char.is_ascii() { 1 } else { 2 };
-                                    char_cells[idx] = (cell_char, char_width);
-                                    for j in 1..4 {
-                                        if idx + j < page_bytes_len {
-                                            if j < char_width {
-                                                char_cells[idx + j] = ('\0', 0);
-                                            } else {
-                                                char_cells[idx + j] = (' ', 1);
-                                            }
+                            if let Some(c) = char::from_u32(code_point)
+                                && !c.is_control() && !c.is_whitespace()
+                            {
+                                let cell_char = if c.is_ascii() {
+                                    if c.is_ascii_graphic() { c } else { app.config.hex_mode_non_graphic_char }
+                                } else {
+                                    c
+                                };
+                                let char_width = if cell_char.is_ascii() { 1 } else { 2 };
+                                char_cells[idx] = (cell_char, char_width);
+                                for j in 1..4 {
+                                    if idx + j < page_bytes_len {
+                                        if j < char_width {
+                                            char_cells[idx + j] = ('\0', 0);
+                                        } else {
+                                            char_cells[idx + j] = (' ', 1);
                                         }
                                     }
-                                    found = true;
-                                    idx += 4;
                                 }
+                                found = true;
+                                idx += 4;
                             }
                         }
                     }
@@ -499,19 +496,20 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                     }
                 } else if !(0xDC00..=0xDFFF).contains(&code_unit) {
                     // Normal BMP character (not a surrogate)
-                    if let Some(c) = char::from_u32(code_unit as u32) {
-                        if !c.is_control() {
-                            let cell_char = if c.is_ascii() {
-                                if c.is_ascii_graphic() {
-                                    c
-                                } else {
-                                    non_graphic
-                                }
-                            } else if !c.is_whitespace() {
+                    if let Some(c) = char::from_u32(code_unit as u32)
+                        && !c.is_control()
+                    {
+                        let cell_char = if c.is_ascii() {
+                            if c.is_ascii_graphic() {
                                 c
                             } else {
                                 non_graphic
-                            };
+                            }
+                        } else if !c.is_whitespace() {
+                            c
+                        } else {
+                            non_graphic
+                        };
 
                             let char_width = if cell_char.is_ascii() { 1 } else { 2 };
                             char_cells[idx] = (cell_char, char_width);
@@ -524,7 +522,6 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                             }
                             found = true;
                         }
-                    }
 
                     if !found {
                         // Control char or invalid: mark both bytes as non-graphic

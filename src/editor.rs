@@ -29,14 +29,18 @@ impl EditingTarget {
     }
 }
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum UIState {
     Command,
     DialogAbout,
     DialogAssemble,
     DialogBase,
+    DialogBookmarks,
+    DialogBookmarkInput,
     DialogCalculator,
     DialogComment,
+    DialogConfirmReload,
+    DialogConfirmDeleteSection,
     DialogEditData,
     DialogEncoding,
     DialogEncoding2,
@@ -44,12 +48,14 @@ pub enum UIState {
     DialogGoto,
     DialogHelp,
     DialogSectionSize,
+    DialogDumpSection,
     DialogLog,
     /// The digital-rain easter egg. Not reachable from any documented key.
     Matrix,
     DialogModifyBlock,
     DialogNames,
     DialogNamesRegex,
+    DialogPatches,
     DialogReplacePattern,
     DialogSettings,
     DialogStrings,

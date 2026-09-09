@@ -47,8 +47,9 @@ GLOBAL (any view)
   F7                   Text view (press again to come back)
   F4                   Header view (press again to come back)
   F5                   String References dialog
-  F8                   About / program info (paths, encodings, license)
+  F8                   Reload current file from disk
   F9 / Ctrl+O          Open File dialog
+  F10                  About / program info (paths, encodings, license)
   F12                  Save and quit (same as ':wq')
   Alt+F1               Select Drive dialog
   Alt+F2               Toggle Offset <-> VA address display
@@ -66,9 +67,13 @@ GLOBAL (any view)
   Alt+L                 Log window (y copies it to the clipboard)
   Ctrl+K                Modify Block dialog
   Ctrl+H                Wildcard Hex Pattern Replace dialog
+  Ctrl+P                Patches list dialog (track & revert modified bytes)
   Ctrl+B                Find Pattern dialog (ANSI/UTF-8/UNICODE/Hex)
   F3 / Shift+F3          Repeat last pattern search forward / backward
   Ctrl+R                Cross References (Xref) search
+  Alt+N                 Names / Comments list dialog (y / Ctrl+C copies)
+  Alt+B                 Bookmarks list dialog
+  Ctrl+D                Add / edit bookmark at current cursor
 
 HEX VIEW - navigation
   Arrow keys             Move cursor
@@ -84,7 +89,7 @@ HEX VIEW - editing
   F2                    Enter edit mode at cursor
   Tab                    Switch edit column: HEX -> enc1 -> enc2
   Shift + arrows         Select a block in the focused column
-  Ctrl+C                 Copy that block (hex from the byte column,
+  y / Ctrl+C             Copy that block (hex from the byte column,
                           decoded text from an encoding column)
   Ctrl+E                Edit Data dialog
   ~                     Toggle upper/lower case of byte under cursor
@@ -146,23 +151,25 @@ DISASSEMBLY VIEW
   Space                  Assemble instruction at cursor
                           (numbers are hex; add 't' for decimal, e.g.
                            'push 10' = 0x10, 'push 10t' = 10)
-  Ctrl+C                 Copy selected instructions to clipboard
+  y / Ctrl+C           Copy selected instructions to clipboard
   Ctrl+E                 Edit Data dialog
   Ctrl+R                 Cross References (Xref) search
   F6                      Strings list (addresses shown as VA here)
-  Delete                  Fill the instruction under the cursor with NOPs
-                           (uses its exact decoded length)
+  Delete / Insert         Fill selection or current instruction with NOP (0x90) / 0x00
   Ctrl+Z / Alt+Backspace  Undo last change
   Ctrl+Y                  Redo last undone change
   Alt+F3                  Revert only the byte under the cursor
 
 TEXT VIEW
-  Up / Down              Scroll a line, then move the window through the file
-  Left / Right           Scroll sideways
-  Home / Ctrl+Home       Start of line / start of file
-  Ctrl+End                End of last visible line
-  PageUp / PageDown       Scroll one page
-  Alt+E                   Change text encoding
+  Arrow keys             Move cursor
+  Shift + arrows         Select a text block
+  Home / End             Start / end of line
+  Ctrl+Home / Ctrl+End   Start / end of file
+  PageUp / PageDown      Scroll one page
+  y / Ctrl+C             Copy selected block (or current line)
+  Ctrl+A                 Select all text
+  Alt+E                  Change text encoding
+  Esc                    Clear selection / return
 
 HEADER VIEW
   Left / Right          Switch pane, move column
@@ -177,6 +184,7 @@ HEADER VIEW
 HEADER VIEW - Section Tools (PE only, sidebar category 7)
   Align Offset to VA    Set PointerToRawData = VirtualAddress
   Add New Section       Append a section of a given size (default 0x1000)
+  Remove ASLR           Clear IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE (0x0040)
   Note                  Edits stay in memory; ':w' writes them to disk
 
 COMMAND LINE (':' to open)
@@ -196,7 +204,7 @@ COMMAND LINE (':' to open)
   :set enc1 <name>        Primary encoding (utf-8, cp949, cp936,
                            iso-8859-1, iso-8859-2, utf-16le, utf-16be)
   :set enc2 <name|none>   Secondary encoding, same names plus 'none'
-  :set lang en|ko|zh      Interface language (English, 한국어, 中文).
+  :set lang en|ko|cn      Interface language (English, 한국어, 中文).
                            Labels only: key names, option names and the
                            status-bar modes stay as they are
   :set theme <name>       Load a hex-view color theme. Disassembly
@@ -229,8 +237,9 @@ pub(crate) const HELP_KO: &str = "\
   F7                   텍스트 뷰 (다시 누르면 복귀)
   F4                   헤더 뷰 (다시 누르면 복귀)
   F5                   문자열 참조 목록
-  F8                   프로그램 정보 (경로, 인코딩, 라이선스)
+  F8                   현재 파일 다시 로드 (새로고침)
   F9 / Ctrl+O          파일 열기 다이얼로그
+  F10                  프로그램 정보 (경로, 인코딩, 라이선스)
   F12                  저장하고 종료 (':wq'와 동일)
   Alt+F1               드라이브 선택
   Alt+F2               주소 표시 전환: 파일 옵셋 <-> VA
@@ -248,9 +257,13 @@ pub(crate) const HELP_KO: &str = "\
   Alt+L                로그 창 (y 로 클립보드 복사)
   Ctrl+K               블록 일괄 수정
   Ctrl+H               와일드카드 16진 패턴 바꾸기
+  Ctrl+P               패치 목록 다이얼로그 (수정 내역 확인 및 원복)
   Ctrl+B               패턴 찾기 (ANSI/UTF-8/UNICODE/16진)
   F3 / Shift+F3        마지막 패턴 검색 반복: 정방향 / 역방향
   Ctrl+R               Xref (상호 참조) 검색
+  Alt+N                주석 / 이름 목록 다이얼로그 (y / Ctrl+C 복사)
+  Alt+B                북마크 목록 다이얼로그
+  Ctrl+D               현재 위치에 북마크 추가 / 수정
 
 헥스 뷰 - 이동
   화살표               커서 이동
@@ -265,7 +278,7 @@ pub(crate) const HELP_KO: &str = "\
   F2                   커서 위치에서 편집 모드 시작
   Tab                  편집 칼럼 전환: HEX -> enc1 -> enc2
   Shift + 화살표       포커스된 칼럼에서 블록 선택
-  Ctrl+C               그 블록 복사 (바이트 칼럼이면 16진수,
+  y / Ctrl+C           그 블록 복사 (바이트 칼럼이면 16진수,
                         인코딩 칼럼이면 디코딩된 텍스트)
   Ctrl+E               데이터 편집 다이얼로그
   ~                    커서 바이트의 대소문자 전환
@@ -326,23 +339,25 @@ pub(crate) const HELP_KO: &str = "\
   Space                커서 위치에 어셈블
                         (숫자는 16진수, 10진수는 't' 접미사.
                          'push 10' = 0x10, 'push 10t' = 10)
-  Ctrl+C               선택한 명령어를 클립보드로 복사
+  y / Ctrl+C           선택한 명령어를 클립보드로 복사
   Ctrl+E               데이터 편집 다이얼로그
   Ctrl+R               Xref (상호 참조) 검색
   F6                   문자열 목록 (여기서는 주소가 VA)
-  Delete               커서 명령어를 NOP으로 채움
-                        (디코딩된 실제 길이만큼)
+  Delete / Insert      선택 블록 또는 현재 명령어를 NOP(0x90) / 0x00 으로 채움
   Ctrl+Z / Alt+Backspace  마지막 변경 되돌리기
   Ctrl+Y               되돌린 변경 다시 실행
   Alt+F3               커서 바이트만 원래 값으로 복원
 
 텍스트 뷰
-  위 / 아래            한 줄 스크롤, 이어서 파일 창 이동
-  왼쪽 / 오른쪽        좌우 스크롤
-  Home / Ctrl+Home     줄 시작 / 파일 시작
-  Ctrl+End             마지막으로 보이는 줄의 시작
-  PageUp / PageDown    한 페이지 스크롤
+  방향키               커서 이동
+  Shift + 방향키       텍스트 블록 선택
+  Home / End           줄 시작 / 줄 끝
+  Ctrl+Home / Ctrl+End 파일 시작 / 파일 끝
+  PageUp / PageDown    한 페이지 이동
+  y / Ctrl+C           선택 블록 복사 (미선택 시 현재 줄 복사)
+  Ctrl+A               전체 선택
   Alt+E                텍스트 인코딩 변경
+  Esc                  선택 해제 / 나가기
 
 헤더 뷰
   왼쪽 / 오른쪽        패널 전환, 칼럼 이동
@@ -357,6 +372,7 @@ pub(crate) const HELP_KO: &str = "\
 헤더 뷰 - 섹션 도구 (PE 전용, 사이드바 7번 항목)
   Align Offset to VA   PointerToRawData = VirtualAddress 로 맞춤
   Add New Section      지정한 크기의 섹션 추가 (기본 0x1000)
+  Remove ASLR          ASLR 제거 (0x0040 비트 클리어, 예: 0x8140 -> 0x8100)
   참고                 수정은 메모리에만 남음. ':w'로 디스크에 기록
 
 커맨드 라인 (':'로 열기)
@@ -376,7 +392,7 @@ pub(crate) const HELP_KO: &str = "\
   :set enc1 <이름>     주 인코딩 (utf-8, cp949, cp936,
                         iso-8859-1, iso-8859-2, utf-16le, utf-16be)
   :set enc2 <이름|none>   보조 인코딩. 위와 같은 이름에 'none' 추가
-  :set lang en|ko|zh   인터페이스 언어 (English, 한국어, 中文).
+  :set lang en|ko|cn   인터페이스 언어 (English, 한국어, 中文).
                         라벨만 바뀜. 키 이름, 옵션 이름, 상태줄의
                         모드 표시는 그대로 유지됨
   :set theme <이름>    헥스 뷰 색 테마. 테마 파일이 디스어셈블 색을
@@ -409,8 +425,9 @@ pub(crate) const HELP_ZH: &str = "\
   F7                   文本视图 (再按一次返回)
   F4                   头部视图 (再按一次返回)
   F5                   字符串引用列表
-  F8                   程序信息 (路径、编码、许可证)
+  F8                   重新从磁盘加载当前文件 (刷新)
   F9 / Ctrl+O          打开文件对话框
+  F10                  程序信息 (路径、编码、许可证)
   F12                  保存并退出 (等同 ':wq')
   Alt+F1               选择驱动器
   Alt+F2               地址显示切换：文件偏移 <-> VA
@@ -428,9 +445,13 @@ pub(crate) const HELP_ZH: &str = "\
   Alt+L                日志窗口 (y 复制到剪贴板)
   Ctrl+K               批量修改块
   Ctrl+H               通配符十六进制模式替换
+  Ctrl+P               补丁列表对话框 (追踪并还原修改字节)
   Ctrl+B               查找模式 (ANSI/UTF-8/UNICODE/十六进制)
   F3 / Shift+F3        重复上次模式搜索：向前 / 向后
   Ctrl+R               交叉引用 (Xref) 搜索
+  Alt+N                注释 / 名称列表对话框 (y / Ctrl+C 复制)
+  Alt+B                书签列表对话框
+  Ctrl+D               在当前光标处添加 / 编辑书签
 
 十六进制视图 - 移动
   方向键               移动光标
@@ -445,7 +466,7 @@ pub(crate) const HELP_ZH: &str = "\
   F2                   在光标处进入编辑模式
   Tab                  切换编辑列：HEX -> enc1 -> enc2
   Shift + 方向键       在当前列选择一个块
-  Ctrl+C               复制该块 (字节列为十六进制，
+  y / Ctrl+C           复制该块 (字节列为十六进制，
                         编码列为解码后的文本)
   Ctrl+E               数据编辑对话框
   ~                    切换光标字节的大小写
@@ -506,23 +527,25 @@ pub(crate) const HELP_ZH: &str = "\
   Space                在光标处汇编
                         (数字为十六进制；十进制加 't'，
                          'push 10' = 0x10，'push 10t' = 10)
-  Ctrl+C               复制所选指令到剪贴板
+  y / Ctrl+C           复制所选指令到剪贴板
   Ctrl+E               数据编辑对话框
   Ctrl+R               交叉引用 (Xref) 搜索
   F6                   字符串列表 (此处地址显示为 VA)
-  Delete               用 NOP 填充光标处的指令
-                        (按解码出的实际长度)
+  Delete / Insert      用 NOP (0x90) / 0x00 填充所选块或当前指令
   Ctrl+Z / Alt+Backspace  撤销上次修改
   Ctrl+Y               重做被撤销的修改
   Alt+F3               仅将光标处的字节还原为原值
 
 文本视图
-  上 / 下              滚动一行，然后移动文件窗口
-  左 / 右              左右滚动
-  Home / Ctrl+Home     行首 / 文件开头
-  Ctrl+End             最后一行可见行的开头
+  方向键               移动光标
+  Shift + 方向键       选择文本块
+  Home / End           行首 / 行尾
+  Ctrl+Home / Ctrl+End 文件开头 / 文件结尾
   PageUp / PageDown    翻页
+  y / Ctrl+C           复制选中块 (未选中时复制当前行)
+  Ctrl+A               全选
   Alt+E                更改文本编码
+  Esc                  取消选择 / 退出
 
 头部视图
   左 / 右              切换面板，移动列
@@ -537,6 +560,7 @@ pub(crate) const HELP_ZH: &str = "\
 头部视图 - 节工具 (仅 PE，侧栏第 7 项)
   Align Offset to VA   令 PointerToRawData = VirtualAddress
   Add New Section      追加一个指定大小的节 (默认 0x1000)
+  Remove ASLR          清除 ASLR (0x0040 标志，如 0x8140 -> 0x8100)
   注意                 修改只在内存中，':w' 才写入磁盘
 
 命令行 (按 ':' 打开)
@@ -556,7 +580,7 @@ pub(crate) const HELP_ZH: &str = "\
   :set enc1 <名称>     主编码 (utf-8, cp949, cp936,
                         iso-8859-1, iso-8859-2, utf-16le, utf-16be)
   :set enc2 <名称|none>   次编码，同上并可用 'none'
-  :set lang en|ko|zh   界面语言 (English, 한국어, 中文)。
+  :set lang en|ko|cn   界面语言 (English, 한국어, 中文)。
                         仅标签改变：键名、选项名和状态栏中的
                         模式标识保持不变
   :set theme <名称>    十六进制视图配色。若主题文件未声明反汇编
@@ -623,7 +647,7 @@ pub fn dialog_help_draw(app: &mut App, frame: &mut Frame) {
 /// Outer width of the help box for a given screen area. Kept in one place so
 /// the draw code and the scroll-clamping code can't disagree about it.
 fn help_box_width(area: Rect) -> u16 {
-    (area.width.saturating_sub(4)).min(78).max(20)
+    area.width.saturating_sub(4).clamp(20, 78)
 }
 
 /// Columns available to the text itself: the box width minus the left/right
@@ -677,17 +701,14 @@ pub fn dialog_help_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         // Copies the whole help text in the current language, the way `y` does on
         // the About panel: a keymap is more useful in a text file next to the
         // program than scrolled through in a box.
+        KeyCode::Char('y') | KeyCode::Char('Y')
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            app.copy_to_clipboard(text.to_string(), "help text".to_string());
+        }
         KeyCode::Char('c') | KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let copied = match app.clipboard.as_mut() {
-                Ok(clip) => clip.set_text(text.to_string()).is_ok(),
-                Err(_) => false,
-            };
-            if copied {
-                App::log(app, "Copied the help text to clipboard".to_string());
-            } else {
-                App::log(app, "Could not access the clipboard".to_string());
-                crate::beep!();
-            }
+            app.copy_to_clipboard(text.to_string(), "help text".to_string());
         }
         KeyCode::Down => {
             app.help_scroll_offset = (app.help_scroll_offset + 1).min(max_scroll);
@@ -743,7 +764,7 @@ mod help_translation_tests {
             "Ctrl+E", "Ctrl+G", "Ctrl+K", "Ctrl+R", "Ctrl+X", "Ctrl+Z", "Shift+V", "Alt+E",
             "Alt+M", "Alt+N", "Alt+F2", "Alt+F3", ":set lang", ":set view",
         ];
-        for (name, text) in [("ko", HELP_KO), ("zh", HELP_ZH), ("en", HELP_EN)] {
+        for (name, text) in [("ko", HELP_KO), ("cn", HELP_ZH), ("en", HELP_EN)] {
             for key in keys {
                 assert!(
                     text.contains(key),
@@ -771,7 +792,7 @@ mod help_translation_tests {
     fn lines_fit_the_help_box() {
         // 68 columns is the minimum terminal; the box is 4 narrower, less padding.
         let text_width = help_text_width(help_box_width(Rect::new(0, 0, 68, 24))) as usize;
-        for (name, text) in [("en", HELP_EN), ("ko", HELP_KO), ("zh", HELP_ZH)] {
+        for (name, text) in [("en", HELP_EN), ("ko", HELP_KO), ("cn", HELP_ZH)] {
             for line in text.lines() {
                 let width = UnicodeWidthStr::width(line);
                 assert!(
