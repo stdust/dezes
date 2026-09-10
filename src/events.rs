@@ -134,6 +134,8 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
             // new one for this very key.
             app.status_error = None;
             app.status_info = None;
+            app.status_bar_selection = None;
+            app.status_bar_dragging = false;
             match app.state {
                 UIState::Normal | UIState::Error => {
                     if app.editor_view == AppView::Header && key.code == KeyCode::Enter {
@@ -254,6 +256,81 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
             return Ok(false);
         }
         Event::Mouse(mouse) => {
+            // Status bar mouse drag selection & copy
+            if mouse.row == app.command_area.y || app.status_bar_dragging {
+                if let Some(text) = app.status_info.clone().or_else(|| app.status_error.clone()) {
+                    let rel_col = mouse.column.saturating_sub(app.command_area.x);
+                    let char_count = text.chars().count() as u16;
+                    match mouse.kind {
+                        ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left)
+                            if mouse.row == app.command_area.y =>
+                        {
+                            let now = std::time::Instant::now();
+                            let is_double_click = if let Some((last_time, last_row, last_col)) = app.last_left_click {
+                                now.duration_since(last_time).as_millis() < 400
+                                    && last_row == mouse.row
+                                    && (mouse.column as i32 - last_col as i32).abs() <= 2
+                            } else {
+                                false
+                            };
+
+                            if is_double_click {
+                                app.last_left_click = None;
+                                app.status_bar_dragging = false;
+                                app.status_bar_selection = Some((0, char_count));
+                                if let Ok(clip) = &mut app.clipboard {
+                                    let _ = clip.set_text(text.clone());
+                                    let log_msg = crate::i18n::fill(crate::i18n::M::CopiedFromStatusBar.tr(app.config.lang), &[&text]);
+                                    App::log(app, log_msg);
+                                }
+                            } else {
+                                app.last_left_click = Some((now, mouse.row, mouse.column));
+                                let clamped_col = rel_col.min(char_count);
+                                app.status_bar_selection = Some((clamped_col, clamped_col));
+                                app.status_bar_dragging = true;
+                            }
+                            return Ok(true);
+                        }
+                        ratatui::crossterm::event::MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left) => {
+                            if app.status_bar_dragging
+                                && let Some((start_col, _)) = app.status_bar_selection
+                            {
+                                let clamped_col = rel_col.min(char_count);
+                                app.status_bar_selection = Some((start_col, clamped_col));
+                                return Ok(true);
+                            }
+                        }
+                        ratatui::crossterm::event::MouseEventKind::Up(ratatui::crossterm::event::MouseButton::Left)
+                            if app.status_bar_dragging =>
+                        {
+                            app.status_bar_dragging = false;
+                            if let Some((start_col, end_col)) = app.status_bar_selection {
+                                let min_c = start_col.min(end_col) as usize;
+                                let max_c = (start_col.max(end_col) as usize).min(char_count as usize);
+                                if min_c < max_c {
+                                    let chars: Vec<char> = text.chars().collect();
+                                    let selected: String = chars[min_c..max_c].iter().collect();
+                                    if !selected.is_empty()
+                                        && let Ok(clip) = &mut app.clipboard
+                                    {
+                                        let _ = clip.set_text(selected.clone());
+                                        let log_msg = crate::i18n::fill(crate::i18n::M::CopiedFromStatusBar.tr(app.config.lang), &[&selected]);
+                                        App::log(app, log_msg);
+                                    }
+                                } else {
+                                    app.status_bar_selection = None;
+                                }
+                            }
+                            return Ok(true);
+                        }
+                        _ => {}
+                    }
+                } else if app.status_bar_dragging {
+                    app.status_bar_dragging = false;
+                    app.status_bar_selection = None;
+                }
+            }
+
             // The Header view has its own geometry - a sidebar and a table of rows -
             // and used to fall through to the hex branch below, which silently moved
             // the hex cursor instead. Clicking a row did nothing visible, which is
@@ -1114,6 +1191,84 @@ mod modified_fkey_tests {
 
         assert!(app.status_info.is_none(), "status_info must be cleared on key press");
         assert!(app.status_error.is_none(), "status_error must be cleared on key press");
+        assert!(app.status_bar_selection.is_none(), "status_bar_selection must be cleared on key press");
+        assert!(!app.status_bar_dragging, "status_bar_dragging must be false on key press");
+    }
+
+    #[test]
+    fn test_status_bar_mouse_drag_and_copy() {
+        let mut app = app_with_file();
+        app.command_area = ratatui::layout::Rect {
+            x: 0,
+            y: 20,
+            width: 80,
+            height: 1,
+        };
+        app.status_info = Some("HEX: 0x30  DEC: 48".to_string());
+
+        // 1. Mouse Down on col 5
+        let down_event = Event::Mouse(ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+            column: 5,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        });
+        let _ = dispatch_event(&mut app, down_event);
+        assert_eq!(app.status_bar_selection, Some((5, 5)));
+        assert!(app.status_bar_dragging);
+
+        // 2. Mouse Drag to col 9 ("0x30")
+        let drag_event = Event::Mouse(ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left),
+            column: 9,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        });
+        let _ = dispatch_event(&mut app, drag_event);
+        assert_eq!(app.status_bar_selection, Some((5, 9)));
+        assert!(app.status_bar_dragging);
+
+        // 3. Mouse Up on col 9 -> copies "0x30" to clipboard
+        let up_event = Event::Mouse(ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Up(ratatui::crossterm::event::MouseButton::Left),
+            column: 9,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        });
+        let _ = dispatch_event(&mut app, up_event);
+        assert!(!app.status_bar_dragging);
+        assert_eq!(app.status_bar_selection, Some((5, 9)));
+
+        // Verify clipboard if available
+        if let Ok(clip) = &mut app.clipboard {
+            if let Ok(text) = clip.get_text() {
+                assert_eq!(text, "0x30");
+            }
+        }
+
+        // 4. Double click copies full string
+        app.last_left_click = None;
+        let click1 = Event::Mouse(ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+            column: 2,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        });
+        let _ = dispatch_event(&mut app, click1);
+
+        let click2 = Event::Mouse(ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+            column: 2,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        });
+        let _ = dispatch_event(&mut app, click2);
+        assert_eq!(app.status_bar_selection, Some((0, 18))); // "HEX: 0x30  DEC: 48" length is 18
+        if let Ok(clip) = &mut app.clipboard {
+            if let Ok(text) = clip.get_text() {
+                assert_eq!(text, "HEX: 0x30  DEC: 48");
+            }
+        }
     }
 }
 

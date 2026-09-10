@@ -390,6 +390,21 @@ fn is_safe_expression(expr: &str) -> bool {
     true
 }
 
+pub fn evaluate_expression(app: &mut App, expr: &str) -> std::result::Result<i64, String> {
+    if !is_safe_expression(expr) {
+        return Err("Expression is too long or too deeply nested".to_string());
+    }
+    load_variables(app);
+    let evaluated = hex_literals_to_decimal(expr, &app.calculator.context);
+    match eval_with_context_mut(&evaluated, &mut app.calculator.context) {
+        Ok(v) => match v.as_int() {
+            Ok(val) => Ok(val),
+            Err(e) => Err(format!("{}", e)),
+        },
+        Err(e) => Err(format!("{}", e)),
+    }
+}
+
 pub fn dialog_calculator_events(app: &mut App, event: &Event) -> Result<bool> {
     if let Event::Key(key) = event {
         match key.code {
@@ -409,30 +424,13 @@ pub fn dialog_calculator_events(app: &mut App, event: &Event) -> Result<bool> {
             }
             KeyCode::Enter => {
                 let input_expr = app.calculator.input.value().to_string();
-
-                if !is_safe_expression(&input_expr) {
-                    app.error("Expression is too long or too deeply nested".to_string());
-                    return Ok(false);
-                }
-
-                load_variables(app);
-
-                // Numbers are hexadecimal here, as everywhere else in dz6; evalexpr
-                // only reads decimal, so the literals are rewritten first.
-                let evaluated =
-                    hex_literals_to_decimal(&input_expr, &app.calculator.context);
-                let result = eval_with_context_mut(&evaluated, &mut app.calculator.context);
-
-                app.calculator.push_history(input_expr);
-
-                match result {
-                    Ok(v) => {
-                        if let Ok(a) = v.as_int() {
-                            app.calculator.result = a;
-                        }
+                match evaluate_expression(app, &input_expr) {
+                    Ok(val) => {
+                        app.calculator.result = val;
+                        app.calculator.push_history(input_expr);
                     }
-                    Err(_e) => {
-                        // app.calculator.history.push(format!("Error: {}", e));
+                    Err(e) => {
+                        app.error(e);
                     }
                 }
             }

@@ -234,17 +234,63 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // until the next key press. Drawn last so it also covers a stale
     // `dialog_renderer` that renders into the same one-line area.
     if let Some(message) = app.status_error.clone() {
-        let para = Paragraph::new(message).style(app.config.theme.error);
-        frame.render_widget(Clear, app.command_area);
-        frame.render_widget(para, app.command_area);
+        render_status_line(
+            frame,
+            app.command_area,
+            &message,
+            app.config.theme.error,
+            app.config.theme.highlight,
+            app.status_bar_selection,
+        );
     } else if let Some(message) = app.status_info.clone() {
-        let para = Paragraph::new(message).style(app.config.theme.main);
-        frame.render_widget(Clear, app.command_area);
-        frame.render_widget(para, app.command_area);
+        render_status_line(
+            frame,
+            app.command_area,
+            &message,
+            app.config.theme.main,
+            app.config.theme.highlight,
+            app.status_bar_selection,
+        );
     } else if global::hint_bar::should_show(app) {
         // Last claim on the command-bar row: the command line, dialogs and messages
         // all get it first. See `global/hint_bar.rs`.
         let area = app.command_area;
         global::hint_bar::hint_bar_draw(app, frame, area);
     }
+}
+
+fn render_status_line(
+    frame: &mut Frame,
+    area: Rect,
+    message: &str,
+    base_style: Style,
+    highlight_style: Style,
+    selection: Option<(u16, u16)>,
+) {
+    frame.render_widget(Clear, area);
+    if let Some((start, end)) = selection {
+        let min_c = start.min(end) as usize;
+        let max_c = start.max(end) as usize;
+        let chars: Vec<char> = message.chars().collect();
+        if min_c < max_c && min_c < chars.len() {
+            let p1_end = min_c;
+            let p2_end = max_c.min(chars.len());
+            let mut spans = Vec::new();
+            if p1_end > 0 {
+                let s1: String = chars[..p1_end].iter().collect();
+                spans.push(Span::styled(s1, base_style));
+            }
+            let s2: String = chars[p1_end..p2_end].iter().collect();
+            spans.push(Span::styled(s2, highlight_style));
+            if p2_end < chars.len() {
+                let s3: String = chars[p2_end..].iter().collect();
+                spans.push(Span::styled(s3, base_style));
+            }
+            let para = Paragraph::new(Line::from(spans));
+            frame.render_widget(para, area);
+            return;
+        }
+    }
+    let para = Paragraph::new(message).style(base_style);
+    frame.render_widget(para, area);
 }

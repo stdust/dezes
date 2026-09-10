@@ -745,6 +745,8 @@ pub struct App {
     /// soon as another key arrives.
     pub status_error: Option<String>,
     pub status_info: Option<String>,
+    pub status_bar_selection: Option<(u16, u16)>,
+    pub status_bar_dragging: bool,
     pub help_scroll_offset: u16,
     /// Scroll position of the `:set` table.
     pub settings_scroll_offset: u16,
@@ -902,6 +904,8 @@ impl App {
             },
             status_error: None,
             status_info: None,
+            status_bar_selection: None,
+            status_bar_dragging: false,
             loading_initfile: false,
             initfile_loaded: None,
             about_scroll_offset: 0,

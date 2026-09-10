@@ -288,6 +288,9 @@ pub enum M {
     OpShiftRight,
     OpRandom,
     OpRollingXor,
+    CalcUsage,
+    CalcError,
+    CopiedFromStatusBar,
 
     // Settings table notes
     NoteByteline,
@@ -384,6 +387,7 @@ impl M {
         M::DoneAssembledPadded, M::DoneAssembled,
         M::OpAdd, M::OpSub, M::OpMul, M::OpDiv, M::OpXor, M::OpOr, M::OpAnd, M::OpNot,
         M::OpEndianSwap, M::OpShiftLeft, M::OpShiftRight, M::OpRandom, M::OpRollingXor,
+        M::CalcUsage, M::CalcError, M::CopiedFromStatusBar,
     ];
 
     pub fn tr(self, lang: Lang) -> &'static str {
@@ -1103,6 +1107,21 @@ impl M {
                 "Rolling XOR (key+step)",
                 "롤링 XOR (키+증분)",
                 "滚动 XOR (密钥+步进)",
+            ],
+            M::CalcUsage => [
+                "Usage: ? <expr> (e.g. ? 30, ? 30t, ? cur+10)",
+                "사용법: ? <수식> (예: ? 30, ? 30t, ? cur+10)",
+                "用法：? <表达式> (例如 ? 30, ? 30t, ? cur+10)",
+            ],
+            M::CalcError => [
+                "Calculation error: {}",
+                "계산 오류: {}",
+                "计算错误：{}",
+            ],
+            M::CopiedFromStatusBar => [
+                "Copied from status bar: {}",
+                "상태바에서 복사됨: {}",
+                "从状态栏复制：{}",
             ],
 
             M::NoteByteline => [

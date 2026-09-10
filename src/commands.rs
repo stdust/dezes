@@ -343,6 +343,31 @@ fn quote_colour_literals(line: &str) -> String {
 
 pub fn parse_command(app: &mut App, cmdline_raw: &str) {
     let raw_trimmed = cmdline_raw.trim().trim_start_matches(':').trim();
+    if let Some(expr_raw) = raw_trimmed.strip_prefix('?') {
+        let expr = expr_raw.trim();
+        if expr.is_empty() {
+            let usage = tr(app, M::CalcUsage);
+            app.info(usage);
+            return;
+        }
+        let resolved = resolve_keywords(app, expr);
+        match crate::global::calculator::evaluate_expression(app, &resolved) {
+            Ok(val) => {
+                let unsigned = val as u64;
+                let result_str = if val < 0 {
+                    format!("HEX: 0x{:X}  DEC: {} (Signed: {})", unsigned, unsigned, val)
+                } else {
+                    format!("HEX: 0x{:X}  DEC: {}", unsigned, unsigned)
+                };
+                app.info(result_str);
+            }
+            Err(e) => {
+                let err_msg = tr1(app, M::CalcError, &e);
+                app.error(err_msg);
+            }
+        }
+        return;
+    }
     if raw_trimmed == "log" {
         crate::global::log::open_log_dialog(app);
         return;
@@ -2121,6 +2146,54 @@ mod option_name_tests {
         let _ = std::fs::remove_file(&src_file);
         let _ = std::fs::remove_file(&out_file);
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_calc_command_hex_default_and_dec_suffix() {
+        let mut app = crate::app::App::new();
+        // '? 30' -> 0x30 hex = 48 dec
+        super::parse_command(&mut app, "? 30");
+        assert_eq!(app.status_info.as_deref(), Some("HEX: 0x30  DEC: 48"));
+
+        // '? 30t' -> 30 dec = 0x1E hex
+        super::parse_command(&mut app, "? 30t");
+        assert_eq!(app.status_info.as_deref(), Some("HEX: 0x1E  DEC: 30"));
+
+        // ':? 10 + 20' -> 0x10 + 0x20 = 0x30 (48)
+        super::parse_command(&mut app, ":? 10 + 20");
+        assert_eq!(app.status_info.as_deref(), Some("HEX: 0x30  DEC: 48"));
+
+        // '? 10t + 20t' -> 10 + 20 = 30 (0x1E)
+        super::parse_command(&mut app, "? 10t + 20t");
+        assert_eq!(app.status_info.as_deref(), Some("HEX: 0x1E  DEC: 30"));
+
+        // '? 10 - 20' -> negative signed check
+        super::parse_command(&mut app, "? 10 - 20");
+        let info = app.status_info.as_deref().unwrap();
+        assert!(info.contains("Signed: -16") || info.contains("Signed: -"));
+
+        // '?' empty expression shows usage
+        super::parse_command(&mut app, "?");
+        assert!(app.status_info.as_deref().unwrap().contains("? <"));
+
+        // '? 1 / 0' shows error
+        super::parse_command(&mut app, "? 1 / 0");
+        assert!(app.status_error.is_some());
+    }
+
+    #[test]
+    fn test_calc_command_builtin_variables() {
+        let mut app = crate::app::App::new();
+        app.hex_view.offset = 0x1000;
+        app.image_base_override = Some(0x400000);
+
+        // cur is 0x1000
+        super::parse_command(&mut app, "? cur + 10");
+        assert_eq!(app.status_info.as_deref(), Some("HEX: 0x1010  DEC: 4112"));
+
+        // base is 0x400000
+        super::parse_command(&mut app, "? base + 200");
+        assert_eq!(app.status_info.as_deref(), Some("HEX: 0x400200  DEC: 4194816"));
     }
 }
 
