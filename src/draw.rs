@@ -286,7 +286,7 @@ fn render_status_line(
                 let s3: String = chars[p2_end..].iter().collect();
                 spans.push(Span::styled(s3, base_style));
             }
-            let para = Paragraph::new(Line::from(spans));
+            let para = Paragraph::new(Line::from(spans)).style(base_style);
             frame.render_widget(para, area);
             return;
         }
