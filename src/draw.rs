@@ -238,10 +238,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame.render_widget(Clear, app.command_area);
         frame.render_widget(para, app.command_area);
     } else if let Some(message) = app.status_info.clone() {
-        let info_style = ratatui::style::Style::default()
-            .fg(ratatui::style::Color::LightCyan)
-            .add_modifier(ratatui::style::Modifier::BOLD);
-        let para = Paragraph::new(message).style(info_style);
+        let para = Paragraph::new(message).style(app.config.theme.main);
         frame.render_widget(Clear, app.command_area);
         frame.render_widget(para, app.command_area);
     } else if global::hint_bar::should_show(app) {
