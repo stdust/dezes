@@ -237,6 +237,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let para = Paragraph::new(message).style(app.config.theme.error);
         frame.render_widget(Clear, app.command_area);
         frame.render_widget(para, app.command_area);
+    } else if let Some(message) = app.status_info.clone() {
+        let info_style = ratatui::style::Style::default()
+            .fg(ratatui::style::Color::LightCyan)
+            .add_modifier(ratatui::style::Modifier::BOLD);
+        let para = Paragraph::new(message).style(info_style);
+        frame.render_widget(Clear, app.command_area);
+        frame.render_widget(para, app.command_area);
     } else if global::hint_bar::should_show(app) {
         // Last claim on the command-bar row: the command line, dialogs and messages
         // all get it first. See `global/hint_bar.rs`.

@@ -133,6 +133,7 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
             // something else; cleared here so the handlers below are free to set a
             // new one for this very key.
             app.status_error = None;
+            app.status_info = None;
             match app.state {
                 UIState::Normal | UIState::Error => {
                     if app.editor_view == AppView::Header && key.code == KeyCode::Enter {
@@ -998,6 +999,7 @@ mod replace_dialog_tests {
 
 #[cfg(test)]
 mod modified_fkey_tests {
+    use super::*;
     use crate::app::App;
     use crate::editor::{AppView, UIState};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
@@ -1094,6 +1096,24 @@ mod modified_fkey_tests {
             app.state == UIState::Normal && app.editor_view == AppView::Hex,
             "Alt+F7 must not switch to the Text view"
         );
+    }
+
+    #[test]
+    fn key_press_clears_status_info_and_error() {
+        let mut app = app_with_file();
+        app.status_info = Some("Saved".to_string());
+        app.status_error = Some("Error".to_string());
+
+        let key = KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let _ = dispatch_event(&mut app, Event::Key(key));
+
+        assert!(app.status_info.is_none(), "status_info must be cleared on key press");
+        assert!(app.status_error.is_none(), "status_error must be cleared on key press");
     }
 }
 

@@ -148,7 +148,7 @@ pub fn held_page() -> HintPage {
 /// a dialog - takes precedence, so the hints are only offered the row when the
 /// user is actually in a view.
 pub fn should_show(app: &App) -> bool {
-    if !app.config.hint_bar || app.status_error.is_some() {
+    if !app.config.hint_bar || app.status_error.is_some() || app.status_info.is_some() {
         return false;
     }
     // `dialog_renderer` is how the command line and most dialogs draw; two dialogs
@@ -541,6 +541,10 @@ mod hint_bar_tests {
         app.status_error = Some("something went wrong".to_string());
         assert!(!should_show(&app), "a message wins");
         app.status_error = None;
+
+        app.status_info = Some("saved successfully".to_string());
+        assert!(!should_show(&app), "an info message wins");
+        app.status_info = None;
 
         app.dialog_renderer = Some(crate::hex::help::dialog_help_draw);
         assert!(!should_show(&app), "an open dialog wins");

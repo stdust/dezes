@@ -744,6 +744,7 @@ pub struct App {
     /// `draw` renders it over the command bar and `handle_events` clears it as
     /// soon as another key arrives.
     pub status_error: Option<String>,
+    pub status_info: Option<String>,
     pub help_scroll_offset: u16,
     /// Scroll position of the `:set` table.
     pub settings_scroll_offset: u16,
@@ -900,6 +901,7 @@ impl App {
                 message: "Success".to_string(),
             },
             status_error: None,
+            status_info: None,
             loading_initfile: false,
             initfile_loaded: None,
             about_scroll_offset: 0,
@@ -1301,11 +1303,11 @@ impl App {
         let total_written = Self::flush_changed_bytes(file, &self.hex_view.changed_bytes)?;
 
         let msg = crate::i18n::fill(crate::i18n::M::DoneBytesWritten.tr(self.config.lang), &[&total_written.to_string()]);
-        App::log(self, msg);
         self.hex_view.changed_bytes.clear();
         self.hex_view.changed_history.clear();
         self.hex_view.redo_history.clear();
         self.reload_file()?;
+        self.info(msg);
         Ok(())
     }
 
@@ -1340,7 +1342,6 @@ impl App {
 
         let target_str = target_path.to_string_lossy().to_string();
         let msg = crate::i18n::fill(crate::i18n::M::DoneSavedAs.tr(self.config.lang), &[&target_str, &total_written.to_string()]);
-        App::log(self, msg);
 
         // The edits are not dropped here.
         //
@@ -1361,6 +1362,7 @@ impl App {
             );
             return Err(e);
         }
+        self.info(msg);
         Ok(())
     }
 
@@ -1432,7 +1434,11 @@ impl App {
 
         writer.flush()?;
         let target_str = target_path.to_string_lossy().to_string();
-        App::log(self, format!("Saved {} byte(s) of block (0x{:X}..0x{:X}) to '{}'", count, start, actual_end, target_str));
+        let msg = crate::i18n::fill(
+            crate::i18n::M::DoneBlockSaved.tr(self.config.lang),
+            &[&count.to_string(), &target_str],
+        );
+        self.info(msg);
         Ok(count)
     }
 
@@ -1769,6 +1775,8 @@ mod block_dump_tests {
         assert_eq!(written[0], 0x10);
         assert_eq!(written[2], 0xFF, "the pending edit must be in the dump");
         assert_eq!(written[0x0F], 0x1F);
+        assert!(app.status_info.is_some(), "status_info must be populated on successful block save");
+        assert!(app.status_info.unwrap().contains("16"));
     }
 
     /// An unreadable byte must fail the whole dump.

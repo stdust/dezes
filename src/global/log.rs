@@ -22,7 +22,14 @@ impl App {
     pub fn error(&mut self, text: String) {
         crate::beep!();
         self.log(text.clone());
+        self.status_info = None;
         self.status_error = Some(text);
+    }
+
+    pub fn info(&mut self, text: String) {
+        self.log(text.clone());
+        self.status_error = None;
+        self.status_info = Some(text);
     }
 
     pub fn copy_to_clipboard(&mut self, text: String, label: String) {
@@ -43,7 +50,7 @@ impl App {
                 crate::i18n::Lang::Zh => format!("已将 {} 复制到剪贴板", label),
                 crate::i18n::Lang::En => format!("Copied {} to clipboard", label),
             };
-            self.log(msg);
+            self.info(msg);
         } else {
             let msg = M::ErrClipboardAccess.tr(self.config.lang).to_string();
             self.error(msg);
@@ -288,5 +295,35 @@ mod tests {
         let saved_content = std::fs::read_to_string(&temp_file).unwrap();
         assert!(saved_content.contains("test log entry 123"));
         let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn info_sets_status_info_and_clears_error() {
+        let mut app = app_with(&[0x41]);
+        app.status_error = Some("old error".to_string());
+        app.info("save complete".to_string());
+
+        assert!(app.status_error.is_none());
+        assert_eq!(app.status_info.as_deref(), Some("save complete"));
+        assert_eq!(app.logs.last().unwrap(), "save complete");
+    }
+
+    #[test]
+    fn error_sets_status_error_and_clears_info() {
+        let mut app = app_with(&[0x41]);
+        app.status_info = Some("old info".to_string());
+        app.error("something failed".to_string());
+
+        assert!(app.status_info.is_none());
+        assert_eq!(app.status_error.as_deref(), Some("something failed"));
+        assert_eq!(app.logs.last().unwrap(), "something failed");
+    }
+
+    #[test]
+    fn copy_to_clipboard_empty_sets_error() {
+        let mut app = app_with(&[0x41]);
+        app.copy_to_clipboard("".to_string(), "test".to_string());
+        assert!(app.status_error.is_some());
+        assert!(app.status_info.is_none());
     }
 }

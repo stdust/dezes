@@ -33,10 +33,10 @@ enum Command {
         filename: Option<String>,
     },
     Wb {
-        filename: String,
+        filename: Option<String>,
     },
     Wblock {
-        filename: String,
+        filename: Option<String>,
     },
     O {
         filename: Option<String>,
@@ -566,10 +566,10 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                 }
             }
             Some(Command::Wb { filename }) | Some(Command::Wblock { filename }) => {
-                let fname_clean = filename.trim();
+                let fname_clean = filename.as_deref().unwrap_or("").trim();
                 if fname_clean.is_empty() {
                     app.last_error = Dz6Error {
-                        message: "Filename required for :wb (e.g. :wb dump.bin)".to_string(),
+                        message: M::ErrFilenameRequiredForWb.tr(app.config.lang).to_string(),
                     };
                     app.dialog_renderer = Some(command_error_draw);
                 } else {
@@ -596,7 +596,7 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         }
                         Err(e) => {
                             app.last_error = Dz6Error {
-                                message: format!("Save block error: {}", e),
+                                message: crate::i18n::fill(M::ErrSaveError.tr(app.config.lang), &[&e.to_string()]),
                             };
                             app.dialog_renderer = Some(command_error_draw);
                         }
@@ -2082,6 +2082,45 @@ mod option_name_tests {
         assert_eq!(super::quote_colour_literals("set theme #fff #123456"), "set theme '#fff' '#123456'");
         assert_eq!(super::quote_colour_literals(":cmt 한글 #123456 테스트"), ":cmt 한글 '#123456' 테스트");
         assert_eq!(super::quote_colour_literals(":cmt #태그"), ":cmt #태그");
+    }
+
+    #[test]
+    fn wb_without_filename_shows_localized_error() {
+        let mut app = crate::app::App::new();
+        app.config.lang = crate::i18n::Lang::Ko;
+        super::parse_command(&mut app, "wb");
+        assert!(app.last_error.message.contains("파일명이 필요합니다"));
+
+        app.config.lang = crate::i18n::Lang::En;
+        super::parse_command(&mut app, "wb");
+        assert!(app.last_error.message.contains("Filename required"));
+    }
+
+    #[test]
+    fn wb_with_block_sets_status_info() {
+        let temp_dir = std::env::temp_dir().join("dz6_wb_test");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let src_file = temp_dir.join("test_src.bin");
+        std::fs::write(&src_file, vec![0x11, 0x22, 0x33, 0x44]).unwrap();
+
+        let mut app = crate::app::App::new();
+        app.config.database = false;
+        app.config.lang = crate::i18n::Lang::Ko;
+        app.load_file(src_file.to_str().unwrap(), 0, false).unwrap();
+        app.hex_view.selection.start = 0;
+        app.hex_view.selection.end = 2;
+
+        let out_file = temp_dir.join("dump.bin");
+        let out_str = out_file.to_str().unwrap().replace('\\', "/");
+        super::parse_command(&mut app, &format!("wb \"{}\"", out_str));
+
+        assert!(app.status_info.is_some());
+        let info = app.status_info.as_ref().unwrap();
+        assert!(info.contains("블록") && info.contains("저장했습니다"));
+
+        let _ = std::fs::remove_file(&src_file);
+        let _ = std::fs::remove_file(&out_file);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 
