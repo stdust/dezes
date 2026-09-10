@@ -344,6 +344,8 @@ fn quote_colour_literals(line: &str) -> String {
 pub fn parse_command(app: &mut App, cmdline_raw: &str) {
     let raw_trimmed = cmdline_raw.trim().trim_start_matches(':').trim();
     if let Some(expr_raw) = raw_trimmed.strip_prefix('?') {
+        app.dialog_renderer = None;
+        app.state = UIState::Normal;
         let expr = expr_raw.trim();
         if expr.is_empty() {
             let usage = tr(app, M::CalcUsage);
@@ -2152,8 +2154,12 @@ mod option_name_tests {
     fn test_calc_command_hex_default_and_dec_suffix() {
         let mut app = crate::app::App::new();
         // '? 30' -> 0x30 hex = 48 dec
+        app.state = crate::editor::UIState::Command;
+        app.dialog_renderer = Some(super::command_draw);
         super::parse_command(&mut app, "? 30");
         assert_eq!(app.status_info.as_deref(), Some("HEX: 0x30  DEC: 48"));
+        assert_eq!(app.state, crate::editor::UIState::Normal);
+        assert!(app.dialog_renderer.is_none());
 
         // '? 30t' -> 30 dec = 0x1E hex
         super::parse_command(&mut app, "? 30t");

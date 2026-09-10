@@ -352,6 +352,14 @@ pub fn handle_global_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.state = UIState::Command;
             app.dialog_renderer = Some(commands::command_draw);
         }
+        // quick calculator command (:?)
+        KeyCode::Char('?') if !key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) => {
+            app.state = UIState::Command;
+            app.dialog_renderer = Some(commands::command_draw);
+            app.command_input.input = tui_input::Input::new("? ".to_string());
+            app.command_input.cursor_pos = 2;
+            app.command_input.selection_anchor = None;
+        }
         // calculator
         KeyCode::Char('=') => {
             app.state = UIState::DialogCalculator;
@@ -780,5 +788,21 @@ mod result_return_tests {
         assert!(app.hex_view.changed_bytes.is_empty());
         app.file_info.mmap = None;
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_question_mark_opens_command_mode_with_prefix() {
+        let mut app = App::new();
+        let key = KeyEvent {
+            code: KeyCode::Char('?'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let _ = super::handle_global_events(&mut app, key);
+        assert_eq!(app.state, UIState::Command);
+        assert!(app.dialog_renderer.is_some());
+        assert_eq!(app.command_input.input.value(), "? ");
+        assert_eq!(app.command_input.cursor_pos, 2);
     }
 }
