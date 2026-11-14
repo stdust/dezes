@@ -311,6 +311,7 @@ fn load_variables(app: &mut App) {
         Value::from_int(value.min(i64::MAX as usize) as i64)
     }
 
+    app.calculator.context = evalexpr::HashMapContext::new();
     let ctx = &mut app.calculator.context;
 
     // constants

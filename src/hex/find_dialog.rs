@@ -21,7 +21,7 @@ use tui_input::Input;
 
 use crate::app::App;
 use crate::editor::UIState;
-use crate::hex::edit_dialog::EditDialogFocus;
+use crate::hex::edit_dialog::{EditDialogFocus, bytes_to_escaped_string, unescape_to_bytes};
 use crate::hex::field_box::{self, FieldRow};
 use crate::hex::search::{HexPatternByte, found_at_message, hex_string_to_pattern, search_pattern};
 
@@ -36,6 +36,7 @@ pub struct FindDialog {
     pub input_utf16le: Input,
     pub input_hex: Input,
     pub focus: EditDialogFocus,
+    pub last_synced_focus: Option<EditDialogFocus>,
     pub error_message: Option<String>,
     pub status_message: Option<String>,
     pub match_case: bool,
@@ -49,6 +50,7 @@ impl FindDialog {
         self.input_utf16le = Input::default();
         self.input_hex = Input::default();
         self.focus = EditDialogFocus::Enc1;
+        self.last_synced_focus = None;
         self.anchor = None;
         self.error_message = None;
         self.status_message = None;
@@ -77,15 +79,16 @@ impl FindDialog {
     /// so a pattern containing one leaves the text fields empty rather than
     /// inventing characters for bytes that are not fixed.
     pub(crate) fn sync_from_focus(&mut self, enc1: &'static encoding_rs::Encoding) {
+        self.last_synced_focus = Some(self.focus);
         let bytes = match self.focus {
             EditDialogFocus::Enc1 => {
-                crate::util::encode_text(self.input_enc1.value(), enc1)
+                unescape_to_bytes(self.input_enc1.value(), enc1)
             }
             EditDialogFocus::Utf8 => {
-                crate::util::encode_text(self.input_utf8.value(), encoding_rs::UTF_8)
+                unescape_to_bytes(self.input_utf8.value(), encoding_rs::UTF_8)
             }
             EditDialogFocus::Utf16Le => {
-                crate::util::encode_text(self.input_utf16le.value(), encoding_rs::UTF_16LE)
+                unescape_to_bytes(self.input_utf16le.value(), encoding_rs::UTF_16LE)
             }
             EditDialogFocus::Hex => {
                 let raw = self.input_hex.value().to_string();
@@ -96,24 +99,24 @@ impl FindDialog {
                     self.input_utf16le = Input::default();
                     return;
                 }
-                let digits: String = raw.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+                let mut digits = String::new();
+                for token in raw.split(|c: char| c.is_whitespace() || c == ',' || c == ';') {
+                    let t = token.strip_prefix("0x").or_else(|| token.strip_prefix("0X")).unwrap_or(token);
+                    digits.extend(t.chars().filter(|c| c.is_ascii_hexdigit()));
+                }
                 let even = digits.len() - (digits.len() % 2);
                 hex::decode(&digits[..even]).unwrap_or_default()
             }
         };
 
         if self.focus != EditDialogFocus::Enc1 {
-            let (s, _) = enc1.decode_without_bom_handling(&bytes);
-            self.input_enc1 = Input::new(s.into_owned());
+            self.input_enc1 = Input::new(bytes_to_escaped_string(&bytes, enc1));
         }
         if self.focus != EditDialogFocus::Utf8 {
-            let s = String::from_utf8_lossy(&bytes);
-            let s = s.strip_prefix('\u{FEFF}').unwrap_or(&s);
-            self.input_utf8 = Input::new(s.to_string());
+            self.input_utf8 = Input::new(bytes_to_escaped_string(&bytes, encoding_rs::UTF_8));
         }
         if self.focus != EditDialogFocus::Utf16Le {
-            let (s, _) = encoding_rs::UTF_16LE.decode_without_bom_handling(&bytes);
-            self.input_utf16le = Input::new(s.into_owned());
+            self.input_utf16le = Input::new(bytes_to_escaped_string(&bytes, encoding_rs::UTF_16LE));
         }
         if self.focus != EditDialogFocus::Hex {
             self.input_hex = Input::new(hex::encode_upper(&bytes));
@@ -224,16 +227,31 @@ pub fn draw_find_dialog(app: &mut App, frame: &mut Frame) {
 
 pub fn dialog_find_events(app: &mut App, event: &Event) -> Result<bool> {
     if let Event::Key(key) = event {
+        // Ctrl+V paste handling for text fields (single-line normalized)
+        if (key.code == KeyCode::Char('v') || key.code == KeyCode::Char('V'))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && app.hex_view.find_dialog.focus != EditDialogFocus::Hex
+        {
+            if let Ok(clipboard) = app.clipboard.as_mut()
+                && let Ok(pasted_text) = clipboard.get_text()
+            {
+                let clean = pasted_text
+                    .replace("\r\n", " ")
+                    .replace(['\r', '\n', '\t'], " ");
+                for c in clean.chars() {
+                    app.hex_view.find_dialog.active_input_mut().handle(tui_input::InputRequest::InsertChar(c));
+                }
+                let enc1 = app.text_view.table;
+                app.hex_view.find_dialog.sync_from_focus(enc1);
+                return Ok(false);
+            }
+        }
+
         // Ctrl+H in Find dialog (Ctrl+B) -> Switch to Replace dialog (Ctrl+H)
         if (key.code == KeyCode::Char('h') || key.code == KeyCode::Char('H'))
             && key.modifiers.contains(KeyModifiers::CONTROL)
         {
-            let current_text = match app.hex_view.find_dialog.focus {
-                EditDialogFocus::Enc1 => app.hex_view.find_dialog.input_enc1.value().to_string(),
-                EditDialogFocus::Utf8 => app.hex_view.find_dialog.input_utf8.value().to_string(),
-                EditDialogFocus::Utf16Le => app.hex_view.find_dialog.input_utf16le.value().to_string(),
-                EditDialogFocus::Hex => app.hex_view.find_dialog.input_hex.value().to_string(),
-            };
+            let current_text = app.hex_view.find_dialog.input_hex.value().to_string();
 
             app.hex_view.find_dialog.reset();
             app.dialog_renderer = None;
@@ -310,12 +328,12 @@ pub fn dialog_find_events(app: &mut App, event: &Event) -> Result<bool> {
                 }
                 return Ok(false);
             }
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::NONE) => {
+            KeyCode::Up if key.modifiers.is_empty() => {
                 app.hex_view.find_dialog.focus = app.hex_view.find_dialog.focus.prev();
                 app.hex_view.find_dialog.anchor = None;
                 return Ok(false);
             }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::NONE) => {
+            KeyCode::Down if key.modifiers.is_empty() => {
                 app.hex_view.find_dialog.focus = app.hex_view.find_dialog.focus.next();
                 app.hex_view.find_dialog.anchor = None;
                 return Ok(false);
@@ -346,12 +364,13 @@ pub fn dialog_find_events(app: &mut App, event: &Event) -> Result<bool> {
     }
 
     // Shift+arrows, Shift+Home/End and Ctrl+C/X/V over the block, via the shared
-    // text-field handling.
-    crate::text_field::handle_key(app, find_field, event);
-    // Every keystroke re-renders the other fields, so the Hex row always shows the
-    // bytes that will actually be searched for.
-    let enc1 = app.text_view.table;
-    app.hex_view.find_dialog.sync_from_focus(enc1);
+    // text-field handling. Only re-sync other fields when the text actually changes,
+    // so cursor movement on a field displaying '.' placeholders does not overwrite
+    // the original bytes.
+    if crate::text_field::handle_key(app, find_field, event) {
+        let enc1 = app.text_view.table;
+        app.hex_view.find_dialog.sync_from_focus(enc1);
+    }
     Ok(false)
 }
 
@@ -373,10 +392,7 @@ fn text_to_exact_pattern(text: &str, encoding: &'static encoding_rs::Encoding, m
     if text.is_empty() {
         return None;
     }
-    // `crate::util::encode_text`, not `encoding.encode`: encoding_rs turns a
-    // UTF-16 target into UTF-8, so searching the UNICODE (LE) field used to look
-    // for the UTF-8 bytes of the text and never match.
-    let bytes = crate::util::encode_text(text, encoding);
+    let bytes = unescape_to_bytes(text, encoding);
     if bytes.is_empty() {
         return None;
     }
@@ -398,7 +414,7 @@ fn execute_find(app: &mut App, forward: bool) {
         crate::hex::search::SearchDirection::Backward
     };
 
-    let focus = app.hex_view.find_dialog.focus;
+    let focus = app.hex_view.find_dialog.last_synced_focus.unwrap_or(app.hex_view.find_dialog.focus);
 
     let pattern = match focus {
         EditDialogFocus::Hex => {
@@ -408,7 +424,8 @@ fn execute_find(app: &mut App, forward: bool) {
                 app.hex_view.find_dialog.status_message = Some(crate::i18n::M::FindEnterHex.tr(app.config.lang).to_string());
                 return;
             }
-            match hex_string_to_pattern(&search_str, app.hex_view.find_dialog.match_case) {
+            // Hex patterns always use exact byte matching regardless of the Match Case toggle
+            match hex_string_to_pattern(&search_str, true) {
                 Some(p) => p,
                 None => {
                     app.hex_view.find_dialog.error_message = Some(crate::i18n::M::FindInvalidHex.tr(app.config.lang).to_string());
@@ -731,5 +748,58 @@ mod sync_tests {
         let _ = dialog_find_events(&mut app, &ctrl_down);
         assert_eq!(app.hex_view.find_dialog.focus, EditDialogFocus::Enc1);
         assert_eq!(app.hex_view.find_dialog.input_enc1.value(), "");
+    }
+
+    #[test]
+    fn test_dot_display_and_literal_backslash_sync() {
+        // Typing "asdf" in UNICODE (LE) displays "a.s.d.f." in UTF-8 and ANSI
+        let mut dialog = dialog_with(EditDialogFocus::Utf16Le, "asdf");
+        dialog.sync_from_focus(encoding_rs::EUC_KR);
+        assert_eq!(dialog.input_hex.value(), "6100730064006600");
+        assert_eq!(dialog.input_utf8.value(), "a.s.d.f.");
+        assert_eq!(dialog.input_enc1.value(), "a.s.d.f.");
+
+        // Backslashes are encoded literally without escape interpretation
+        let mut dialog = dialog_with(EditDialogFocus::Utf8, r"C:\test\0");
+        dialog.sync_from_focus(encoding_rs::UTF_8);
+        assert_eq!(dialog.input_hex.value(), hex::encode_upper(b"C:\\test\\0"));
+
+        // Typing Hex 0A fills UTF-8 with '.'
+        let mut dialog = dialog_with(EditDialogFocus::Hex, "0A");
+        dialog.sync_from_focus(encoding_rs::UTF_8);
+        assert_eq!(dialog.input_utf8.value(), ".");
+    }
+
+    #[test]
+    fn test_text_to_exact_pattern_literal_backslash() {
+        let pattern = text_to_exact_pattern(r"A\nB", encoding_rs::UTF_8, false).expect("pattern");
+        let bytes: Vec<u8> = pattern
+            .iter()
+            .map(|b| match b {
+                HexPatternByte::Exact(v) | HexPatternByte::IgnoreCase(v) => *v,
+                HexPatternByte::Wildcard => panic!("no wildcards"),
+            })
+            .collect();
+        assert_eq!(bytes, vec![b'A', b'\\', b'n', b'B']);
+
+        let pattern_utf16 = text_to_exact_pattern(r"A\nB", encoding_rs::UTF_16LE, false).expect("pattern");
+        let bytes_utf16: Vec<u8> = pattern_utf16
+            .iter()
+            .map(|b| match b {
+                HexPatternByte::Exact(v) | HexPatternByte::IgnoreCase(v) => *v,
+                HexPatternByte::Wildcard => panic!("no wildcards"),
+            })
+            .collect();
+        assert_eq!(bytes_utf16, vec![b'A', 0x00, b'\\', 0x00, b'n', 0x00, b'B', 0x00]);
+    }
+
+    #[test]
+    fn test_sync_from_focus_strips_0x_prefix() {
+        let mut dialog = dialog_with(EditDialogFocus::Hex, "0x4D 0x5A");
+        dialog.sync_from_focus(encoding_rs::UTF_8);
+        assert_eq!(dialog.input_utf8.value(), "MZ");
+        dialog.focus = EditDialogFocus::Utf8;
+        dialog.sync_from_focus(encoding_rs::UTF_8);
+        assert_eq!(dialog.input_hex.value(), "4D5A");
     }
 }

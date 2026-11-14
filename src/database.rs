@@ -534,7 +534,7 @@ mod save_path_tests {
         assert!(!app.file_info.is_read_only, "scratch file must be writable");
 
         let original_len = app.file_info.buffer_len();
-        app.file_info.stage_extension(&vec![0xAAu8; 0x40]);
+        let _ = app.file_info.stage_extension(&vec![0xAAu8; 0x40]);
         assert_eq!(app.file_info.staged_extension.len(), 0x40);
 
         app.write_to_file().expect("first save");
@@ -566,7 +566,7 @@ mod save_path_tests {
         let mut app = App::new();
         app.config.database = false;
         app.load_file(&path, 0, false).expect("open");
-        app.file_info.stage_extension(&vec![0xAAu8; 0x40]);
+        let _ = app.file_info.stage_extension(&vec![0xAAu8; 0x40]);
         app.write_to_file().expect("save");
 
         assert_eq!(
@@ -636,6 +636,152 @@ mod save_path_tests {
         );
         let written = std::fs::read(&target).expect("read copy");
         assert_eq!(written[0x10], 0xAB, "the edit must be present in the new file");
+    }
+
+    #[test]
+    fn save_as_from_read_only_clears_read_only_flag() {
+        let scratch = Scratch::new("save_as_ro");
+        let path = scratch.file("sample.bin", &[0u8; 0x100]);
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(&path, 0, true).expect("open read-only");
+        assert!(app.file_info.is_read_only);
+
+        app.hex_view.changed_bytes.insert(0x20, 0xCD);
+
+        let target = scratch.path("writable_copy.bin");
+        app.write_to_file_as(&target).expect("save as");
+
+        assert_eq!(app.file_info.name, "writable_copy.bin");
+        assert!(!app.file_info.is_read_only, "new file should be writable");
+        assert!(app.hex_view.changed_bytes.is_empty());
+        let written = std::fs::read(&target).expect("read copy");
+        assert_eq!(written[0x20], 0xCD);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn rename_and_replace_saves_running_executable() {
+        let scratch = Scratch::new("running_save");
+        let ping_src = std::path::Path::new("c:\\Windows\\System32\\ping.exe");
+        if !ping_src.exists() {
+            return;
+        }
+        let target_exe = scratch.path("running_ping.exe");
+        std::fs::copy(ping_src, &target_exe).expect("copy ping");
+
+        // Spawn ping to hold SEC_IMAGE execution lock
+        let mut child = std::process::Command::new(&target_exe)
+            .args(["127.0.0.1", "-n", "10"])
+            .spawn()
+            .expect("spawn ping");
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let mut app = App::new();
+        app.config.database = false;
+        let path_str = target_exe.to_string_lossy().to_string();
+        app.load_file(&path_str, 0, false).expect("open running binary");
+        assert!(app.file_info.is_running_locked, "running binary must be flagged as is_running_locked");
+        assert!(!app.file_info.is_read_only, "running binary is not filesystem read-only");
+
+        // Modify byte in memory
+        app.hex_view.changed_bytes.insert(0x40, 0xEE);
+
+        // write_to_file should succeed via Rename & Replace!
+        let res = app.write_to_file();
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(res.is_ok(), "saving running executable via Rename & Replace must succeed: {:?}", res);
+        assert!(!app.file_info.is_running_locked, "file should not be running locked after replacement");
+        assert!(!app.file_info.is_read_only, "file should now be writable after replacement");
+        assert!(app.hex_view.changed_bytes.is_empty(), "pending edits flushed");
+
+        let written = std::fs::read(&target_exe).expect("read target");
+        assert_eq!(written[0x40], 0xEE, "patched byte present in newly created target file");
+
+        let old_backup = scratch.path("Backup-running_ping.exe");
+        assert!(old_backup.exists(), "original binary preserved as Backup-running_ping.exe");
+    }
+
+    #[test]
+    fn rename_and_replace_saves_readonly_file() {
+        let scratch = Scratch::new("readonly_save");
+        let target_file = scratch.path("sample_ro.bin");
+
+        // Write initial contents
+        let initial_bytes = vec![0x11u8; 64];
+        std::fs::write(&target_file, &initial_bytes).expect("write sample");
+
+        // Set filesystem read-only permission
+        let mut perms = std::fs::metadata(&target_file).expect("meta").permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&target_file, perms).expect("set readonly");
+
+        let mut app = App::new();
+        app.config.database = false;
+        let path_str = target_file.to_string_lossy().to_string();
+        app.load_file(&path_str, 0, false).expect("open readonly file");
+        assert!(app.file_info.is_read_only, "file must be flagged as is_read_only");
+
+        // Modify byte in memory
+        app.hex_view.changed_bytes.insert(0x10, 0xAA);
+
+        // write_to_file should succeed via Rename & Replace!
+        let res = app.write_to_file();
+        assert!(res.is_ok(), "saving readonly file via Rename & Replace must succeed: {:?}", res);
+        assert!(!app.file_info.is_read_only, "file should now be writable after replacement");
+        assert!(app.hex_view.changed_bytes.is_empty(), "pending edits flushed");
+
+        let written = std::fs::read(&target_file).expect("read target");
+        assert_eq!(written[0x10], 0xAA, "patched byte present in newly created target file");
+
+        let old_backup = scratch.path("Backup-sample_ro.bin");
+        assert!(old_backup.exists(), "original binary preserved as Backup-sample_ro.bin");
+        let backup_bytes = std::fs::read(&old_backup).expect("read backup");
+        assert_eq!(backup_bytes[0x10], 0x11, "backup retains original byte");
+
+        // Cleanup: remove read-only attribute so scratch can be deleted cleanly
+        if let Ok(meta) = std::fs::metadata(&old_backup) {
+            let mut p = meta.permissions();
+            p.set_readonly(false);
+            let _ = std::fs::set_permissions(&old_backup, p);
+        }
+    }
+
+    #[test]
+    fn cli_readonly_blocks_write_to_file() {
+        let scratch = Scratch::new("cli_readonly_save");
+        let target_file = scratch.path("sample_cli_ro.bin");
+
+        let initial_bytes = vec![0x22u8; 64];
+        std::fs::write(&target_file, &initial_bytes).expect("write sample");
+
+        let mut app = App::new();
+        app.config.database = false;
+        let path_str = target_file.to_string_lossy().to_string();
+        // Load with read_only = true (equivalent to CLI --readonly / -r)
+        app.load_file(&path_str, 0, true).expect("open file with cli_read_only");
+        assert!(app.file_info.cli_read_only, "file must be flagged as cli_read_only");
+
+        // Modify byte in memory
+        app.hex_view.changed_bytes.insert(0x10, 0xBB);
+
+        // write_to_file must be refused
+        let res = app.write_to_file();
+        assert!(res.is_err(), "saving with cli_read_only must fail");
+        assert_eq!(res.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+
+        // Verify target file is untouched
+        let untouched = std::fs::read(&target_file).expect("read target");
+        assert_eq!(untouched[0x10], 0x22, "file on disk remains unpatched");
+
+        // Verify no backup file was created
+        let backup = scratch.path("Backup-sample_cli_ro.bin");
+        assert!(!backup.exists(), "no backup file created when save refused");
     }
 }
 

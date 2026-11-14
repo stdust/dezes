@@ -317,7 +317,7 @@ pub fn draw_file_dialog(app: &mut App, frame: &mut Frame) {
         } else {
             item.name.clone()
         };
-        let formatted_name = pad_display_width(&raw_name, name_col_width);
+        let formatted_name = crate::util::pad_display_width(&raw_name, name_col_width);
 
         let type_or_size = if item.is_dir {
             format!("{:>12}", crate::i18n::M::LblSubDir.tr(app.config.lang))
@@ -363,36 +363,7 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn pad_display_width(text: &str, width: usize) -> String {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    let w = text.width();
-    if w <= width {
-        let mut s = String::with_capacity(text.len() + (width - w));
-        s.push_str(text);
-        for _ in 0..(width - w) {
-            s.push(' ');
-        }
-        s
-    } else {
-        let mut cur_w = 0;
-        let mut s = String::new();
-        for ch in text.chars() {
-            let cw = ch.width().unwrap_or(0);
-            if cur_w + cw > width.saturating_sub(1) {
-                s.push('~');
-                cur_w += 1;
-                break;
-            }
-            s.push(ch);
-            cur_w += cw;
-        }
-        while cur_w < width {
-            s.push(' ');
-            cur_w += 1;
-        }
-        s
-    }
-}
+
 
 pub fn draw_drive_dialog(app: &mut App, frame: &mut Frame) {
     let theme = &app.config.theme;

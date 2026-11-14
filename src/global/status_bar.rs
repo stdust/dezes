@@ -2,10 +2,10 @@
 //!
 //! Layout and contents are the original ones: the file name (plus the
 //! `Read Only` marker and search hit counter) on the left, and a `│`-separated block of
-//! IME / encodings / mode / file type / selection / address / percentage on the
+//! IME / encodings / mode / file type / selection / address on the
 //! right.
 //!
-//! Three defects in that original implementation are fixed here:
+//! Two defects in that original implementation are fixed here:
 //!
 //! * The two halves were rendered into the *same* full-width rect, one
 //!   left-aligned and one right-aligned. On a narrow terminal they overwrote
@@ -13,8 +13,6 @@
 //! * The address was built with a space-padded width and then `.trim()`ed, so
 //!   the whole right-hand block slid sideways as the cursor moved between
 //!   address lengths. The width is now fixed.
-//! * The percentage was rounded, which reported 100% before the end of the file
-//!   was reached. It is floored.
 
 use ratatui::{
     Frame,
@@ -85,6 +83,7 @@ pub fn status_bar_draw(app: &mut App, frame: &mut Frame, area: Rect) {
         UIState::DialogComment => Cow::Borrowed("COMMENT"),
         UIState::DialogEncoding => Cow::Borrowed("ENCODING1"),
         UIState::DialogEncoding2 => Cow::Borrowed("ENCODING2"),
+        UIState::DialogDisasmEncoding => Cow::Borrowed("COMMENT ENC"),
         UIState::DialogGoto => Cow::Borrowed("GOTO"),
         UIState::DialogHeaderEdit => Cow::Borrowed("EDIT/HEADER"),
         UIState::DialogHelp => Cow::Borrowed("HELP"),
@@ -119,22 +118,25 @@ pub fn status_bar_draw(app: &mut App, frame: &mut Frame, area: Rect) {
 
     let filename = &app.file_info.name;
 
-    // Floored, not rounded: rounding showed 100% while there was still up to
-    // half a percent of the file left below the cursor.
-    let percent = (app.hex_view.offset * 100)
-        .checked_div(app.file_info.size)
-        .unwrap_or(0)
-        .min(100);
-
     // Bracketed so it reads as a badge on the filename rather than as part of it:
     // `sample.bin [Read Only]`, not `sample.bin Read Only`.
-    let read_only = if app.file_info.is_read_only {
-        format!(" [{}]", crate::i18n::M::ReadOnly.tr(app.config.lang))
+    let read_only = if app.file_info.is_running_locked {
+        let dirty = if !app.hex_view.changed_bytes.is_empty() { "*" } else { "" };
+        format!(" [{}{}]", crate::i18n::M::Running.tr(app.config.lang), dirty)
+    } else if app.file_info.is_read_only {
+        let dirty = if !app.hex_view.changed_bytes.is_empty() { "*" } else { "" };
+        format!(" [{}{}]", crate::i18n::M::ReadOnly.tr(app.config.lang), dirty)
     } else {
         String::new()
     };
 
-    let left_text = format!("{}{}{}", filename, read_only, match_count_str);
+    let section_badge = if let Some(sec_name) = app.section_at_offset(app.hex_view.offset) {
+        format!(" [{}]", sec_name)
+    } else {
+        String::new()
+    };
+
+    let left_text = format!("{}{}{}{}", filename, section_badge, read_only, match_count_str);
 
     // Shown for any live selection, not just while in 'v' selection mode: a
     // Shift+arrow selection leaves the state as Normal, so keying off the
@@ -207,7 +209,6 @@ pub fn status_bar_draw(app: &mut App, frame: &mut Frame, area: Rect) {
     );
     let _ = write!(right_text, " {} │", selected_str);
     let _ = write!(right_text, " {} │", addr_fmt);
-    let _ = write!(right_text, " {:3}% │", percent);
 
     let style = app.config.theme.topbar;
 
@@ -268,7 +269,7 @@ mod status_bar_tests {
 
     /// The two halves must not overwrite each other at any width.
     ///
-    /// The right-hand block ends with the percentage, so finding that intact
+    /// The right-hand block ends with the address, so finding that intact
     /// shows the block was laid out beside the file name rather than on top of
     /// it. With the old code the name ran straight through this area.
     #[test]
@@ -284,7 +285,7 @@ mod status_bar_tests {
             );
             if width >= 70 {
                 assert!(
-                    line.trim_end().ends_with("% │"),
+                    line.trim_end().ends_with(" │"),
                     "right block was overwritten at width {}: {}",
                     width,
                     line
@@ -315,24 +316,16 @@ mod status_bar_tests {
         }
     }
 
-    /// 100% must mean the end of the file, not "close enough to round up".
+    /// The right-hand block ends with the formatted address.
     #[test]
-    fn percent_is_floored() {
+    fn status_bar_ends_with_address() {
         let mut app = loaded_app();
-        app.file_info.size = 1000;
-
-        app.hex_view.offset = 999;
+        app.hex_view.offset = 0x1a2f;
+        let line = render(&mut app, 140);
         assert!(
-            render(&mut app, 140).contains(" 99% │"),
-            "999/1000 must read 99%: {}",
-            render(&mut app, 140)
-        );
-
-        app.hex_view.offset = 1000;
-        assert!(
-            render(&mut app, 140).contains("100% │"),
-            "1000/1000 must read 100%: {}",
-            render(&mut app, 140)
+            line.trim_end().ends_with("1A2F │"),
+            "status bar must end with the address: {}",
+            line
         );
     }
 }
@@ -529,5 +522,58 @@ mod slot_width_tests {
         let rendered = render(&mut app, 120);
         assert!(rendered.contains("[   1]"), "expected [   1], got: {}", rendered);
     }
-}
 
+    #[test]
+    fn test_section_badge_displayed_in_status_bar() {
+        let mut app = loaded_app();
+        // At offset 0, should show [Header]
+        app.hex_view.offset = 0;
+        let rendered = render(&mut app, 140);
+        assert!(
+            rendered.contains("[Header]"),
+            "expected [Header] badge at offset 0: {}",
+            rendered
+        );
+
+        // At first section offset, should show section name
+        if let Some(pe) = &app.header_view.pe {
+            if let Some(sec) = pe.sections.first() {
+                if sec.size_of_raw_data > 0 {
+                    app.hex_view.offset = sec.pointer_to_raw_data as usize;
+                    let sec_name = sec.name().unwrap_or("?");
+                    let expected_badge = format!("[{}]", sec_name);
+                    let rendered = render(&mut app, 140);
+                    assert!(
+                        rendered.contains(&expected_badge),
+                        "expected {} badge at offset 0x{:X}: {}",
+                        expected_badge,
+                        app.hex_view.offset,
+                        rendered
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_running_badge_displayed_in_status_bar() {
+        let mut app = loaded_app();
+        app.file_info.is_running_locked = true;
+        app.file_info.is_read_only = false;
+        let rendered = render(&mut app, 140);
+        assert!(
+            rendered.contains("[Running]"),
+            "expected [Running] badge: {}",
+            rendered
+        );
+
+        // With dirty modifications
+        app.hex_view.changed_bytes.insert(0, 0x90);
+        let rendered_dirty = render(&mut app, 140);
+        assert!(
+            rendered_dirty.contains("[Running*]"),
+            "expected [Running*] badge: {}",
+            rendered_dirty
+        );
+    }
+}

@@ -6,7 +6,7 @@ All notable changes to the **Dezes** project are documented in this file.
 
 ### ✨ New Features & Enhancements
 - **Dialog Input History (`Ctrl+Up` / `Ctrl+Down`)**: Added input history navigation to Edit (`Ctrl+E`), Find (`Ctrl+B`), and Goto (`Ctrl+G`) dialogs, allowing rapid recall of previous entries without conflict with tab switching.
-- **Escape Sequence Hex Input (`Ctrl+E`)**: Supported literal escape sequences (such as `\n`, `\r`, `\t`, `\\`) in text string edit mode to seamlessly insert control bytes.
+- **Literal Text Input (`Ctrl+E`)**: Preserved literal backslashes (`\`) in text string edit mode without escape sequence conversion, matching standard hex editor behavior.
 - **PE Section Tools Localization & Expanded UI**: Added full multilingual translation (English, Korean, Simplified Chinese) and expanded the PE Section Tool dialog width to 90% for clear inspection of section characteristics.
 - **Wider Strings Viewer**: Expanded the Strings Dialog viewport to 75% screen width, eliminating clipping on long string references.
 - **Disassembly Theme Refinements**: Updated return instruction highlighting and theme rendering.

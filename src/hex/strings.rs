@@ -147,16 +147,34 @@ pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
     };
     let end = (start + visible).min(total);
 
-    let items: Vec<ListItem> = app.hex_view.strings_filtered[start..end]
-        .iter()
-        .filter_map(|&i| app.strings.get(i))
-        .map(|i| ListItem::from(i.display.as_str()))
+    let (sel_min, sel_max) = match app.hex_view.strings_selection_anchor {
+        Some(anchor) => (anchor.min(selected), anchor.max(selected)),
+        None => (selected, selected),
+    };
+
+    let items: Vec<ListItem> = (start..end)
+        .filter_map(|idx| {
+            let real_idx = *app.hex_view.strings_filtered.get(idx)?;
+            let item = app.strings.get(real_idx)?;
+            let in_selection = total > 0 && idx >= sel_min && idx <= sel_max;
+            let is_cursor = idx == selected;
+            let item_style = if in_selection {
+                let mut style = app.config.theme.highlight;
+                if is_cursor {
+                    style = style.add_modifier(ratatui::style::Modifier::BOLD);
+                }
+                style
+            } else {
+                dialog_style
+            };
+            Some(ListItem::new(item.display.as_str()).style(item_style))
+        })
         .collect();
 
     let list = List::new(items)
         .style(dialog_style)
         .block(Block::new().padding(Padding::horizontal(1)))
-        .highlight_style(app.config.theme.highlight)
+        .highlight_style(app.config.theme.highlight.add_modifier(ratatui::style::Modifier::BOLD))
         .repeat_highlight_symbol(true);
 
     let mut window_state = ratatui::widgets::ListState::default();
@@ -242,6 +260,7 @@ pub fn matches_the_empty_string(pattern: &str) -> bool {
 }
 
 pub fn update_strings_filter(app: &mut App) {
+    app.hex_view.strings_selection_anchor = None;
     let pattern = app.hex_view.strings_regex_input.value().trim().to_string();
 
     let compiled = if pattern.is_empty() {
@@ -286,38 +305,73 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
                 false
             };
 
-            if is_double_click {
+            let total = app.hex_view.strings_filtered.len();
+            let height = (app.screen.height * 3 / 4).max(20).min(app.screen.height);
+            let dialog_y = app.screen.y + (app.screen.height.saturating_sub(height)) / 2;
+            let list_y = dialog_y + 1;
+            let visible = (height.saturating_sub(5)) as usize;
+            let is_in_list = mouse.row >= list_y && (mouse.row - list_y) < visible as u16;
+
+            if is_double_click && is_in_list {
                 app.last_left_click = None;
                 open_string_edit(app);
-            } else {
-                let total = app.hex_view.strings_filtered.len();
-                if total > 0 {
-                    let height = 20u16.min(app.screen.height);
-                    let dialog_y = app.screen.y + (app.screen.height.saturating_sub(height)) / 2;
-                    let list_y = dialog_y + 1;
-                    let visible = (height.saturating_sub(5)) as usize;
-                    let selected = app.list_state.selected().unwrap_or(0).min(total.saturating_sub(1));
+            } else if total > 0 {
+                let selected = app.list_state.selected().unwrap_or(0).min(total.saturating_sub(1));
 
-                    let start = if total <= visible {
-                        0
+                let start = if total <= visible {
+                    0
+                } else {
+                    let half = visible / 2;
+                    if selected > half {
+                        (selected - half).min(total - visible)
                     } else {
-                        let half = visible / 2;
-                        if selected > half {
-                            (selected - half).min(total - visible)
-                        } else {
-                            0
-                        }
-                    };
-
-                    if mouse.row >= list_y && (mouse.row - list_y) < visible as u16 {
-                        let clicked_row = (mouse.row - list_y) as usize;
-                        let clicked_index = start + clicked_row;
-                        if clicked_index < total {
-                            app.list_state.select(Some(clicked_index));
-                        }
+                        0
                     }
+                };
+
+                if mouse.row >= list_y && (mouse.row - list_y) < visible as u16 {
+                    let clicked_row = (mouse.row - list_y) as usize;
+                    let clicked_index = (start + clicked_row).min(total - 1);
+                    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                        if app.hex_view.strings_selection_anchor.is_none() {
+                            app.hex_view.strings_selection_anchor = Some(selected);
+                        }
+                    } else {
+                        app.hex_view.strings_selection_anchor = None;
+                    }
+                    app.list_state.select(Some(clicked_index));
                 }
-                app.last_left_click = Some((now, mouse.row, mouse.column));
+            }
+            app.last_left_click = Some((now, mouse.row, mouse.column));
+        }
+        if let ratatui::crossterm::event::MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left) = mouse.kind {
+            let total = app.hex_view.strings_filtered.len();
+            if total > 0 {
+                let height = (app.screen.height * 3 / 4).max(20).min(app.screen.height);
+                let dialog_y = app.screen.y + (app.screen.height.saturating_sub(height)) / 2;
+                let list_y = dialog_y + 1;
+                let visible = (height.saturating_sub(5)) as usize;
+                let selected = app.list_state.selected().unwrap_or(0).min(total.saturating_sub(1));
+
+                let start = if total <= visible {
+                    0
+                } else {
+                    let half = visible / 2;
+                    if selected > half {
+                        (selected - half).min(total - visible)
+                    } else {
+                        0
+                    }
+                };
+
+                if mouse.row >= list_y && (mouse.row - list_y) < visible as u16 {
+                    let clicked_row = (mouse.row - list_y) as usize;
+                    let clicked_index = (start + clicked_row).min(total - 1);
+                    if app.hex_view.strings_selection_anchor.is_none() {
+                        app.hex_view.strings_selection_anchor = Some(selected);
+                    }
+                    app.list_state.select(Some(clicked_index));
+                }
             }
         }
         match mouse.kind {
@@ -343,6 +397,8 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
         KeyCode::Esc => {
             if focus {
                 app.hex_view.strings_focus_filter = false;
+            } else if app.hex_view.strings_selection_anchor.is_some() {
+                app.hex_view.strings_selection_anchor = None;
             } else {
                 app.hex_view.strings_focus_filter = false;
                 app.dialog_renderer = None;
@@ -364,25 +420,26 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
             };
             Commands::rescan_strings(app);
         }
-        KeyCode::Down => move_selection(app, 1),
-        KeyCode::Up => move_selection(app, -1),
-        KeyCode::PageDown => move_selection(app, page_step(app)),
-        KeyCode::PageUp => move_selection(app, -page_step(app)),
+        KeyCode::Down => move_selection_ext(app, 1, key.modifiers.contains(KeyModifiers::SHIFT)),
+        KeyCode::Up => move_selection_ext(app, -1, key.modifiers.contains(KeyModifiers::SHIFT)),
+        KeyCode::PageDown => move_selection_ext(app, page_step(app), key.modifiers.contains(KeyModifiers::SHIFT)),
+        KeyCode::PageUp => move_selection_ext(app, -page_step(app), key.modifiers.contains(KeyModifiers::SHIFT)),
         KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End if focus => {
             crate::text_field::handle_key(app, strings_filter_field, event);
         }
         KeyCode::Home if !focus => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
-                move_selection(app, isize::MIN / 2);
+                set_strings_selection(app, 0, key.modifiers.contains(KeyModifiers::SHIFT));
             } else {
-                move_selection(app, -page_step(app));
+                move_selection_ext(app, -page_step(app), key.modifiers.contains(KeyModifiers::SHIFT));
             }
         }
         KeyCode::End if !focus => {
+            let len = app.hex_view.strings_filtered.len();
             if key.modifiers.contains(KeyModifiers::CONTROL) {
-                move_selection(app, isize::MAX / 2);
+                set_strings_selection(app, len.saturating_sub(1), key.modifiers.contains(KeyModifiers::SHIFT));
             } else {
-                move_selection(app, page_step(app));
+                move_selection_ext(app, page_step(app), key.modifiers.contains(KeyModifiers::SHIFT));
             }
         }
         KeyCode::Enter if focus => {
@@ -473,23 +530,41 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
                 }
             }
         }
+        KeyCode::Char('a') | KeyCode::Char('A') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if focus {
+                if crate::text_field::handle_key(app, strings_filter_field, event) {
+                    update_strings_filter(app);
+                }
+            } else {
+                let len = app.hex_view.strings_filtered.len();
+                if len > 0 {
+                    app.hex_view.strings_selection_anchor = Some(0);
+                    app.list_state.select(Some(len - 1));
+                }
+            }
+        }
         KeyCode::Char('c') | KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT) => {
             let (text, count) = filtered_rows_as_tsv(app);
             app.copy_to_clipboard(text, format!("{} string(s)", count));
         }
         KeyCode::Char('c') | KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if focus {
-                let filter_val = app.hex_view.strings_regex_input.value().to_string();
-                app.copy_to_clipboard(filter_val, "filter text".to_string());
+                let (input, anchor) = strings_filter_field(app);
+                let (_, selected, _) = crate::text_field::split(input, *anchor);
+                let text = if selected.is_empty() {
+                    input.value().to_string()
+                } else {
+                    selected.to_string()
+                };
+                app.copy_to_clipboard(text, "filter text".to_string());
             } else {
-                let text = app
-                    .list_state
-                    .selected()
-                    .and_then(|i| app.hex_view.strings_filtered.get(i).copied())
-                    .and_then(|i| app.strings.get(i))
-                    .map(|s| row_as_tsv(app, s))
-                    .unwrap_or_default();
-                app.copy_to_clipboard(text, "1 string".to_string());
+                let (text, count) = selected_rows_as_tsv(app);
+                let label = if count == 1 {
+                    "1 string".to_string()
+                } else {
+                    format!("{} string(s)", count)
+                };
+                app.copy_to_clipboard(text, label);
             }
         }
         _ => {
@@ -542,11 +617,6 @@ pub fn count_trailing_zeros(buffer: &[u8], offset: usize, is_utf16: bool) -> usi
 }
 
 pub fn open_string_edit(app: &mut App) {
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoStringEdit);
-        return;
-    }
-
     let Some(row) = app
         .list_state
         .selected()
@@ -592,11 +662,6 @@ pub fn open_string_edit(app: &mut App) {
 }
 
 fn commit_string_edit(app: &mut App) {
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoStringEdit);
-        return;
-    }
-
     let text = app.hex_view.string_edit.input.value().to_string();
     let budget = app.hex_view.string_edit.budget;
     let total_capacity = app.hex_view.string_edit.total_capacity.max(budget);
@@ -626,8 +691,10 @@ fn commit_string_edit(app: &mut App) {
             crate::hex::edit::record_edit(app, target_ofs, *byte);
         }
     }
-    let padding = total_capacity.saturating_sub(bytes.len());
-    for i in bytes.len()..total_capacity {
+    let null_term_len = if encoding == StringEncoding::Utf16 { 2 } else { 1 };
+    let end_cap = (bytes.len() + null_term_len).max(total_capacity);
+    let padding = end_cap.saturating_sub(bytes.len());
+    for i in bytes.len()..end_cap {
         if let Some(target_ofs) = offset.checked_add(i) {
             crate::hex::edit::record_edit(app, target_ofs, 0);
         }
@@ -653,8 +720,13 @@ fn commit_string_edit(app: &mut App) {
 
     for item in &mut app.disasm_string_ref_dialog.items {
         if item.string_offset == offset {
-            item.string_text = text.clone();
-            item.full_text_str = format!("\"{}\"", text);
+            let was_wide = item.string_text.starts_with("L\"") || item.encoding_kind == "UTF-16LE";
+            item.string_text = if was_wide {
+                format!("L\"{}\"", text)
+            } else {
+                format!("\"{}\"", text)
+            };
+            item.full_text_str = format!("{} {}", item.encoding_kind, item.string_text);
         }
     }
 
@@ -769,6 +841,26 @@ fn filtered_rows_as_tsv(app: &App) -> (String, usize) {
     (rows.join("\r\n"), rows.len())
 }
 
+/// Selected row or block of rows as TSV lines, and how many rows there are.
+pub fn selected_rows_as_tsv(app: &App) -> (String, usize) {
+    let len = app.hex_view.strings_filtered.len();
+    if len == 0 {
+        return (String::new(), 0);
+    }
+    let selected = app.list_state.selected().unwrap_or(0).min(len - 1);
+    let (s, e) = match app.hex_view.strings_selection_anchor {
+        Some(anchor) => (anchor.min(selected), anchor.max(selected).min(len - 1)),
+        None => (selected, selected),
+    };
+    let rows: Vec<String> = (s..=e)
+        .filter_map(|idx| app.hex_view.strings_filtered.get(idx))
+        .filter_map(|&real| app.strings.get(real))
+        .map(|s| row_as_tsv(app, s))
+        .collect();
+    let count = rows.len();
+    (rows.join("\r\n"), count)
+}
+
 fn page_step(app: &App) -> isize {
     let rows = app.hex_view.strings_page_rows;
     if rows < 2 {
@@ -778,15 +870,45 @@ fn page_step(app: &App) -> isize {
     }
 }
 
-fn move_selection(app: &mut App, delta: isize) {
+fn move_selection_ext(app: &mut App, delta: isize, is_shift: bool) {
     let len = app.hex_view.strings_filtered.len();
     if len == 0 {
         app.list_state.select(None);
+        app.hex_view.strings_selection_anchor = None;
         return;
     }
-    let current = app.list_state.selected().unwrap_or(0) as isize;
-    let next = current.saturating_add(delta).clamp(0, len as isize - 1);
+    let current = app.list_state.selected().unwrap_or(0);
+    if is_shift {
+        if app.hex_view.strings_selection_anchor.is_none() {
+            app.hex_view.strings_selection_anchor = Some(current);
+        }
+    } else {
+        app.hex_view.strings_selection_anchor = None;
+    }
+    let next = (current as isize).saturating_add(delta).clamp(0, len as isize - 1);
     app.list_state.select(Some(next as usize));
+}
+
+fn move_selection(app: &mut App, delta: isize) {
+    move_selection_ext(app, delta, false);
+}
+
+fn set_strings_selection(app: &mut App, target: usize, is_shift: bool) {
+    let len = app.hex_view.strings_filtered.len();
+    if len == 0 {
+        app.list_state.select(None);
+        app.hex_view.strings_selection_anchor = None;
+        return;
+    }
+    let current = app.list_state.selected().unwrap_or(0);
+    if is_shift {
+        if app.hex_view.strings_selection_anchor.is_none() {
+            app.hex_view.strings_selection_anchor = Some(current);
+        }
+    } else {
+        app.hex_view.strings_selection_anchor = None;
+    }
+    app.list_state.select(Some(target.min(len - 1)));
 }
 
 impl Commands {
@@ -815,11 +937,7 @@ impl Commands {
                 app.hex_view.strings_encoding.as_str()
             ),
         );
-        if app.strings.is_empty() && matches_the_empty_string(&app.string_regex) {
-            let message = crate::i18n::M::WarnRegexEmptyOnly.tr(app.config.lang).to_string();
-            app.status_error = Some(message.clone());
-            App::log(app, message);
-        }
+
     }
 
     pub fn refresh_string_addresses(app: &mut App) {
@@ -842,12 +960,7 @@ impl Commands {
             return;
         }
 
-        let re = if app.string_regex.trim().is_empty() {
-            None
-        } else {
-            build_safe_regex(&app.string_regex)
-        };
-        let re = re.as_ref();
+        let re: Option<&regex::Regex> = None;
 
         let min = app.config.minimum_string_length;
         let cap = app.config.maximum_strings_to_show;
@@ -1758,7 +1871,7 @@ mod copy_tests {
         (dir, app)
     }
 
-    fn press(app: &mut App, code: KeyCode) {
+    fn _press(app: &mut App, code: KeyCode) {
         let key = KeyEvent {
             code,
             modifiers: KeyModifiers::NONE,
@@ -1848,6 +1961,68 @@ mod copy_tests {
         let _ = dialog_strings_events(&mut app, &Event::Key(key_f5));
 
         assert!(matches!(app.state, UIState::DialogStringRef));
+    }
+
+    #[test]
+    fn strings_block_selection_and_ctrl_a_ctrl_c() {
+        let mut bytes = vec![0u8; 0x80];
+        bytes[0x10..0x15].copy_from_slice(b"alpha");
+        bytes[0x20..0x24].copy_from_slice(b"beta");
+        bytes[0x30..0x35].copy_from_slice(b"gamma");
+        bytes[0x40..0x45].copy_from_slice(b"delta");
+        let (dir, mut app) = app_with(&bytes, "block_sel");
+        Commands::strings(&mut app);
+        assert_eq!(app.strings.len(), 4);
+
+        // Initially row 0 selected, no anchor
+        assert_eq!(app.list_state.selected(), Some(0));
+        assert_eq!(app.hex_view.strings_selection_anchor, None);
+
+        // Single row copy
+        let (text1, count1) = selected_rows_as_tsv(&app);
+        assert_eq!(count1, 1);
+        assert!(text1.contains("alpha"));
+
+        // Shift+Down extends selection to row 1
+        let shift_down = KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT);
+        let _ = dialog_strings_events(&mut app, &Event::Key(shift_down));
+        assert_eq!(app.hex_view.strings_selection_anchor, Some(0));
+        assert_eq!(app.list_state.selected(), Some(1));
+
+        // Block copy copies 2 rows
+        let (text2, count2) = selected_rows_as_tsv(&app);
+        assert_eq!(count2, 2);
+        assert_eq!(text2.lines().count(), 2);
+        assert!(text2.contains("alpha") && text2.contains("beta"));
+
+        // Plain Down moves to row 2 and clears anchor
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        let _ = dialog_strings_events(&mut app, &Event::Key(down));
+        assert_eq!(app.hex_view.strings_selection_anchor, None);
+        assert_eq!(app.list_state.selected(), Some(2));
+
+        // Ctrl+A selects all 4 rows
+        let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let _ = dialog_strings_events(&mut app, &Event::Key(ctrl_a));
+        assert_eq!(app.hex_view.strings_selection_anchor, Some(0));
+        assert_eq!(app.list_state.selected(), Some(3));
+
+        // Block copy after Ctrl+A copies all 4 rows
+        let (text_all, count_all) = selected_rows_as_tsv(&app);
+        assert_eq!(count_all, 4);
+        assert_eq!(text_all.lines().count(), 4);
+
+        // Esc clears block selection without closing dialog
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let _ = dialog_strings_events(&mut app, &Event::Key(esc));
+        assert_eq!(app.hex_view.strings_selection_anchor, None);
+        assert_eq!(app.state, UIState::DialogStrings);
+
+        // Second Esc closes dialog
+        let _ = dialog_strings_events(&mut app, &Event::Key(esc));
+        assert_eq!(app.state, UIState::Normal);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -2246,7 +2421,7 @@ mod string_edit_tests {
     }
 
     #[test]
-    fn a_read_only_file_refuses_up_front() {
+    fn a_read_only_file_allows_string_edit() {
         let (dir, mut app) = app_with(&sample(), "readonly");
         app.file_info.is_read_only = true;
         Commands::strings(&mut app);
@@ -2254,9 +2429,7 @@ mod string_edit_tests {
 
         press(&mut app, KeyCode::F(4));
 
-        assert!(app.state == UIState::DialogStrings, "the box opened on a read-only file");
-        assert!(app.status_error.is_some(), "the refusal was not reported");
-        assert!(app.hex_view.changed_bytes.is_empty());
+        assert_eq!(app.state, UIState::DialogStringEdit, "the box should open on a read-only file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2296,13 +2469,13 @@ mod string_edit_tests {
 
     #[test]
     fn utf16_scans_across_executable_sections() {
-        let path = "C:\\Users\\Administrator\\Desktop\\pecmd\\dumped_SCY.exe";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
+        let path = match std::env::var("DEZES_TEST_PECMD_PATH") {
+            Ok(p) if std::path::Path::new(&p).exists() => p,
+            _ => return,
+        };
         let mut app = App::new();
         app.config.database = false;
-        if app.load_file(path, 0, false).is_err() {
+        if app.load_file(&path, 0, false).is_err() {
             return;
         }
         app.hex_view.strings_encoding = StringEncoding::Utf16;

@@ -37,6 +37,7 @@ pub struct Config {
     pub bitness_override: Option<u32>,
     pub syntax_highlight: bool,
     pub backup: bool,
+    pub scrollbar: bool,
     /// Show the IME conversion-mode indicator (`EN` / `Han`) in the status bar.
     ///
     /// Off by default, and deliberately absent from the `:set` table, the settings

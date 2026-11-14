@@ -5,8 +5,87 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Cell, Clear, Paragraph, Row, Table, TableState},
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::{app::App, editor::UIState};
+
+/// Validates whether a decoded character can be safely displayed in the fixed-pitch
+/// terminal hex grid without desynchronizing the terminal hardware cursor or breaking column alignment.
+/// Returns (sanitized_char, display_width) where display_width is 1 or 2.
+/// Any character outside the safe monospace whitelist (control codes, combining marks,
+/// unassigned code points, complex script shaping marks, zero-width chars, PUA, or format characters)
+/// is safely converted to `non_graphic` with display_width = 1.
+pub(crate) fn filter_safe_grid_char(c: char, non_graphic: char) -> (char, usize) {
+    if c.is_ascii() {
+        if c.is_ascii_graphic() {
+            (c, 1)
+        } else {
+            (non_graphic, 1)
+        }
+    } else {
+        if c.is_control() || c.is_whitespace() {
+            return (non_graphic, 1);
+        }
+
+        let cp = c as u32;
+
+        // Strict Safe Monospace Character Whitelist:
+        // Only code point ranges that map cleanly to standard fixed-pitch cells without
+        // complex text shaping (e.g. Arabic subtending marks), bidirectional cursor shifts,
+        // or unassigned fallback box displacements are permitted.
+        let is_whitelisted = match cp {
+            // Latin-1 Supplement (printable, non-control, non-soft-hyphen)
+            0x00A1..=0x00AC | 0x00AE..=0x00FF => true,
+            // Latin Extended-A, Latin Extended-B, IPA Extensions, Spacing Modifier Letters
+            0x0100..=0x02FF => true,
+            // Greek and Coptic (excluding combining marks)
+            0x0370..=0x03FF => true,
+            // Cyrillic and Cyrillic Supplement
+            0x0400..=0x052F => true,
+            // General Punctuation (excluding zero-width 0x200B..=0x200F, separators/bidi 0x2028..=0x202E, format 0x2060..=0x206F)
+            0x2010..=0x2027 | 0x2030..=0x205E => true,
+            // Currency Symbols
+            0x20A0..=0x20CF => true,
+            // Letterlike Symbols & Number Forms
+            0x2100..=0x218F => true,
+            // Arrows
+            0x2190..=0x21FF => true,
+            // Mathematical Operators
+            0x2200..=0x22FF => true,
+            // Box Drawing
+            0x2500..=0x257F => true,
+            // Block Elements
+            0x2580..=0x259F => true,
+            // Geometric Shapes
+            0x25A0..=0x25FF => true,
+            // CJK Symbols and Punctuation
+            0x3000..=0x303F => true,
+            // Hiragana & Katakana
+            0x3040..=0x30FF => true,
+            // CJK Unified Ideographs Extension A
+            0x3400..=0x4DBF => true,
+            // CJK Unified Ideographs
+            0x4E00..=0x9FFF => true,
+            // Hangul Syllables (Precomposed Korean)
+            0xAC00..=0xD7A3 => true,
+            // Halfwidth and Fullwidth Forms (Fullwidth ASCII & Halfwidth Katakana, excluding 0xFFFD replacement)
+            0xFF01..=0xFFEE => true,
+            _ => false,
+        };
+
+        if !is_whitelisted {
+            return (non_graphic, 1);
+        }
+
+        // Terminal column width check via unicode_width
+        // Only standalone printable glyphs with width 1 or 2 are safe for the terminal grid.
+        match UnicodeWidthChar::width(c) {
+            Some(1) => (c, 1),
+            Some(2) => (c, 2),
+            _ => (non_graphic, 1),
+        }
+    }
+}
 
 // Left column with offsets
 pub fn draw_hex_offsets(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -359,7 +438,7 @@ pub fn draw_hex_contents(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 
     frame.render_stateful_widget(table1, hex_layout[0], &mut state1);
-    if bpl >= 16 {
+    if bpl > 8 {
         frame.render_widget(mid_sep, hex_layout[1]);
         frame.render_stateful_widget(table2, hex_layout[2], &mut state2);
     }
@@ -441,11 +520,12 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
             continue;
         }
 
+        let row_limit = (((idx / bytes_per_line) + 1) * bytes_per_line).min(page_bytes_len);
         let mut found = false;
 
         if is_utf16 {
             // UTF-16: manually read 2-byte code units (no encoding_rs)
-            if idx + 2 <= page_bytes_len {
+            if idx + 2 <= row_limit {
                 let code_unit = if is_utf16_le {
                     u16::from_le_bytes([page_bytes[idx], page_bytes[idx + 1]])
                 } else {
@@ -454,7 +534,7 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
 
                 // Check for high surrogate (U+D800..U+DBFF)
                 if (0xD800..=0xDBFF).contains(&code_unit) {
-                    if idx + 4 <= page_bytes_len {
+                    if idx + 4 <= row_limit {
                         let low_unit = if is_utf16_le {
                             u16::from_le_bytes([page_bytes[idx + 2], page_bytes[idx + 3]])
                         } else {
@@ -464,18 +544,11 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                             let code_point = 0x10000
                                 + ((code_unit as u32 - 0xD800) << 10)
                                 + (low_unit as u32 - 0xDC00);
-                            if let Some(c) = char::from_u32(code_point)
-                                && !c.is_control() && !c.is_whitespace()
-                            {
-                                let cell_char = if c.is_ascii() {
-                                    if c.is_ascii_graphic() { c } else { app.config.hex_mode_non_graphic_char }
-                                } else {
-                                    c
-                                };
-                                let char_width = if cell_char.is_ascii() { 1 } else { 2 };
+                            if let Some(c) = char::from_u32(code_point) {
+                                let (cell_char, char_width) = filter_safe_grid_char(c, non_graphic);
                                 char_cells[idx] = (cell_char, char_width);
                                 for j in 1..4 {
-                                    if idx + j < page_bytes_len {
+                                    if idx + j < row_limit {
                                         if j < char_width {
                                             char_cells[idx + j] = ('\0', 0);
                                         } else {
@@ -496,32 +569,18 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                     }
                 } else if !(0xDC00..=0xDFFF).contains(&code_unit) {
                     // Normal BMP character (not a surrogate)
-                    if let Some(c) = char::from_u32(code_unit as u32)
-                        && !c.is_control()
-                    {
-                        let cell_char = if c.is_ascii() {
-                            if c.is_ascii_graphic() {
-                                c
+                    if let Some(c) = char::from_u32(code_unit as u32) {
+                        let (cell_char, char_width) = filter_safe_grid_char(c, non_graphic);
+                        char_cells[idx] = (cell_char, char_width);
+                        if idx + 1 < row_limit {
+                            if char_width > 1 {
+                                char_cells[idx + 1] = ('\0', 0);
                             } else {
-                                non_graphic
+                                char_cells[idx + 1] = (' ', 1);
                             }
-                        } else if !c.is_whitespace() {
-                            c
-                        } else {
-                            non_graphic
-                        };
-
-                            let char_width = if cell_char.is_ascii() { 1 } else { 2 };
-                            char_cells[idx] = (cell_char, char_width);
-                            if idx + 1 < page_bytes_len {
-                                if char_width > 1 {
-                                    char_cells[idx + 1] = ('\0', 0);
-                                } else {
-                                    char_cells[idx + 1] = (' ', 1);
-                                }
-                            }
-                            found = true;
                         }
+                        found = true;
+                    }
 
                     if !found {
                         // Control char or invalid: mark both bytes as non-graphic
@@ -536,7 +595,7 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                     idx += 2;
                 }
             } else {
-                // Lone trailing byte
+                // Lone trailing byte at end of row
                 char_cells[idx] = (non_graphic, 1);
                 idx += 1;
             }
@@ -547,33 +606,22 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                 continue;
             }
 
-            // UTF-8, CP949, CP936, ISO-8859-x, etc.: try lengths 1..=4
+            // UTF-8, CP949, CP936, ISO-8859-x, etc.: try lengths 1..=4 bounded by row_limit
             for len in 1..=4 {
-                if idx + len > page_bytes_len {
-                    continue;
+                if idx + len > row_limit {
+                    break;
                 }
                 let slice = &page_bytes[idx..idx + len];
                 let (decoded_str, _, had_errors) = target_encoding.decode(slice);
 
                 if !had_errors && decoded_str.chars().count() == 1 {
                     let c = decoded_str.chars().next().unwrap();
-                    if c != '\u{FFFD}' && !c.is_control() {
-                        let cell_char = if c.is_ascii() {
-                            if c.is_ascii_graphic() {
-                                c
-                            } else {
-                                non_graphic
-                            }
-                        } else if !c.is_whitespace() {
-                            c
-                        } else {
-                            non_graphic
-                        };
+                    let (cell_char, char_width) = filter_safe_grid_char(c, non_graphic);
 
-                        let char_width = if cell_char.is_ascii() { 1 } else { 2 };
+                    if cell_char != non_graphic || len == 1 {
                         char_cells[idx] = (cell_char, char_width);
                         for j in 1..len {
-                            if idx + j < page_bytes_len {
+                            if idx + j < row_limit {
                                 if j < char_width {
                                     char_cells[idx + j] = ('\0', 0);
                                 } else {
@@ -582,6 +630,7 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                             }
                         }
                         found = true;
+                        idx += len;
                         break;
                     }
                 }
@@ -589,9 +638,8 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
 
             if !found {
                 char_cells[idx] = (non_graphic, 1);
+                idx += 1;
             }
-
-            idx += 1;
         }
     }
 
@@ -619,15 +667,18 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
 
             let mut span_style = char_style;
 
+            let is_in_selection = (app.state == UIState::HexSelection || app.hex_view.selection.start != app.hex_view.selection.end)
+                && (0..byte_len).any(|k| app.hex_view.selection.contains(offset + k));
+            let is_changed = (0..byte_len).any(|k| app.hex_view.changed_bytes.contains_key(&(offset + k)));
+            let is_matched = (0..byte_len).any(|k| crate::hex::search::in_match(app, offset + k));
+
             if is_cursor_on_char {
                 span_style = cell_hl_style;
-            } else if (app.state == UIState::HexSelection || app.hex_view.selection.start != app.hex_view.selection.end) && app.hex_view.selection.contains(offset) {
+            } else if is_in_selection {
                 span_style = app.config.theme.highlight;
-            } else if app.hex_view.changed_bytes.contains_key(&offset)
-                && !app.hex_view.selection.contains(offset)
-            {
+            } else if is_changed {
                 span_style = app.config.theme.changed_bytes;
-            } else if crate::hex::search::in_match(app, offset) {
+            } else if is_matched {
                 // Search hits are marked in the text columns too, so a match is
                 // visible whichever column the eye is on.
                 span_style = app.config.theme.byte_highlight;
@@ -637,15 +688,16 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                 span_style = span_style.bg(Color::from_u32(bg));
             }
 
-            // If this multi-byte char spans across the row boundary,
-            // still render the character at the end of this row (like WinHex)
-            let overflows_row = col_idx + byte_len > row_end;
-            spans.push(Span::styled(cell_char.to_string(), span_style));
-            if overflows_row {
-                break;
-            }
+            // If a wide char at the end of the row would cross the row_end boundary,
+            // render a non_graphic dot instead so the row never exceeds `bytes_per_line`.
+            let (draw_char, step_len) = if col_idx + byte_len > row_end {
+                (non_graphic, 1)
+            } else {
+                (cell_char, byte_len)
+            };
 
-            col_idx += byte_len;
+            spans.push(Span::styled(draw_char.to_string(), span_style));
+            col_idx += step_len;
         }
         lines.push(Line::from(spans));
         row_start += bytes_per_line;
@@ -817,5 +869,133 @@ mod highlight_width_tests {
             bgs[17], main_bg.expect("main defines a background"),
             "the separator after a highlighted byte must keep the normal background"
         );
+    }
+
+    #[test]
+    fn test_filter_safe_grid_char_classifications() {
+        use super::filter_safe_grid_char;
+
+        let non_graphic = '.';
+
+        // Normal ASCII
+        assert_eq!(filter_safe_grid_char('A', non_graphic), ('A', 1));
+        assert_eq!(filter_safe_grid_char('1', non_graphic), ('1', 1));
+        assert_eq!(filter_safe_grid_char('~', non_graphic), ('~', 1));
+
+        // ASCII controls -> non_graphic
+        assert_eq!(filter_safe_grid_char('\0', non_graphic), ('.', 1));
+        assert_eq!(filter_safe_grid_char('\n', non_graphic), ('.', 1));
+        assert_eq!(filter_safe_grid_char('\x1F', non_graphic), ('.', 1));
+        assert_eq!(filter_safe_grid_char('\x7F', non_graphic), ('.', 1));
+
+        // Single-width non-ASCII Latin / extended characters
+        assert_eq!(filter_safe_grid_char('à', non_graphic), ('à', 1));
+        assert_eq!(filter_safe_grid_char('ċ', non_graphic), ('ċ', 1));
+        assert_eq!(filter_safe_grid_char('ð', non_graphic), ('ð', 1));
+        assert_eq!(filter_safe_grid_char('ȋ', non_graphic), ('ȋ', 1));
+
+        // Wide CJK characters
+        assert_eq!(filter_safe_grid_char('髎', non_graphic), ('髎', 2));
+        assert_eq!(filter_safe_grid_char('가', non_graphic), ('가', 2));
+        assert_eq!(filter_safe_grid_char('龍', non_graphic), ('龍', 2));
+
+        // Combining diacritical marks -> filtered out to non_graphic
+        assert_eq!(filter_safe_grid_char('\u{0300}', non_graphic), ('.', 1));
+        assert_eq!(filter_safe_grid_char('\u{0303}', non_graphic), ('.', 1));
+        assert_eq!(filter_safe_grid_char('\u{20D0}', non_graphic), ('.', 1));
+
+        // Zero-width spaces, format characters, BOM
+        assert_eq!(filter_safe_grid_char('\u{200B}', non_graphic), ('.', 1));
+        assert_eq!(filter_safe_grid_char('\u{FEFF}', non_graphic), ('.', 1));
+        assert_eq!(filter_safe_grid_char('\u{00AD}', non_graphic), ('.', 1));
+
+        // Private Use Area (PUA)
+        assert_eq!(filter_safe_grid_char('\u{E000}', non_graphic), ('.', 1));
+        assert_eq!(filter_safe_grid_char('\u{F8FF}', non_graphic), ('.', 1));
+
+        // Replacement & Specials
+        assert_eq!(filter_safe_grid_char('\u{FFFD}', non_graphic), ('.', 1));
+        assert_eq!(filter_safe_grid_char('\u{FFFF}', non_graphic), ('.', 1));
+
+        // Complex scripts, subtending marks, exotic scripts, and unassigned codepoints
+        // (media_1790777239224.png glitch triggers)
+        assert_eq!(filter_safe_grid_char('\u{0600}', non_graphic), ('.', 1), "Arabic subtending mark must be filtered");
+        assert_eq!(filter_safe_grid_char('\u{1902}', non_graphic), ('.', 1), "Limbu must be filtered");
+        assert_eq!(filter_safe_grid_char('\u{2429}', non_graphic), ('.', 1), "Unassigned Control Pictures must be filtered");
+        assert_eq!(filter_safe_grid_char('\u{0AD9}', non_graphic), ('.', 1), "Unassigned Gujarati must be filtered");
+
+        // Legitimate CJK ideographs present in screenshot must be preserved
+        assert_eq!(filter_safe_grid_char('嗘', non_graphic), ('嗘', 2));
+        assert_eq!(filter_safe_grid_char('蒜', non_graphic), ('蒜', 2));
+    }
+
+    #[test]
+    fn test_hex_ascii_row_width_with_problematic_pe_header_bytes() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use unicode_width::UnicodeWidthStr;
+
+        let dir = std::env::temp_dir().join("dz6_pe_row_width");
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        let n = FIXTURE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!("pe_{n}.bin"));
+
+        // Exact problematic PE header slice that caused separator line breakage:
+        // 00 00 00 00 E0 00 CE 9A 0B 01 0E 2C 00 38 01 00
+        let bytes: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x00, 0xE0, 0x00, 0xCE, 0x9A,
+            0x0B, 0x01, 0x0E, 0x2C, 0x00, 0x38, 0x01, 0x00,
+        ];
+        std::fs::write(&path, &bytes).expect("write fixture");
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().unwrap(), 0, true).expect("open fixture");
+        app.reader.page_start = 0;
+        app.reader.page_current_size = bytes.len();
+        app.config.hex_mode_bytes_per_line = 16;
+        app.text_view.table = encoding_rs::UTF_16LE;
+        app.hex_view.enc2_table = Some(encoding_rs::UTF_8);
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 10)).expect("terminal");
+        terminal
+            .draw(|f| {
+                app.screen = f.area();
+                // Render UTF-16LE in an area of width 16
+                let enc1_area = ratatui::layout::Rect::new(20, 0, 16, 1);
+                super::draw_hex_ascii(&mut app, f, enc1_area, false);
+
+                // Render UTF-8 in an area of width 16
+                let enc2_area = ratatui::layout::Rect::new(38, 0, 16, 1);
+                super::draw_hex_ascii(&mut app, f, enc2_area, true);
+            })
+            .expect("draw");
+
+        let buf = terminal.backend().buffer().clone();
+
+        // Verify visual column width across the 16-cell area
+        let mut x = 20;
+        let mut enc1_vis_width = 0;
+        while x < 36 {
+            let w = UnicodeWidthStr::width(buf[(x, 0)].symbol()).max(1);
+            enc1_vis_width += w;
+            x += w as u16;
+        }
+        assert_eq!(enc1_vis_width, 16, "UTF-16LE visual width across columns must be exactly 16");
+        assert_eq!(x, 36, "UTF-16LE row must terminate at exactly column 36");
+
+        // Cell immediately outside enc1_area (column 36) must remain clean/unwritten (space/default)
+        assert_eq!(buf[(36, 0)].symbol(), " ", "column immediately following enc1 must not be spilled into");
+
+        // Check UTF-8 row width
+        let mut x2 = 38;
+        let mut enc2_vis_width = 0;
+        while x2 < 54 {
+            let w = UnicodeWidthStr::width(buf[(x2, 0)].symbol()).max(1);
+            enc2_vis_width += w;
+            x2 += w as u16;
+        }
+        assert_eq!(enc2_vis_width, 16, "UTF-8 visual width across columns must be exactly 16");
+        assert_eq!(x2, 54, "UTF-8 row must terminate at exactly column 54");
+        assert_eq!(buf[(54, 0)].symbol(), " ", "column immediately following enc2 must not be spilled into");
     }
 }

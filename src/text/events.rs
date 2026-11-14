@@ -283,7 +283,7 @@ pub fn text_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     let len = app.file_info.buffer_len();
     if len > 0 {
         let width = app.text_view.area_width.max(1) as usize;
-        let cur_row = app.text_view.cursor.0 + (app.text_view.scroll_offset.0 as usize);
+        let cur_row = app.text_view.cursor.0;
         let cur_col = app.text_view.cursor.1;
         let byte_ofs = app.reader.page_start.saturating_add(cur_row.saturating_mul(width)).saturating_add(cur_col);
         app.hex_view.offset = byte_ofs.min(len.saturating_sub(1));

@@ -318,13 +318,13 @@ pub fn draw_bookmarks_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
         };
 
         let preview_str = get_preview_text(app, item.offset);
-        let truncated_label: String = item.label.chars().take(label_col_len).collect();
+        let padded_label = crate::util::pad_display_width(&item.label, label_col_len);
 
         let cells = if is_selected {
             vec![
                 Cell::new(format!(" {:>2} │", idx + 1)).style(row_style),
                 Cell::new(format!(" {:<width$} │", addr_str, width = addr_col_len)).style(row_style),
-                Cell::new(format!(" {:<width$} │", truncated_label, width = label_col_len)).style(row_style),
+                Cell::new(format!(" {} │", padded_label)).style(row_style),
                 Cell::new(format!(" {}", preview_str)).style(row_style),
             ]
         } else {
@@ -338,7 +338,7 @@ pub fn draw_bookmarks_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
                     Span::styled("│", sep_style),
                 ])).style(row_style),
                 Cell::from(Line::from(vec![
-                    Span::styled(format!(" {:<width$} ", truncated_label, width = label_col_len), row_style),
+                    Span::styled(format!(" {} ", padded_label), row_style),
                     Span::styled("│", sep_style),
                 ])).style(row_style),
                 Cell::from(Line::from(vec![
@@ -396,29 +396,25 @@ pub fn draw_bookmark_input_popup(app: &mut App, frame: &mut Frame, area: Rect) {
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let val = app.hex_view.bookmark_dialog.input.value();
-    let cur = app.hex_view.bookmark_dialog.input.visual_cursor();
+    let inner_width = inner.width as usize;
+    let cursor = app.hex_view.bookmark_dialog.input.visual_cursor();
+    let scroll = cursor.saturating_sub(inner_width.saturating_sub(1));
 
-    let (before, after) = if cur < val.len() {
-        let (b, rest) = val.split_at(cur);
-        let mut chars = rest.chars();
-        let c = chars.next().unwrap_or(' ');
-        let a = chars.as_str();
-        (b, Some((c, a)))
-    } else {
-        (val, None)
-    };
-
-    let mut spans = vec![Span::raw(" "), Span::raw(before)];
-    if let Some((c, a)) = after {
-        spans.push(Span::styled(c.to_string(), app.config.theme.highlight.add_modifier(Modifier::BOLD)));
-        spans.push(Span::raw(a));
-    } else {
-        spans.push(Span::styled(" ", app.config.theme.highlight.add_modifier(Modifier::BOLD)));
-    }
-
-    let para = Paragraph::new(Line::from(spans)).style(dialog_style);
+    let line = crate::text_field::render_window(
+        &app.hex_view.bookmark_dialog.input,
+        None,
+        scroll,
+        inner_width,
+        dialog_style,
+        app.config.theme.highlight,
+    );
+    let para = Paragraph::new(line).style(dialog_style);
     frame.render_widget(para, inner);
+
+    let cursor_x = inner.x + (cursor - scroll) as u16;
+    if cursor_x < inner.x + inner.width {
+        frame.set_cursor_position((cursor_x, inner.y));
+    }
 }
 
 pub fn dialog_bookmarks_events(app: &mut App, event: &Event) -> Result<bool> {
@@ -773,6 +769,22 @@ mod tests {
 
         assert!(rendered.contains("14005EB18"));
         assert!(!rendered.contains("000000014005EB18"));
+
+        app.file_info.mmap = None;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_bookmark_popup_unicode_korean_no_panic() {
+        let (dir, mut app) = make_test_app(&[0u8; 64]);
+        open_add_bookmark_dialog(&mut app, 0x10);
+        // "안녕" has 2 Korean characters (6 bytes in UTF-8, 4 columns wide)
+        app.hex_view.bookmark_dialog.input = tui_input::Input::new("안녕".to_string()).with_cursor(1);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).expect("terminal");
+        terminal.draw(|f| {
+            let area = f.area();
+            draw_bookmark_input_popup(&mut app, f, area);
+        }).unwrap();
 
         app.file_info.mmap = None;
         let _ = std::fs::remove_dir_all(&dir);

@@ -327,6 +327,7 @@ pub fn handle_global_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         // in every view. Alt+F1 was taken by the drive popup, hence F2.
         KeyCode::F(2) if key.modifiers.contains(KeyModifiers::ALT) => {
             app.hex_view.show_va = !app.hex_view.show_va;
+            app.bump_view_generation();
             let mode = if app.hex_view.show_va {
                 "VA (Virtual Address)"
             } else {
@@ -370,12 +371,6 @@ pub fn handle_global_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         // Not Ctrl+M: that is ASCII CR, which many terminals cannot tell apart from
         // Enter - and Enter is bound (selection commit, header field edit).
         KeyCode::Char('k') | KeyCode::Char('K') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            // The apply step refuses read-only files, so opening the dialog would
-            // only lead to the operation being dropped in silence.
-            if app.file_info.is_read_only {
-                app.read_only_error(crate::i18n::M::RoModifyBlock);
-                return Ok(false);
-            }
             app.state = UIState::DialogModifyBlock;
             app.dialog_renderer = Some(crate::hex::modify_dialog::draw_modify_dialog);
             app.hex_view.modify_dialog.reset();

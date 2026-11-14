@@ -181,7 +181,7 @@ HEADER VIEW
   g / f                 Jump to that field's offset in Hex view
   Esc / q               Leave Header view
 
-HEADER VIEW - Section Tools (PE only, sidebar category 7)
+HEADER VIEW - Section Tools (PE only, sidebar 5. Section)
   Align Offset to VA    Set PointerToRawData = VirtualAddress
   Add New Section       Append a section of a given size (default 0x1000)
   Remove ASLR           Clear IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE (0x0040)
@@ -189,7 +189,7 @@ HEADER VIEW - Section Tools (PE only, sidebar category 7)
 
 COMMAND LINE (':' to open)
   :q                      Quit
-  :about  /  :ver         Program info (same as F8; 'y' copies it)
+  :about  /  :ver         Program info (same as F10; 'y' copies it)
   :w [file]               Save (to file, if given)
   :wq  /  :x [file]       Save and quit
   :wb <file>  /  :wblock <file>   Save selected block to file
@@ -369,7 +369,7 @@ pub(crate) const HELP_KO: &str = "\
   g / f                그 필드의 옵셋으로 헥스 뷰에서 이동
   Esc / q              헤더 뷰 나가기
 
-헤더 뷰 - 섹션 도구 (PE 전용, 사이드바 7번 항목)
+헤더 뷰 - 섹션 도구 (PE 전용, 사이드바 5. Section 항목)
   Align Offset to VA   PointerToRawData = VirtualAddress 로 맞춤
   Add New Section      지정한 크기의 섹션 추가 (기본 0x1000)
   Remove ASLR          ASLR 제거 (0x0040 비트 클리어, 예: 0x8140 -> 0x8100)
@@ -377,7 +377,7 @@ pub(crate) const HELP_KO: &str = "\
 
 커맨드 라인 (':'로 열기)
   :q                   종료
-  :about  /  :ver      프로그램 정보 (F8과 동일, 'y'로 복사)
+  :about  /  :ver      프로그램 정보 (F10과 동일, 'y'로 복사)
   :w [파일]            저장 (파일명을 주면 그 파일로)
   :wq  /  :x [파일]    저장하고 종료
   :wb <파일>  /  :wblock <파일>   선택한 블록을 파일로 저장
@@ -557,7 +557,7 @@ pub(crate) const HELP_ZH: &str = "\
   g / f                在十六进制视图中跳到该字段的偏移
   Esc / q              离开头部视图
 
-头部视图 - 节工具 (仅 PE，侧栏第 7 项)
+头部视图 - 节工具 (仅 PE，侧栏 5. Section 项)
   Align Offset to VA   令 PointerToRawData = VirtualAddress
   Add New Section      追加一个指定大小的节 (默认 0x1000)
   Remove ASLR          清除 ASLR (0x0040 标志，如 0x8140 -> 0x8100)
@@ -565,7 +565,7 @@ pub(crate) const HELP_ZH: &str = "\
 
 命令行 (按 ':' 打开)
   :q                   退出
-  :about  /  :ver      程序信息 (等同 F8，'y' 复制)
+  :about  /  :ver      程序信息 (等同 F10，'y' 复制)
   :w [文件]            保存 (给出文件名则另存)
   :wq  /  :x [文件]    保存并退出
   :wb <文件>  /  :wblock <文件>   将所选块保存为文件

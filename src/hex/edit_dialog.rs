@@ -243,209 +243,84 @@ impl EditDialog {
     }
 }
 
-/// Parses C-style escape sequences (`\n`, `\r`, `\t`, `\0`, `\\`, `\xHH`) into raw bytes
-/// according to the specified `Encoding`. Unrecognized escapes (like `\w` or trailing `\`)
-/// are preserved as literal characters to ensure safe typing in progress.
+/// Encodes `text` literally into bytes using `enc`, without interpreting `\` as an escape prefix.
 pub fn unescape_to_bytes(text: &str, enc: &'static encoding_rs::Encoding) -> Vec<u8> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = Vec::new();
-    let mut regular_text = String::new();
-    let mut i = 0;
+    crate::util::encode_text(text, enc)
+}
 
-    while i < chars.len() {
-        if chars[i] == '\\' {
-            if let Some(&next_c) = chars.get(i + 1) {
-                match next_c {
-                    'n' => {
-                        if !regular_text.is_empty() {
-                            out.extend(crate::util::encode_text(&regular_text, enc));
-                            regular_text.clear();
-                        }
-                        out.extend(crate::util::encode_char('\n', enc));
-                        i += 2;
-                        continue;
-                    }
-                    'r' => {
-                        if !regular_text.is_empty() {
-                            out.extend(crate::util::encode_text(&regular_text, enc));
-                            regular_text.clear();
-                        }
-                        out.extend(crate::util::encode_char('\r', enc));
-                        i += 2;
-                        continue;
-                    }
-                    't' => {
-                        if !regular_text.is_empty() {
-                            out.extend(crate::util::encode_text(&regular_text, enc));
-                            regular_text.clear();
-                        }
-                        out.extend(crate::util::encode_char('\t', enc));
-                        i += 2;
-                        continue;
-                    }
-                    '0' => {
-                        if !regular_text.is_empty() {
-                            out.extend(crate::util::encode_text(&regular_text, enc));
-                            regular_text.clear();
-                        }
-                        out.extend(crate::util::encode_char('\0', enc));
-                        i += 2;
-                        continue;
-                    }
-                    '\\' => {
-                        if !regular_text.is_empty() {
-                            out.extend(crate::util::encode_text(&regular_text, enc));
-                            regular_text.clear();
-                        }
-                        out.extend(crate::util::encode_char('\\', enc));
-                        i += 2;
-                        continue;
-                    }
-                    'x' | 'X' => {
-                        if let (Some(&h1), Some(&h2)) = (chars.get(i + 2), chars.get(i + 3))
-                            && h1.is_ascii_hexdigit()
-                            && h2.is_ascii_hexdigit()
-                        {
-                            let mut hex_buf = [0u8; 2];
-                            hex_buf[0] = h1 as u8;
-                            hex_buf[1] = h2 as u8;
-                            if let Ok(s) = std::str::from_utf8(&hex_buf)
-                                && let Ok(val) = u8::from_str_radix(s, 16)
-                            {
-                                if !regular_text.is_empty() {
-                                    out.extend(crate::util::encode_text(&regular_text, enc));
-                                    regular_text.clear();
-                                }
-                                match enc.name() {
-                                    "UTF-16LE" => out.extend_from_slice(&[val, 0x00]),
-                                    "UTF-16BE" => out.extend_from_slice(&[0x00, val]),
-                                    _ => out.push(val),
-                                }
-                                i += 4;
-                                continue;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            // Trailing backslash or unrecognized escape: treat '\' as literal
-            regular_text.push('\\');
-            i += 1;
+fn sanitize_display_char(c: char) -> char {
+    if c.is_ascii() {
+        if c == ' ' || c.is_ascii_graphic() {
+            c
         } else {
-            regular_text.push(chars[i]);
-            i += 1;
+            '.'
         }
+    } else {
+        crate::hex::draw::filter_safe_grid_char(c, '.').0
     }
-
-    if !regular_text.is_empty() {
-        out.extend(crate::util::encode_text(&regular_text, enc));
-    }
-
-    out
-}
-
-fn push_escaped_str(out: &mut String, s: &str) {
-    use std::fmt::Write;
-    for c in s.chars() {
-        match c {
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\0' => out.push_str("\\0"),
-            '\\' => out.push_str("\\\\"),
-            c if (c as u32) < 0x20 || c == '\x7F' => {
-                let _ = write!(out, "\\x{:02X}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-}
-
-fn bytes_to_escaped_string_utf8(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(bytes.len());
-    let mut pos = 0;
-    while pos < bytes.len() {
-        match std::str::from_utf8(&bytes[pos..]) {
-            Ok(valid_str) => {
-                push_escaped_str(&mut out, valid_str);
-                break;
-            }
-            Err(e) => {
-                let valid_len = e.valid_up_to();
-                if valid_len > 0 {
-                    if let Ok(valid_str) = std::str::from_utf8(&bytes[pos..pos + valid_len]) {
-                        push_escaped_str(&mut out, valid_str);
-                    }
-                    pos += valid_len;
-                }
-                let bad_len = e.error_len().unwrap_or(1);
-                for &b in &bytes[pos..pos + bad_len] {
-                    let _ = write!(out, "\\x{:02X}", b);
-                }
-                pos += bad_len;
-            }
-        }
-    }
-    out
 }
 
 fn bytes_to_escaped_string_utf16le(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(bytes.len() / 2);
+    let mut out = String::with_capacity(bytes.len() / 2 + 1);
     let chunks = bytes.chunks_exact(2);
     let remainder = chunks.remainder();
     let u16s: Vec<u16> = chunks.map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
 
     for res in char::decode_utf16(u16s) {
         match res {
-            Ok('\n') => out.push_str("\\n"),
-            Ok('\r') => out.push_str("\\r"),
-            Ok('\t') => out.push_str("\\t"),
-            Ok('\0') => out.push_str("\\0"),
-            Ok('\\') => out.push_str("\\\\"),
-            Ok(c) if (c as u32) < 0x20 || c == '\x7F' => {
-                let _ = write!(out, "\\x{:02X}", c as u32);
-            }
-            Ok(c) => out.push(c),
-            Err(e) => {
-                let val = e.unpaired_surrogate();
-                let b = val.to_le_bytes();
-                let _ = write!(out, "\\x{:02X}\\x{:02X}", b[0], b[1]);
-            }
+            Ok(c) => out.push(sanitize_display_char(c)),
+            Err(_) => out.push('.'),
         }
     }
-    for &b in remainder {
-        let _ = write!(out, "\\x{:02X}", b);
+    if !remainder.is_empty() {
+        out.push('.');
     }
     out
 }
 
 fn bytes_to_escaped_string_other(bytes: &[u8], enc: &'static encoding_rs::Encoding) -> String {
-    let (s, _) = enc.decode_without_bom_handling(bytes);
     let mut out = String::with_capacity(bytes.len());
-    push_escaped_str(&mut out, &s);
+    let mut idx = 0;
+    while idx < bytes.len() {
+        let mut found = false;
+        for len in 1..=4 {
+            if idx + len > bytes.len() {
+                continue;
+            }
+            let slice = &bytes[idx..idx + len];
+            let (decoded_str, _, had_errors) = enc.decode(slice);
+            if !had_errors && decoded_str.chars().count() == 1 {
+                let c = decoded_str.chars().next().unwrap();
+                let cell_char = sanitize_display_char(c);
+                if cell_char != '.' || len == 1 {
+                    out.push(cell_char);
+                    idx += len;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
+            out.push('.');
+            idx += 1;
+        }
+    }
     out
 }
 
-/// Converts binary bytes to an escaped string suitable for single-line TUI display
-/// and round-trip editing (`\n`, `\r`, `\t`, `\0`, `\\`, `\xHH`).
+/// Converts binary bytes to a single-line display string where non-printable
+/// control characters (`< 0x20`, `0x7F`), invalid byte sequences, and unsafe
+/// terminal characters are replaced with `.` (matching the Hex View text column).
 pub fn bytes_to_escaped_string(bytes: &[u8], enc: &'static encoding_rs::Encoding) -> String {
     if enc.name() == "UTF-16LE" {
         bytes_to_escaped_string_utf16le(bytes)
-    } else if enc == encoding_rs::UTF_8 {
-        bytes_to_escaped_string_utf8(bytes)
     } else {
         bytes_to_escaped_string_other(bytes, enc)
     }
 }
 
 pub fn open_edit_dialog(app: &mut App) {
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoEditData);
-        return;
-    }
+    let was_selection = app.state == UIState::HexSelection;
     app.state = UIState::DialogEditData;
     app.hex_view.edit_dialog.reset();
     let enc1 = app.text_view.table;
@@ -461,7 +336,7 @@ pub fn open_edit_dialog(app: &mut App) {
         .map(|block| (block.start, block.end))
         .or_else(|| {
             let sel = app.hex_view.selection;
-            if app.state == UIState::HexSelection || sel.start != sel.end {
+            if was_selection || sel.start != sel.end {
                 Some((sel.start.min(sel.end), sel.start.max(sel.end)))
             } else {
                 None
@@ -471,7 +346,8 @@ pub fn open_edit_dialog(app: &mut App) {
     if let Some((start, end)) = range {
         let buffer = app.file_info.get_buffer_ref();
         if start < buffer.len() {
-            let end = end.min(buffer.len() - 1);
+            const MAX_EDIT_BYTES: usize = 4096;
+            let end = end.min(buffer.len() - 1).min(start.saturating_add(MAX_EDIT_BYTES - 1));
             let mut bytes = buffer[start..=end].to_vec();
             if !app.hex_view.changed_bytes.is_empty() {
                 for (i, b) in bytes.iter_mut().enumerate() {
@@ -562,7 +438,7 @@ pub fn dialog_edit_draw(app: &mut App, frame: &mut Frame) {
 
     let byte_cnt = app.hex_view.edit_dialog.get_bytes().len();
     let status_text = format!(
-        "  {}  |  Escapes: \\n, \\r, \\t, \\0, \\\\, \\xHH",
+        "  {}",
         crate::i18n::fill(
             crate::i18n::M::BytesSelected.tr(app.config.lang),
             &[&byte_cnt.to_string()]
@@ -624,12 +500,12 @@ pub fn dialog_edit_events(app: &mut App, event: &Event) -> Result<bool> {
                 }
                 return Ok(false);
             }
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::NONE) => {
+            KeyCode::Up if key.modifiers.is_empty() => {
                 app.hex_view.edit_dialog.selection_anchor = None;
                 app.hex_view.edit_dialog.focus = app.hex_view.edit_dialog.focus.prev();
                 return Ok(false);
             }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::NONE) => {
+            KeyCode::Down if key.modifiers.is_empty() => {
                 app.hex_view.edit_dialog.selection_anchor = None;
                 app.hex_view.edit_dialog.focus = app.hex_view.edit_dialog.focus.next();
                 return Ok(false);
@@ -737,13 +613,11 @@ pub fn dialog_edit_events(app: &mut App, event: &Event) -> Result<bool> {
                     } else {
                         app.hex_view.edit_dialog.active_input().value().to_string()
                     };
-                    if let Ok(mut cb) = arboard::Clipboard::new() {
-                        cb.set_text(text_to_copy).ok();
-                    }
+                    app.copy_to_clipboard(text_to_copy, "edit text".to_string());
                     return Ok(false);
                 }
                 KeyCode::Char('v') | KeyCode::Char('V') => {
-                    if let Ok(mut cb) = arboard::Clipboard::new()
+                    if let Ok(cb) = app.clipboard.as_mut()
                         && let Ok(pasted_text) = cb.get_text()
                     {
                         if app.hex_view.edit_dialog.selection_anchor.is_some() {
@@ -757,10 +631,8 @@ pub fn dialog_edit_events(app: &mut App, event: &Event) -> Result<bool> {
                             }
                         } else {
                             let clean = pasted_text
-                                .replace("\r\n", "\\r\\n")
-                                .replace('\r', "\\r")
-                                .replace('\n', "\\n")
-                                .replace('\t', "\\t");
+                                .replace("\r\n", " ")
+                                .replace(['\r', '\n', '\t'], " ");
                             for c in clean.chars() {
                                 app.hex_view.edit_dialog.active_input_mut().handle(tui_input::InputRequest::InsertChar(c));
                             }
@@ -784,15 +656,20 @@ pub fn dialog_edit_events(app: &mut App, event: &Event) -> Result<bool> {
                     return Ok(false);
                 }
             }
-            _ => {
+            KeyCode::Char(_)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
                 // If typing a character while text is selected, delete selection first
                 if app.hex_view.edit_dialog.selection_anchor.is_some() {
                     app.hex_view.edit_dialog.delete_selection();
                 }
             }
+            _ => {}
         }
 
-        // Pass event to current focused field and sync other fields
+        // Pass event to current focused field and sync other fields only if value changed
+        let prev_val = app.hex_view.edit_dialog.active_input().value().to_string();
         let focus = app.hex_view.edit_dialog.focus;
         match focus {
             EditDialogFocus::Enc1 => {
@@ -808,7 +685,9 @@ pub fn dialog_edit_events(app: &mut App, event: &Event) -> Result<bool> {
                 app.hex_view.edit_dialog.input_hex.handle_event(event);
             }
         }
-        app.hex_view.edit_dialog.sync_from_focus();
+        if app.hex_view.edit_dialog.active_input().value() != prev_val {
+            app.hex_view.edit_dialog.sync_from_focus();
+        }
     }
     Ok(false)
 }
@@ -825,81 +704,57 @@ mod tests {
     }
 
     #[test]
-    fn test_unescape_system_note_newlines() {
-        let input = r"\n\n[SYSTEM NOTE";
+    fn test_unescape_to_bytes_is_literal() {
+        let input = r"C:\Windows\System32\ntdll.dll";
         let bytes = unescape_to_bytes(input, encoding_rs::UTF_8);
-        assert_eq!(
-            bytes,
-            vec![0x0A, 0x0A, 0x5B, 0x53, 0x59, 0x53, 0x54, 0x45, 0x4D, 0x20, 0x4E, 0x4F, 0x54, 0x45]
-        );
+        assert_eq!(bytes, input.as_bytes());
+
+        let input_escapes = r"A\nB\rC\tD\0E\\F\x41";
+        let bytes_esc = unescape_to_bytes(input_escapes, encoding_rs::UTF_8);
+        assert_eq!(bytes_esc, input_escapes.as_bytes());
     }
 
     #[test]
-    fn test_unescape_c_escapes() {
-        let input = r"A\nB\rC\tD\0E\\F";
-        let bytes = unescape_to_bytes(input, encoding_rs::UTF_8);
-        assert_eq!(bytes, b"A\nB\rC\tD\0E\\F");
-    }
-
-    #[test]
-    fn test_unescape_hex_sequences() {
-        let input = r"\x41\x42\x00\xFF\x90";
-        let bytes = unescape_to_bytes(input, encoding_rs::UTF_8);
-        assert_eq!(bytes, vec![0x41, 0x42, 0x00, 0xFF, 0x90]);
-
-        // Incomplete / non-hex treated as literal
-        let literal = r"\x\xG\w";
-        let bytes_lit = unescape_to_bytes(literal, encoding_rs::UTF_8);
-        assert_eq!(bytes_lit, b"\\x\\xG\\w");
-    }
-
-    #[test]
-    fn test_unescape_utf16le() {
-        let input = r"\n\n[A";
+    fn test_unescape_utf16le_literal() {
+        let input = r"a\0b";
         let bytes = unescape_to_bytes(input, encoding_rs::UTF_16LE);
         assert_eq!(
             bytes,
-            vec![0x0A, 0x00, 0x0A, 0x00, 0x5B, 0x00, 0x41, 0x00]
+            vec![b'a', 0x00, b'\\', 0x00, b'0', 0x00, b'b', 0x00]
         );
-
-        let input_hex = r"\x41";
-        let bytes_hex = unescape_to_bytes(input_hex, encoding_rs::UTF_16LE);
-        assert_eq!(bytes_hex, vec![0x41, 0x00]);
     }
 
     #[test]
-    fn test_bytes_to_escaped_string_and_roundtrip() {
-        let raw = vec![0x0A, 0x0A, 0x5B, 0x53, 0x59, 0x53, 0x54, 0x45, 0x4D, 0x20, 0x4E, 0x4F, 0x54, 0x45];
-        let escaped = bytes_to_escaped_string(&raw, encoding_rs::UTF_8);
-        assert_eq!(escaped, r"\n\n[SYSTEM NOTE");
-
-        let back = unescape_to_bytes(&escaped, encoding_rs::UTF_8);
-        assert_eq!(back, raw);
+    fn test_bytes_to_escaped_string_dots_for_nonprintable_and_invalid() {
+        // Control chars and invalid UTF-8 bytes become '.', while '\' remains literal '\'
+        let raw = vec![0x00, 0x09, 0x0A, 0x0D, 0x1B, 0x5C, 0xAE];
+        let displayed = bytes_to_escaped_string(&raw, encoding_rs::UTF_8);
+        assert_eq!(displayed, r".....\.");
     }
 
     #[test]
-    fn test_bytes_to_escaped_string_control_chars() {
-        let raw = vec![0x00, 0x09, 0x0A, 0x0D, 0x1B, 0x5C];
-        let escaped = bytes_to_escaped_string(&raw, encoding_rs::UTF_8);
-        assert_eq!(escaped, r"\0\t\n\r\x1B\\");
+    fn test_unicode_le_asdf_displays_dots_in_utf8_and_ansi() {
+        let mut dialog = EditDialog::default();
+        dialog.set_enc1(encoding_rs::EUC_KR);
+        dialog.focus = EditDialogFocus::Utf16Le;
+        dialog.input_utf16le = Input::new("asdf".to_string());
+        dialog.sync_from_focus();
 
-        let back = unescape_to_bytes(&escaped, encoding_rs::UTF_8);
-        assert_eq!(back, raw);
+        assert_eq!(dialog.input_hex.value(), "6100730064006600");
+        assert_eq!(dialog.input_utf8.value(), "a.s.d.f.");
+        assert_eq!(dialog.input_enc1.value(), "a.s.d.f.");
     }
 
     #[test]
     fn test_edit_dialog_sync_utf8_to_hex() {
         let mut dialog = EditDialog::default();
         dialog.focus = EditDialogFocus::Utf8;
-        dialog.input_utf8 = Input::new(r"\n\n[SYSTEM NOTE".to_string());
+        dialog.input_utf8 = Input::new(r"[SYSTEM\NOTE]".to_string());
         dialog.sync_from_focus();
 
-        assert_eq!(dialog.input_hex.value(), "0A0A5B53595354454D204E4F5445");
-        assert_eq!(
-            dialog.get_bytes(),
-            &[0x0A, 0x0A, 0x5B, 0x53, 0x59, 0x53, 0x54, 0x45, 0x4D, 0x20, 0x4E, 0x4F, 0x54, 0x45]
-        );
-        assert_eq!(dialog.input_enc1.value(), r"\n\n[SYSTEM NOTE");
+        assert_eq!(dialog.input_hex.value(), "5B53595354454D5C4E4F54455D");
+        assert_eq!(dialog.get_bytes(), b"[SYSTEM\\NOTE]");
+        assert_eq!(dialog.input_enc1.value(), r"[SYSTEM\NOTE]");
     }
 
     #[test]
@@ -909,7 +764,7 @@ mod tests {
         dialog.input_hex = Input::new("0A0A5B53595354454D204E4F5445".to_string());
         dialog.sync_from_focus();
 
-        assert_eq!(dialog.input_utf8.value(), r"\n\n[SYSTEM NOTE");
+        assert_eq!(dialog.input_utf8.value(), "..[SYSTEM NOTE");
         assert_eq!(
             dialog.get_bytes(),
             &[0x0A, 0x0A, 0x5B, 0x53, 0x59, 0x53, 0x54, 0x45, 0x4D, 0x20, 0x4E, 0x4F, 0x54, 0x45]

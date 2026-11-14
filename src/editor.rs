@@ -44,6 +44,7 @@ pub enum UIState {
     DialogEditData,
     DialogEncoding,
     DialogEncoding2,
+    DialogDisasmEncoding,
     DialogFindPattern,
     DialogGoto,
     DialogHelp,

@@ -5,12 +5,19 @@ use ratatui::layout::Rect;
 /// This function is used returns the right offset
 /// for goto(). Hexa is the default. Add 't' suffix for decimal
 pub fn parse_offset(expr: &str) -> Result<usize, ParseIntError> {
-    // `strip_suffix` is char-boundary safe, unlike `expr[0..expr.len() - 1]`,
-    // which panics on input such as "가t".
-    if let Some(decimal) = expr.strip_suffix('t') {
-        decimal.parse()
+    let s = expr.trim();
+    if let Some(decimal) = s.strip_suffix('t').or_else(|| s.strip_suffix('T')) {
+        decimal.trim().parse()
     } else {
-        usize::from_str_radix(expr, 16)
+        let hex = s
+            .strip_prefix("0x")
+            .or_else(|| s.strip_prefix("0X"))
+            .unwrap_or(s);
+        let hex = hex
+            .strip_suffix('h')
+            .or_else(|| hex.strip_suffix('H'))
+            .unwrap_or(hex);
+        usize::from_str_radix(hex.trim(), 16)
     }
 }
 
@@ -142,6 +149,9 @@ mod tests {
         assert_eq!(Ok(16), parse_offset("10"));
         assert_eq!(Ok(255), parse_offset("ff"));
         assert_eq!(Ok(255), parse_offset("255t"));
+        assert_eq!(Ok(256), parse_offset("0x100"));
+        assert_eq!(Ok(256), parse_offset("0X100"));
+        assert_eq!(Ok(256), parse_offset("100h"));
         // Errors
         assert!(parse_offset("255th").is_err());
         assert!(parse_offset("255ht").is_err());
@@ -149,6 +159,22 @@ mod tests {
         assert!(parse_offset("h3").is_err());
         assert!(parse_offset("-5").is_err());
         assert!(parse_offset("4h4h").is_err());
+    }
+
+    #[test]
+    fn test_pad_display_width() {
+        use unicode_width::UnicodeWidthStr;
+        let s1 = pad_display_width("안녕", 10);
+        assert_eq!(s1.width(), 10);
+        assert_eq!(s1, "안녕      ");
+
+        let s2 = pad_display_width("abc", 5);
+        assert_eq!(s2.width(), 5);
+        assert_eq!(s2, "abc  ");
+
+        let s3 = pad_display_width("안녕하세요반갑습니다", 8);
+        assert_eq!(s3.width(), 8);
+        assert!(s3.contains('~'));
     }
 }
 
@@ -282,4 +308,37 @@ pub fn get_ime_language_mode() -> &'static str {
 /// can only ever match nothing selects nothing instead of everything.
 pub fn has_nonempty_match(re: &regex::Regex, text: &str) -> bool {
     re.find_iter(text).any(|m| !m.is_empty())
+}
+
+/// Pads or truncates 	ext so that its terminal visual display width is exactly width.
+/// Unlike byte length or char count, this properly accounts for CJK/wide characters (width 2).
+pub fn pad_display_width(text: &str, width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let w = text.width();
+    if w <= width {
+        let mut s = String::with_capacity(text.len() + (width - w));
+        s.push_str(text);
+        for _ in 0..(width - w) {
+            s.push(' ');
+        }
+        s
+    } else {
+        let mut cur_w = 0;
+        let mut s = String::new();
+        for ch in text.chars() {
+            let cw = ch.width().unwrap_or(0);
+            if cur_w + cw > width.saturating_sub(1) {
+                s.push('~');
+                cur_w += 1;
+                break;
+            }
+            s.push(ch);
+            cur_w += cw;
+        }
+        while cur_w < width {
+            s.push(' ');
+            cur_w += 1;
+        }
+        s
+    }
 }

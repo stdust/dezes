@@ -18,6 +18,10 @@ pub const BYTES_COL_WIDTH: u16 = 22;
 /// operand, `call qword ptr ds:[<GetSystemTimeAsFileTime>]` is 45 characters and
 /// was being clipped mid-name.
 pub const DISASM_COL_WIDTH: u16 = 52;
+/// Function boundary bracket column width.
+pub const FUNC_COL_WIDTH: u16 = 1;
+/// Jump arrows & control flow column width.
+pub const JUMP_COL_WIDTH: u16 = 2;
 
 /// Column widths are shared with `ruler.rs`, which draws the header above this
 /// table; keeping them in one place stops the two from drifting apart.
@@ -74,8 +78,13 @@ fn is_segment_register(token: &str) -> bool {
     )
 }
 
-fn read_string_at_offset(buffer: &[u8], offset: usize) -> Option<String> {
-    crate::disasm::string_ref::try_read_string_at_offset(buffer, offset).map(|(s, _)| s)
+fn read_effective_string_at_offset(app: &App, offset: usize, encoding: crate::disasm::DisasmCommentEncoding) -> Option<String> {
+    let mut buf = [0u8; 256];
+    let n = app.read_effective_slice(offset, &mut buf);
+    if n == 0 {
+        return None;
+    }
+    crate::disasm::string_ref::try_read_string_at_offset_enc(&buf[..n], 0, encoding).map(|(s, _)| s)
 }
 
 fn try_get_string_at_va(app: &App, va: u64) -> Option<String> {
@@ -84,39 +93,34 @@ fn try_get_string_at_va(app: &App, va: u64) -> Option<String> {
         return None;
     }
 
-    let buffer = app.file_info.get_buffer_ref();
-    if offset >= buffer.len() {
-        return None;
-    }
+    let enc = app.disasm_comment_encoding;
 
     // 1. Direct String Check at 'va'
-    if let Some(s) = read_string_at_offset(buffer, offset) {
+    if let Some(s) = read_effective_string_at_offset(app, offset, enc) {
         return Some(s);
     }
 
     // 2. Indirect Pointer String Check (Dereference 64-bit pointer at 'va')
-    if offset + 8 <= buffer.len() {
-        let ptr_bytes = &buffer[offset..offset + 8];
-        let target_va = u64::from_le_bytes(ptr_bytes.try_into().unwrap());
+    let mut ptr_buf = [0u8; 8];
+    let n = app.read_effective_slice(offset, &mut ptr_buf);
+    if n >= 8 {
+        let target_va = u64::from_le_bytes(ptr_buf);
         if target_va >= 0x10000
             && target_va != va
             && let Some(target_offset) = app.va_to_offset(target_va)
-            && target_offset < buffer.len()
-            && let Some(s) = read_string_at_offset(buffer, target_offset)
+            && let Some(s) = read_effective_string_at_offset(app, target_offset, enc)
         {
             return Some(s);
         }
     }
 
     // 3. Indirect Pointer String Check (Dereference 32-bit pointer at 'va')
-    if offset + 4 <= buffer.len() {
-        let ptr_bytes = &buffer[offset..offset + 4];
-        let target_va = u32::from_le_bytes(ptr_bytes.try_into().unwrap()) as u64;
+    if n >= 4 {
+        let target_va = u32::from_le_bytes(ptr_buf[..4].try_into().unwrap()) as u64;
         if target_va >= 0x10000
             && target_va != va
             && let Some(target_offset) = app.va_to_offset(target_va)
-            && target_offset < buffer.len()
-            && let Some(s) = read_string_at_offset(buffer, target_offset)
+            && let Some(s) = read_effective_string_at_offset(app, target_offset, enc)
         {
             return Some(s);
         }
@@ -238,12 +242,16 @@ pub fn clean_instruction_text(app: &App, instr: &iced_x86::Instruction, raw_text
     let rebased = rebase_instruction_text(app, instr, &trimmed);
     let ds_text = ensure_ds_segment(&rebased);
     let import_text = apply_import_symbol(app, instr, &ds_text);
-    import_text
+    let cleaned = import_text
         .replace(" short ", " ")
         .replace(", ", ",")
         .replace(',', ", ")
-        .replace("(bad)", "???")
-        .replace("bad", "???")
+        .replace("(bad)", "???");
+    if cleaned.trim() == "bad" {
+        "???".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// Text for the comment column, in priority order: the user's own comment, the
@@ -311,18 +319,10 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
         main_style
     };
 
-    let has_short = text.contains(" short ");
     let has_comma = text.contains(',');
 
-    let clean_text: String = if has_short || has_comma {
-        let mut s = text.to_string();
-        if has_short {
-            s = s.replace(" short ", " ");
-        }
-        if has_comma {
-            s = s.replace(',', ", ");
-        }
-        s
+    let clean_text: String = if has_comma {
+        text.replace(", ", ",").replace(',', ", ")
     } else {
         text.to_string()
     };
@@ -368,6 +368,7 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
     let import_fg = dt.import_fg;
     let ret_bg = dt.ret_bg;
     let ret_fg = dt.ret_fg;
+    let branch_target_fg = dt.branch_target_fg;
 
     let mut in_mem_operand = false;
 
@@ -410,11 +411,18 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
             continue;
         }
 
+        // Jump/call branch target prefix (e.g. "short" in "je short 0x0044C767")
+        if first_op.starts_with('j') && lower_tok == "short" {
+            let style = base_style.fg(branch_target_fg);
+            spans.push(Span::styled(tok.to_string(), style));
+            continue;
+        }
+
         // Pure branch targets (e.g. call 0x140001000 or jmp 0x140001000)
         let is_pure_branch_target = (first_op == "call" || first_op.starts_with('j')) && (tok.starts_with("0x") || tok.chars().all(|c| c.is_ascii_hexdigit()));
 
         if is_pure_branch_target {
-            let style = base_style.bg(yellow_bg).fg(if first_op.starts_with('j') { red_fg } else { black_fg }).add_modifier(Modifier::BOLD);
+            let style = base_style.fg(branch_target_fg);
             spans.push(Span::styled(tok.to_string(), style));
             continue;
         }
@@ -436,10 +444,14 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
         let word_style = |word: &str, in_mem: bool, in_import: bool, next: Option<char>| -> Style {
             // An inlined import name owns its whole span, brackets included.
             if in_import {
-                return base_style
-                    .bg(import_bg)
-                    .fg(import_fg)
-                    .add_modifier(Modifier::BOLD);
+                return if import_bg == Color::Reset {
+                    base_style.fg(import_fg).add_modifier(Modifier::BOLD)
+                } else {
+                    base_style
+                        .bg(import_bg)
+                        .fg(import_fg)
+                        .add_modifier(Modifier::BOLD)
+                };
             }
             // A segment prefix is checked before the memory-operand case, because it
             // is always inside one: `ds:[...]`. Without that ordering it would just
@@ -464,10 +476,14 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
             }
         };
 
-        let import_style = base_style
-            .bg(import_bg)
-            .fg(import_fg)
-            .add_modifier(Modifier::BOLD);
+        let import_style = if import_bg == Color::Reset {
+            base_style.fg(import_fg).add_modifier(Modifier::BOLD)
+        } else {
+            base_style
+                .bg(import_bg)
+                .fg(import_fg)
+                .add_modifier(Modifier::BOLD)
+        };
 
         let chars: Vec<char> = tok.chars().collect();
         let mut word_buf = String::new();
@@ -475,10 +491,16 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
         let mut prev_was_segment = false;
 
         for (ci, &c) in chars.iter().enumerate() {
-            if c.is_alphanumeric() || c == '_' || c == '@' || c == '?' || c == '-' && in_import {
+            if c.is_alphanumeric()
+                || c == '_'
+                || c == '@'
+                || c == '?'
+                || (in_import && (c == '-' || c == '.' || c == '&'))
+            {
                 // Import names are not all alphanumeric: mangled C++ symbols and the
                 // `api-ms-win-*` module names carry `_`, `@`, `?` and `-`, and
-                // breaking on those split one name into several differently
+                // `jmp.&MODULE.Function` thunks carry `.` and `&`.
+                // Breaking on those split one name into several differently
                 // coloured pieces.
                 word_buf.push(c);
                 continue;
@@ -550,8 +572,7 @@ fn import_symbol_for(app: &App, instr: &iced_x86::Instruction) -> Option<(u64, S
 
     if instr.is_ip_rel_memory_operand() {
         let va = instr.ip_rel_memory_address();
-        let target = app.rebase_va(va);
-        if let Some(label) = app.import_labels.get(&target) {
+        if let Some(label) = app.import_labels.get(&va) {
             return Some((va, function_name(label)));
         }
     }
@@ -576,7 +597,7 @@ fn import_symbol_for(app: &App, instr: &iced_x86::Instruction) -> Option<(u64, S
                 // The module stays in the name here: the branch leaves this
                 // function for another module's stub, so which module it is
                 // carries information the slot case does not.
-                return thunk_target_label(app, target).map(|label| (target, label));
+                return thunk_target_label(app, target).map(|label| (target, format!("jmp.&{}", label)));
             }
             None
         }
@@ -611,11 +632,57 @@ pub fn apply_import_symbol(app: &App, instr: &iced_x86::Instruction, text: &str)
     };
 
     let printed = format!("0x{:X}", address);
-    if !text.contains(&printed) {
-        return text.to_string();
+    if text.contains(&printed) {
+        return text.replace(&printed, &format!("<{}>", name));
+    }
+    let printed_lower = format!("0x{:x}", address);
+    if text.contains(&printed_lower) {
+        return text.replace(&printed_lower, &format!("<{}>", name));
     }
 
-    text.replace(&printed, &format!("<{}>", name))
+    text.to_string()
+}
+
+/// Decodes the single instruction at `va` and, if it is a jump through an import
+/// slot, returns that import's label.
+///
+pub fn is_import_thunk_instr(app: &App, instr: &iced_x86::Instruction) -> bool {
+    if instr.mnemonic() != iced_x86::Mnemonic::Jmp {
+        return false;
+    }
+    if instr.is_ip_rel_memory_operand() {
+        let slot = instr.ip_rel_memory_address();
+        if app.import_labels.contains_key(&slot) {
+            return true;
+        }
+    }
+    for op in 0..instr.op_count() {
+        if instr.op_kind(op) == iced_x86::OpKind::Memory {
+            let disp = instr.memory_displacement64();
+            if disp != 0 {
+                let target = app.rebase_va(disp);
+                if app.import_labels.contains_key(&target) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+pub fn is_import_thunk_at_va(app: &App, va: u64) -> bool {
+    let Some(offset) = app.va_to_offset(va) else { return false };
+    let mut code_buf = [0u8; MAX_INSTR_BYTES];
+    let n = app.read_effective_slice(offset, &mut code_buf);
+    if n == 0 {
+        return false;
+    }
+    let decoder = Decoder::with_ip(app.bitness(), &code_buf[..n], va, DecoderOptions::NONE);
+    if let Some(instr) = decoder.into_iter().next() {
+        is_import_thunk_instr(app, &instr)
+    } else {
+        false
+    }
 }
 
 /// Decodes the single instruction at `va` and, if it is a jump through an import
@@ -626,15 +693,15 @@ pub fn apply_import_symbol(app: &App, instr: &iced_x86::Instruction, text: &str)
 /// chains.
 fn thunk_target_label(app: &App, va: u64) -> Option<String> {
     let offset = app.va_to_offset(va)?;
-    let buffer = app.file_info.get_buffer_ref();
-    let end = offset.saturating_add(MAX_INSTR_BYTES).min(buffer.len());
-    if offset >= end {
+    let mut code_buf = [0u8; MAX_INSTR_BYTES];
+    let n = app.read_effective_slice(offset, &mut code_buf);
+    if n == 0 {
         return None;
     }
 
-    let decoder = Decoder::with_ip(app.bitness(), &buffer[offset..end], va, DecoderOptions::NONE);
+    let decoder = Decoder::with_ip(app.bitness(), &code_buf[..n], va, DecoderOptions::NONE);
     let instr = decoder.into_iter().next()?;
-    if instr.flow_control() != iced_x86::FlowControl::UnconditionalBranch {
+    if instr.mnemonic() != iced_x86::Mnemonic::Jmp {
         return None;
     }
 
@@ -660,7 +727,8 @@ fn thunk_target_label(app: &App, va: u64) -> Option<String> {
     None
 }
 
-use std::sync::Mutex;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 /// Order-independent fingerprint of the pending byte edits.
 ///
@@ -704,6 +772,7 @@ fn style_fingerprint(app: &App) -> u64 {
         dt.segment_fg,
         dt.import_bg,
         dt.import_fg,
+        dt.branch_target_fg,
     ] {
         color.hash(&mut hasher);
     }
@@ -724,6 +793,217 @@ fn style_fingerprint(app: &App) -> u64 {
     hasher.finish()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FlowType {
+    None,
+    Unconditional,
+    Conditional,
+}
+
+#[derive(Clone, Debug)]
+pub struct DecodedInstrMeta {
+    pub va: u64,
+    pub is_cursor: bool,
+    pub is_selected: bool,
+    pub target_va: Option<u64>,
+    pub flow_type: FlowType,
+}
+
+fn inactive_marker(meta: &DecodedInstrMeta, color: Color) -> (&'static str, Color) {
+    if let Some(t_va) = meta.target_va {
+        if t_va > meta.va {
+            ("ˇ ", color)
+        } else if t_va < meta.va {
+            ("ˆ ", color)
+        } else {
+            ("• ", color)
+        }
+    } else if meta.flow_type != FlowType::None {
+        ("ˇ ", color)
+    } else {
+        ("  ", color)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FuncBracket {
+    None,
+    Start,
+    Body,
+    End,
+}
+
+fn is_prologue(instr: &iced_x86::Instruction) -> bool {
+    use iced_x86::{Mnemonic, Register};
+    match instr.mnemonic() {
+        Mnemonic::Push => {
+            let r = instr.op0_register();
+            r == Register::RBP || r == Register::EBP
+                || r == Register::RBX || r == Register::RDI || r == Register::RSI
+                || r == Register::R12 || r == Register::R13 || r == Register::R14 || r == Register::R15
+        }
+        Mnemonic::Enter => true,
+        Mnemonic::Sub => {
+            let r = instr.op0_register();
+            (r == Register::RSP || r == Register::ESP)
+                && (instr.op1_kind() == iced_x86::OpKind::Immediate8to64
+                    || instr.op1_kind() == iced_x86::OpKind::Immediate32to64
+                    || instr.op1_kind() == iced_x86::OpKind::Immediate8
+                    || instr.op1_kind() == iced_x86::OpKind::Immediate16
+                    || instr.op1_kind() == iced_x86::OpKind::Immediate32)
+        }
+        _ => false,
+    }
+}
+
+struct PdataCache {
+    generation: u64,
+    functions: Option<Arc<Vec<(u64, u64)>>>,
+}
+static PDATA_CACHE: Mutex<Option<PdataCache>> = Mutex::new(None);
+
+pub fn parse_pe_pdata_functions(app: &App) -> Option<Vec<(u64, u64)>> {
+    let pe = app.header_view.pe.as_ref()?;
+    let opt = pe.optional_header.as_ref()?;
+    let data_dirs = &opt.data_directories.data_directories;
+    // Exception Table is index 3
+    let (rva, size) = if let Some(Some((_, dd))) = data_dirs.get(3) {
+        (dd.virtual_address as usize, dd.size as usize)
+    } else {
+        return None;
+    };
+    if rva == 0 || size < 12 {
+        return None;
+    }
+    // Convert RVA to file offset
+    let mut file_offset = None;
+    for s in &pe.sections {
+        let sec_va = s.virtual_address as usize;
+        let sec_sz = (s.virtual_size as usize).max(s.size_of_raw_data as usize);
+        if rva >= sec_va && rva < sec_va + sec_sz {
+            let offset_in_sec = rva - sec_va;
+            if offset_in_sec < s.size_of_raw_data as usize {
+                file_offset = Some(s.pointer_to_raw_data as usize + offset_in_sec);
+                break;
+            }
+        }
+    }
+    let offset = file_offset?;
+    let buffer = app.file_info.get_buffer_ref();
+    let max_len = size.min(buffer.len().saturating_sub(offset));
+    let num_entries = max_len / 12;
+    if num_entries == 0 {
+        return None;
+    }
+    let image_base = app.get_image_base();
+    let mut functions = Vec::with_capacity(num_entries);
+    for i in 0..num_entries {
+        let entry_offset = offset + i * 12;
+        if entry_offset + 8 <= buffer.len() {
+            let begin_rva = u32::from_le_bytes(buffer[entry_offset..entry_offset + 4].try_into().unwrap());
+            let end_rva = u32::from_le_bytes(buffer[entry_offset + 4..entry_offset + 8].try_into().unwrap());
+            if begin_rva < end_rva {
+                let start_va = image_base.wrapping_add(begin_rva as u64);
+                let end_va = image_base.wrapping_add(end_rva as u64);
+                functions.push((start_va, end_va));
+            }
+        }
+    }
+    if functions.is_empty() {
+        None
+    } else {
+        functions.sort_unstable_by_key(|&(s, _)| s);
+        Some(functions)
+    }
+}
+
+fn get_cached_pdata_functions(app: &App) -> Option<Arc<Vec<(u64, u64)>>> {
+    if let Ok(mut guard) = PDATA_CACHE.lock() {
+        if let Some(cached) = guard.as_ref()
+            && cached.generation == app.view_generation
+        {
+            return cached.functions.clone();
+        }
+        let funcs = parse_pe_pdata_functions(app).map(Arc::new);
+        *guard = Some(PdataCache {
+            generation: app.view_generation,
+            functions: funcs.clone(),
+        });
+        funcs
+    } else {
+        parse_pe_pdata_functions(app).map(Arc::new)
+    }
+}
+
+struct CallTargetsCache {
+    generation: u64,
+    bitness: u32,
+    targets: Arc<HashSet<u64>>,
+}
+static CALL_TARGETS_CACHE: Mutex<Option<CallTargetsCache>> = Mutex::new(None);
+
+pub fn collect_call_targets(app: &App) -> HashSet<u64> {
+    let mut targets = HashSet::new();
+
+    let oep = app.get_oep();
+    if oep > 0 {
+        targets.insert(oep);
+    }
+
+    app.with_effective_buffer(|buffer| {
+        let sections = crate::disasm::sections::code_sections(app, buffer.len());
+        let bitness = app.bitness();
+
+        for section in sections {
+            if section.start >= buffer.len() {
+                continue;
+            }
+            let sec_end = section.end.min(buffer.len());
+            if section.start >= sec_end {
+                continue;
+            }
+
+            let mut decoder = Decoder::with_ip(
+                bitness,
+                &buffer[section.start..sec_end],
+                section.va,
+                DecoderOptions::NONE,
+            );
+
+            for instr in &mut decoder {
+                if instr.flow_control() == iced_x86::FlowControl::Call {
+                    let tgt = instr.near_branch_target();
+                    if tgt > 0 && !is_import_thunk_at_va(app, tgt) {
+                        targets.insert(tgt);
+                    }
+                }
+            }
+        }
+
+        targets
+    })
+}
+
+pub fn get_cached_call_targets(app: &App) -> Arc<HashSet<u64>> {
+    if let Ok(mut guard) = CALL_TARGETS_CACHE.lock() {
+        if let Some(cached) = guard.as_ref()
+            && cached.generation == app.view_generation
+            && cached.bitness == app.bitness()
+        {
+            return Arc::clone(&cached.targets);
+        }
+        let targets = Arc::new(collect_call_targets(app));
+        *guard = Some(CallTargetsCache {
+            generation: app.view_generation,
+            bitness: app.bitness(),
+            targets: Arc::clone(&targets),
+        });
+        targets
+    } else {
+        Arc::new(collect_call_targets(app))
+    }
+}
+
 struct DisasmCacheState {
     /// Which file these rows came from; see `App::view_generation`.
     generation: u64,
@@ -740,8 +1020,11 @@ struct DisasmCacheState {
     area_width: u16,
     area_height: u16,
     syntax_highlight: bool,
+    disasm_comment_encoding: crate::disasm::DisasmCommentEncoding,
 
     addr_rows: Vec<Row<'static>>,
+    func_rows: Vec<Row<'static>>,
+    jump_rows: Vec<Row<'static>>,
     bytes_rows: Vec<Row<'static>>,
     instr_rows: Vec<Row<'static>>,
     comment_rows: Vec<Row<'static>>,
@@ -780,9 +1063,12 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
         && cached.area_width == area.width
         && cached.area_height == area.height
         && cached.syntax_highlight == syntax_highlight
+        && cached.disasm_comment_encoding == app.disasm_comment_encoding
     {
         // Fast path: Render directly from cached rows
                 let va_col_width = va_col_width(app);
+                let func_col_width = FUNC_COL_WIDTH;
+                let jump_col_width = JUMP_COL_WIDTH;
                 let bytes_col_width = BYTES_COL_WIDTH;
                 let disasm_col_width = DISASM_COL_WIDTH;
 
@@ -791,6 +1077,8 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
                     .constraints(vec![
                         Constraint::Length(va_col_width),
                         Constraint::Length(1), // Separator 1
+                        Constraint::Length(func_col_width), // Function bracket column (1)
+                        Constraint::Length(jump_col_width), // Jump column (2)
                         Constraint::Length(bytes_col_width),
                         Constraint::Length(1), // Separator 2
                         Constraint::Length(disasm_col_width), // Disassembly column
@@ -822,20 +1110,26 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
                 frame.render_widget(main_bg_fill.clone(), disasm_layout[3]);
                 frame.render_widget(main_bg_fill.clone(), disasm_layout[4]);
                 frame.render_widget(main_bg_fill.clone(), disasm_layout[5]);
-                frame.render_widget(main_bg_fill, disasm_layout[6]);
+                frame.render_widget(main_bg_fill.clone(), disasm_layout[6]);
+                frame.render_widget(main_bg_fill.clone(), disasm_layout[7]);
+                frame.render_widget(main_bg_fill, disasm_layout[8]);
 
                 let addr_table = Table::new(cached.addr_rows.clone(), [Constraint::Length(va_col_width)]).style(offsets_style);
+                let func_table = Table::new(cached.func_rows.clone(), [Constraint::Length(func_col_width)]).style(main_style);
+                let jump_table = Table::new(cached.jump_rows.clone(), [Constraint::Length(jump_col_width)]).style(main_style);
                 let bytes_table = Table::new(cached.bytes_rows.clone(), [Constraint::Length(bytes_col_width)]).style(main_style);
                 let instr_table = Table::new(cached.instr_rows.clone(), [Constraint::Length(disasm_col_width)]).style(main_style);
                 let comment_table = Table::new(cached.comment_rows.clone(), [Constraint::Min(0)]).style(main_style);
 
                 frame.render_widget(addr_table, disasm_layout[0]);
                 frame.render_widget(sep_para1, disasm_layout[1]);
-                frame.render_widget(bytes_table, disasm_layout[2]);
-                frame.render_widget(sep_para2, disasm_layout[3]);
-                frame.render_widget(instr_table, disasm_layout[4]);
-                frame.render_widget(sep_para3, disasm_layout[5]);
-                frame.render_widget(comment_table, disasm_layout[6]);
+                frame.render_widget(func_table, disasm_layout[2]);
+                frame.render_widget(jump_table, disasm_layout[3]);
+                frame.render_widget(bytes_table, disasm_layout[4]);
+                frame.render_widget(sep_para2, disasm_layout[5]);
+                frame.render_widget(instr_table, disasm_layout[6]);
+                frame.render_widget(sep_para3, disasm_layout[7]);
+                frame.render_widget(comment_table, disasm_layout[8]);
                 return;
             }
 
@@ -978,11 +1272,15 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
     let mut current_offset = page_start;
 
     let mut comment_rows: Vec<Row> = Vec::new();
+    let mut instr_metas: Vec<DecodedInstrMeta> = Vec::new();
+    let mut decoded_instrs: Vec<(iced_x86::Instruction, usize)> = Vec::new();
 
     for instr in decoder {
         if addr_rows.len() >= height {
             break;
         }
+
+        decoded_instrs.push((instr, current_offset));
 
         raw_text.clear();
         formatter.format(&instr, &mut raw_text);
@@ -1069,13 +1367,389 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
         instr_rows.push(Row::new([Cell::from(formatted_instr_line)]));
         comment_rows.push(Row::new([Cell::from(formatted_comment_line)]));
 
+        let flow = instr.flow_control();
+        let (flow_type, target_va) = match flow {
+            iced_x86::FlowControl::UnconditionalBranch => {
+                let t = instr.near_branch_target();
+                (FlowType::Unconditional, Some(t))
+            }
+            iced_x86::FlowControl::ConditionalBranch => {
+                let t = instr.near_branch_target();
+                (FlowType::Conditional, Some(t))
+            }
+            _ => (FlowType::None, None),
+        };
+
+        let is_cursor_here = current_cursor_offset >= current_offset && current_cursor_offset < current_offset + len;
+
+        instr_metas.push(DecodedInstrMeta {
+            va,
+            is_cursor: is_cursor_here,
+            is_selected,
+            target_va,
+            flow_type,
+        });
+
         current_offset += len;
         if current_offset >= filesize {
             break;
         }
     }
 
+    // Function boundary detection (Primary: PE .pdata RuntimeFunction table, Fallback: Heuristic)
+    let pdata_funcs = get_cached_pdata_functions(app);
+
+    let func_brackets: Vec<FuncBracket> = if let Some(ref functions) = pdata_funcs {
+        decoded_instrs
+            .iter()
+            .map(|(instr, ofs)| {
+                let va = app.get_va(*ofs);
+                let next_va = va + instr.len() as u64;
+                let func_match = functions.binary_search_by(|&(s_va, e_va)| {
+                    if va < s_va {
+                        std::cmp::Ordering::Greater
+                    } else if va >= e_va {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                });
+                match func_match {
+                    Ok(f_idx) => {
+                        let (s_va, e_va) = functions[f_idx];
+                        if va == s_va {
+                            FuncBracket::Start
+                        } else if next_va >= e_va {
+                            FuncBracket::End
+                        } else {
+                            FuncBracket::Body
+                        }
+                    }
+                    Err(_) => FuncBracket::None,
+                }
+            })
+            .collect()
+    } else {
+        let call_targets = get_cached_call_targets(app);
+
+        // Fallback: Heuristic boundary detection (OllyDbg-style: call targets + forward jump tracking)
+        let mut in_function_at_start = false;
+        let mut initial_max_forward_jump: u64 = 0;
+        let page_va = app.get_va(page_start);
+
+        if page_start > 0 {
+            if call_targets.contains(&page_va) {
+                in_function_at_start = false;
+            } else {
+                let lookback_start = page_start.saturating_sub(512);
+                let lookback_bytes = &buffer[lookback_start..page_start];
+                let mut lookback_decoder = Decoder::with_ip(
+                    bitness,
+                    lookback_bytes,
+                    app.get_va(lookback_start),
+                    DecoderOptions::NONE,
+                );
+                let mut lb_in_func = false;
+                let mut lb_max_fwd: u64 = 0;
+
+                for lb_instr in &mut lookback_decoder {
+                    let lb_va = lb_instr.ip();
+                    let lb_len = lb_instr.len();
+                    let lb_next_va = lb_va + lb_len as u64;
+                    let lb_ofs = app.va_to_offset(lb_va).unwrap_or(0);
+                    let lb_is_pad = lb_instr.code() == iced_x86::Code::Int3
+                        || buffer.get(lb_ofs) == Some(&0xCC);
+                    let lb_is_thunk = is_import_thunk_instr(app, &lb_instr);
+                    let lb_is_ct = call_targets.contains(&lb_va);
+                    let lb_is_pro = is_prologue(&lb_instr);
+                    let lb_is_ret = lb_instr.flow_control() == iced_x86::FlowControl::Return;
+
+                    if lb_is_pad || lb_is_thunk {
+                        lb_in_func = false;
+                        lb_max_fwd = 0;
+                        continue;
+                    }
+
+                    if lb_is_ct || (!lb_in_func && lb_is_pro) {
+                        lb_in_func = true;
+                        lb_max_fwd = 0;
+                    }
+
+                    let flow = lb_instr.flow_control();
+                    if flow == iced_x86::FlowControl::ConditionalBranch
+                        || flow == iced_x86::FlowControl::UnconditionalBranch
+                    {
+                        let tgt = lb_instr.near_branch_target();
+                        if tgt > lb_va {
+                            lb_max_fwd = lb_max_fwd.max(tgt);
+                        }
+                    }
+
+                    if lb_is_ret && (lb_max_fwd <= lb_va || call_targets.contains(&lb_next_va)) {
+                        lb_in_func = false;
+                        lb_max_fwd = 0;
+                    }
+                }
+
+                in_function_at_start = lb_in_func;
+                initial_max_forward_jump = lb_max_fwd;
+            }
+        }
+
+        let is_pad = |instr: &iced_x86::Instruction, ofs: usize| -> bool {
+            instr.code() == iced_x86::Code::Int3 || buffer.get(ofs) == Some(&0xCC)
+        };
+
+        let mut brackets = Vec::with_capacity(decoded_instrs.len());
+        let mut in_func = in_function_at_start;
+        let mut max_forward_jump: u64 = initial_max_forward_jump;
+
+        for idx in 0..decoded_instrs.len() {
+            let (instr, ofs) = &decoded_instrs[idx];
+            let va = app.get_va(*ofs);
+
+            let is_thunk = is_import_thunk_instr(app, instr);
+            if is_pad(instr, *ofs) || is_thunk {
+                brackets.push(FuncBracket::None);
+                in_func = false;
+                max_forward_jump = 0;
+                continue;
+            }
+
+            let is_ct = call_targets.contains(&va);
+            let is_pro = is_prologue(instr);
+            let is_ret = instr.flow_control() == iced_x86::FlowControl::Return;
+
+            let (next_is_pad, next_is_ct, next_is_pro, next_is_thunk) = if idx + 1 < decoded_instrs.len() {
+                let (next_instr, next_ofs) = &decoded_instrs[idx + 1];
+                let n_va = app.get_va(*next_ofs);
+                (
+                    is_pad(next_instr, *next_ofs),
+                    call_targets.contains(&n_va),
+                    is_prologue(next_instr),
+                    is_import_thunk_instr(app, next_instr),
+                )
+            } else {
+                let n_ofs = ofs + instr.len();
+                let n_va = app.get_va(n_ofs);
+                (
+                    buffer.get(n_ofs) == Some(&0xCC),
+                    call_targets.contains(&n_va),
+                    false,
+                    is_import_thunk_at_va(app, n_va),
+                )
+            };
+
+            let flow = instr.flow_control();
+            if flow == iced_x86::FlowControl::ConditionalBranch
+                || flow == iced_x86::FlowControl::UnconditionalBranch
+            {
+                let tgt = instr.near_branch_target();
+                if tgt > va {
+                    max_forward_jump = max_forward_jump.max(tgt);
+                }
+            }
+
+            let jumps_over = max_forward_jump > va;
+            let is_terminal_ret = is_ret && (!jumps_over || next_is_ct || next_is_pad || next_is_pro || next_is_thunk);
+            let is_terminal_jmp = flow == iced_x86::FlowControl::UnconditionalBranch
+                && (next_is_ct || next_is_pad || next_is_pro || next_is_thunk);
+
+            let should_start = if in_func {
+                is_ct || (is_pro && idx > 0 && !jumps_over)
+            } else {
+                is_ct
+                    || is_pro
+                    || (idx == 0 && page_start == 0)
+                    || (idx > 0 && brackets.last() == Some(&FuncBracket::None) && !next_is_thunk)
+                    || (idx > 0 && brackets.last() == Some(&FuncBracket::End) && !is_ret)
+            };
+
+            let should_end = is_terminal_ret || is_terminal_jmp || next_is_ct || next_is_pad || next_is_thunk || (next_is_pro && in_func);
+
+            if !in_func || is_ct {
+                if should_start {
+                    if should_end {
+                        brackets.push(FuncBracket::End);
+                        in_func = false;
+                        max_forward_jump = 0;
+                    } else {
+                        brackets.push(FuncBracket::Start);
+                        in_func = true;
+                    }
+                } else {
+                    brackets.push(FuncBracket::None);
+                    in_func = false;
+                    max_forward_jump = 0;
+                }
+            } else {
+                if should_end {
+                    brackets.push(FuncBracket::End);
+                    in_func = false;
+                    max_forward_jump = 0;
+                } else {
+                    brackets.push(FuncBracket::Body);
+                }
+            }
+        }
+        brackets
+    };
+
+    let mut func_rows: Vec<Row> = Vec::with_capacity(instr_metas.len());
+    let bg_color = app.config.theme.main.bg.unwrap_or(Color::Reset);
+    let bg_lum = crate::scrollbar::color_luminance(bg_color);
+    let is_light_theme = bg_lum > 128.0;
+
+    let bracket_color = if is_light_theme {
+        Color::Black
+    } else {
+        Color::Rgb(190, 190, 190)
+    };
+
+    for (r, bracket) in func_brackets.iter().enumerate() {
+        let meta = &instr_metas[r];
+        let sym = match bracket {
+            FuncBracket::Start => "┌",
+            FuncBracket::Body => "│",
+            FuncBracket::End => "└",
+            FuncBracket::None => " ",
+        };
+
+        let cell_bg = if meta.is_selected {
+            highlight_style.bg.unwrap_or(Color::Reset)
+        } else {
+            main_style.bg.unwrap_or(Color::Reset)
+        };
+
+        let style = Style::default().fg(bracket_color).bg(cell_bg).add_modifier(Modifier::BOLD);
+        func_rows.push(Row::new([Cell::new(sym).style(style)]));
+    }
+
+    let mut jump_rows: Vec<Row> = Vec::with_capacity(instr_metas.len());
+
+    let active_jump = instr_metas
+        .iter()
+        .enumerate()
+        .find(|(_, m)| m.is_cursor && m.target_va.is_some())
+        .map(|(idx, m)| (idx, m.target_va.unwrap(), m.flow_type))
+        .or_else(|| {
+            let cursor_va = instr_metas.iter().find(|m| m.is_cursor).map(|m| m.va);
+            if let Some(c_va) = cursor_va {
+                instr_metas
+                    .iter()
+                    .enumerate()
+                    .find(|(_, m)| m.target_va == Some(c_va))
+                    .map(|(idx, m)| (idx, c_va, m.flow_type))
+            } else {
+                None
+            }
+        });
+
+    enum TargetLoc {
+        OnScreen(usize),
+        OffScreenAbove,
+        OffScreenBelow,
+    }
+
+    let active_path: Option<(usize, TargetLoc, FlowType)> = if let Some((src_row, tgt_va, f_type)) = active_jump {
+        let tgt_row = instr_metas.iter().position(|m| m.va == tgt_va);
+        let target_loc = if let Some(r) = tgt_row {
+            TargetLoc::OnScreen(r)
+        } else {
+            let first_va = instr_metas.first().map(|m| m.va).unwrap_or(0);
+            if tgt_va < first_va {
+                TargetLoc::OffScreenAbove
+            } else {
+                TargetLoc::OffScreenBelow
+            }
+        };
+        Some((src_row, target_loc, f_type))
+    } else {
+        None
+    };
+
+    let jump_color = |_f_type: FlowType| -> Color {
+        if is_light_theme {
+            Color::Rgb(105, 105, 105)
+        } else {
+            Color::Rgb(170, 170, 170)
+        }
+    };
+
+    for (r, meta) in instr_metas.iter().enumerate() {
+        let cell_bg = if meta.is_selected {
+            highlight_style.bg.unwrap_or(Color::Reset)
+        } else {
+            main_style.bg.unwrap_or(Color::Reset)
+        };
+
+        let (sym, fg_color) = if let Some((src_row, ref tgt_loc, f_type)) = active_path {
+            let line_color = jump_color(f_type);
+
+            match tgt_loc {
+                TargetLoc::OnScreen(tgt_row) => {
+                    let tgt_row = *tgt_row;
+                    if src_row < tgt_row {
+                        // Forward jump (downwards)
+                        if r == src_row {
+                            ("┌ ", line_color)
+                        } else if r == tgt_row {
+                            ("└▸", line_color)
+                        } else if r > src_row && r < tgt_row {
+                            ("│ ", line_color)
+                        } else {
+                            inactive_marker(meta, jump_color(meta.flow_type))
+                        }
+                    } else if src_row > tgt_row {
+                        // Backward jump (upwards/loop)
+                        if r == tgt_row {
+                            ("┌▸", line_color)
+                        } else if r == src_row {
+                            ("└ ", line_color)
+                        } else if r > tgt_row && r < src_row {
+                            ("│ ", line_color)
+                        } else {
+                            inactive_marker(meta, jump_color(meta.flow_type))
+                        }
+                    } else {
+                        // Jump to self
+                        if r == src_row {
+                            ("↺ ", line_color)
+                        } else {
+                            inactive_marker(meta, jump_color(meta.flow_type))
+                        }
+                    }
+                }
+                TargetLoc::OffScreenBelow => {
+                    if r == src_row {
+                        ("┌ ", line_color)
+                    } else if r > src_row {
+                        ("│ ", line_color)
+                    } else {
+                        inactive_marker(meta, jump_color(meta.flow_type))
+                    }
+                }
+                TargetLoc::OffScreenAbove => {
+                    if r == src_row {
+                        ("└ ", line_color)
+                    } else if r < src_row {
+                        ("│ ", line_color)
+                    } else {
+                        inactive_marker(meta, jump_color(meta.flow_type))
+                    }
+                }
+            }
+        } else {
+            inactive_marker(meta, jump_color(meta.flow_type))
+        };
+
+        let style = Style::default().fg(fg_color).bg(cell_bg).add_modifier(Modifier::BOLD);
+        jump_rows.push(Row::new([Cell::new(sym).style(style)]));
+    }
+
     let va_col_width = va_col_width(app);
+    let func_col_width = FUNC_COL_WIDTH;
+    let jump_col_width = JUMP_COL_WIDTH;
     let bytes_col_width = BYTES_COL_WIDTH;
     let disasm_col_width = DISASM_COL_WIDTH;
 
@@ -1084,6 +1758,8 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
         .constraints(vec![
             Constraint::Length(va_col_width),
             Constraint::Length(1), // Separator 1
+            Constraint::Length(func_col_width), // Function bracket column (1)
+            Constraint::Length(jump_col_width), // Jump column (2)
             Constraint::Length(bytes_col_width),
             Constraint::Length(1), // Separator 2
             Constraint::Length(disasm_col_width), // Disassembly column
@@ -1115,7 +1791,9 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
     frame.render_widget(main_bg_fill.clone(), disasm_layout[3]);
     frame.render_widget(main_bg_fill.clone(), disasm_layout[4]);
     frame.render_widget(main_bg_fill.clone(), disasm_layout[5]);
-    frame.render_widget(main_bg_fill, disasm_layout[6]);
+    frame.render_widget(main_bg_fill.clone(), disasm_layout[6]);
+    frame.render_widget(main_bg_fill.clone(), disasm_layout[7]);
+    frame.render_widget(main_bg_fill, disasm_layout[8]);
 
     if let Ok(mut guard) = DISASM_CACHE.lock() {
         *guard = Some(DisasmCacheState {
@@ -1129,7 +1807,10 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
             area_width: area.width,
             area_height: area.height,
             syntax_highlight,
+            disasm_comment_encoding: app.disasm_comment_encoding,
             addr_rows: addr_rows.clone(),
+            func_rows: func_rows.clone(),
+            jump_rows: jump_rows.clone(),
             bytes_rows: bytes_rows.clone(),
             instr_rows: instr_rows.clone(),
             comment_rows: comment_rows.clone(),
@@ -1137,17 +1818,21 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 
     let addr_table = Table::new(addr_rows, [Constraint::Length(va_col_width)]).style(offsets_style);
+    let func_table = Table::new(func_rows, [Constraint::Length(func_col_width)]).style(main_style);
+    let jump_table = Table::new(jump_rows, [Constraint::Length(jump_col_width)]).style(main_style);
     let bytes_table = Table::new(bytes_rows, [Constraint::Length(bytes_col_width)]).style(main_style);
     let instr_table = Table::new(instr_rows, [Constraint::Length(disasm_col_width)]).style(main_style);
     let comment_table = Table::new(comment_rows, [Constraint::Min(0)]).style(main_style);
 
     frame.render_widget(addr_table, disasm_layout[0]);
     frame.render_widget(sep_para1, disasm_layout[1]);
-    frame.render_widget(bytes_table, disasm_layout[2]);
-    frame.render_widget(sep_para2, disasm_layout[3]);
-    frame.render_widget(instr_table, disasm_layout[4]);
-    frame.render_widget(sep_para3, disasm_layout[5]);
-    frame.render_widget(comment_table, disasm_layout[6]);
+    frame.render_widget(func_table, disasm_layout[2]);
+    frame.render_widget(jump_table, disasm_layout[3]);
+    frame.render_widget(bytes_table, disasm_layout[4]);
+    frame.render_widget(sep_para2, disasm_layout[5]);
+    frame.render_widget(instr_table, disasm_layout[6]);
+    frame.render_widget(sep_para3, disasm_layout[7]);
+    frame.render_widget(comment_table, disasm_layout[8]);
 }
 
 #[cfg(test)]
@@ -1830,6 +2515,48 @@ mod page_fixup_tests {
     }
 
     #[test]
+    fn test_branch_target_fg_and_import_bg_none_styling() {
+        let mut app = App::new();
+        app.config.disasm_theme.branch_target_fg = Color::Rgb(0, 0xAA, 0);
+        app.config.disasm_theme.import_bg = Color::Reset;
+        app.config.disasm_theme.import_fg = Color::Rgb(0, 0x80, 0);
+
+        let base = Style::default().bg(Color::Rgb(30, 30, 30));
+
+        // Test jump with short and target address
+        let line_jmp = format_x64dbg_line("je short 0x44C767", false, false, base, base, &app);
+        assert_eq!(line_jmp.spans[0].content, "je");
+        assert_eq!(line_jmp.spans[0].style.bg, Some(app.config.disasm_theme.jcc_bg));
+        assert_eq!(line_jmp.spans[2].content, "short");
+        assert_eq!(line_jmp.spans[2].style.bg, Some(Color::Rgb(30, 30, 30)));
+        assert_eq!(line_jmp.spans[2].style.fg, Some(Color::Rgb(0, 0xAA, 0)));
+        assert_eq!(line_jmp.spans[4].content, "0x44C767");
+        assert_eq!(line_jmp.spans[4].style.bg, Some(Color::Rgb(30, 30, 30)));
+        assert_eq!(line_jmp.spans[4].style.fg, Some(Color::Rgb(0, 0xAA, 0)));
+
+        // Test call with import symbol
+        let line_call = format_x64dbg_line("call <USER32.TranslateMessage>", false, false, base, base, &app);
+        assert_eq!(line_call.spans[0].content, "call");
+        assert_eq!(line_call.spans[0].style.bg, Some(app.config.disasm_theme.call_bg));
+        for span in &line_call.spans[2..] {
+            assert_eq!(span.style.bg, Some(Color::Rgb(30, 30, 30)));
+            assert_eq!(span.style.fg, Some(Color::Rgb(0, 0x80, 0)));
+        }
+
+        // Test call with thunk import symbol (<jmp.&MODULE.Function>)
+        let line_thunk = format_x64dbg_line("call <jmp.&USER32.TranslateMessage>", false, false, base, base, &app);
+        assert_eq!(line_thunk.spans[0].content, "call");
+        assert_eq!(line_thunk.spans[0].style.bg, Some(app.config.disasm_theme.call_bg));
+        assert_eq!(line_thunk.spans[2].content, "<");
+        assert_eq!(line_thunk.spans[3].content, "jmp.&USER32.TranslateMessage");
+        assert_eq!(line_thunk.spans[4].content, ">");
+        for span in &line_thunk.spans[2..] {
+            assert_eq!(span.style.bg, Some(Color::Rgb(30, 30, 30)));
+            assert_eq!(span.style.fg, Some(Color::Rgb(0, 0x80, 0)));
+        }
+    }
+
+    #[test]
     fn test_rebase_instruction_text_push_immediate() {
         let exe = match std::env::current_exe().ok().and_then(|p| p.to_str().map(str::to_owned)) {
             Some(p) => p,
@@ -1883,5 +2610,395 @@ mod page_fixup_tests {
         formatter.format(&instr_zero, &mut raw_text);
         let clean_zero = clean_instruction_text(&app, &instr_zero, &raw_text);
         assert_eq!(clean_zero, "push 0");
+    }
+
+    #[test]
+    fn test_forward_jump_renders_start_and_arrival_arrows() {
+        let dir = std::env::temp_dir().join("dz6_jump_test");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("forward_jump.bin");
+        // 0x00: EB 02 (jmp +2 to 0x04)
+        // 0x02: 90    (nop)
+        // 0x03: 90    (nop)
+        // 0x04: C3    (ret)
+        let code = [0xEB, 0x02, 0x90, 0x90, 0xC3];
+        std::fs::write(&path, &code).expect("write");
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().expect("path"), 0, true).expect("open");
+        app.view_generation = 9001;
+        app.editor_view = crate::editor::AppView::Disasm;
+        app.hex_view.offset = 0; // Cursor on jmp instruction
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 6)).expect("terminal");
+        terminal.draw(|f| {
+            app.screen = f.area();
+            draw_disasm_view(&mut app, f, f.area());
+        }).expect("draw");
+
+        let buf = terminal.backend().buffer();
+        let row0: String = (0..120).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        let row1: String = (0..120).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        let row2: String = (0..120).map(|x| buf[(x, 2)].symbol().to_string()).collect();
+        let row3: String = (0..120).map(|x| buf[(x, 3)].symbol().to_string()).collect();
+
+        assert!(row0.contains("┌ "), "row 0 should have forward jump start: {}", row0);
+        assert!(row1.contains("│ "), "row 1 should have jump backbone: {}", row1);
+        assert!(row2.contains("│ "), "row 2 should have jump backbone: {}", row2);
+        assert!(row3.contains("└▸"), "row 3 should have arrival arrow: {}", row3);
+    }
+
+    #[test]
+    fn test_backward_jump_renders_loop_arrows() {
+        let dir = std::env::temp_dir().join("dz6_jump_test");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("backward_jump.bin");
+        // 0x00: 90    (nop)
+        // 0x01: EB FD (jmp -3 to 0x00)
+        let code = [0x90, 0xEB, 0xFD];
+        std::fs::write(&path, &code).expect("write");
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().expect("path"), 0, true).expect("open");
+        app.view_generation = 9002;
+        app.editor_view = crate::editor::AppView::Disasm;
+        app.hex_view.offset = 1; // Cursor on jmp instruction
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 4)).expect("terminal");
+        terminal.draw(|f| {
+            app.screen = f.area();
+            draw_disasm_view(&mut app, f, f.area());
+        }).expect("draw");
+
+        let buf = terminal.backend().buffer();
+        let row0: String = (0..120).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        let row1: String = (0..120).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+
+        assert!(row0.contains("┌▸"), "row 0 (target) should have upward arrival arrow: {}", row0);
+        assert!(row1.contains("└ "), "row 1 (source) should have upward start stub: {}", row1);
+    }
+
+    #[test]
+    fn test_call_does_not_render_jump_arrows() {
+        let dir = std::env::temp_dir().join("dz6_jump_test");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("call_test.bin");
+        // 0x00: E8 05 00 00 00 (call +5 to 0x0A)
+        // 0x05: 90             (nop)
+        // 0x06: 90             (nop)
+        // 0x07: 90             (nop)
+        // 0x08: 90             (nop)
+        // 0x09: 90             (nop)
+        // 0x0A: C3             (ret)
+        let code = [0xE8, 0x05, 0x00, 0x00, 0x00, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3];
+        std::fs::write(&path, &code).expect("write");
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().expect("path"), 0, true).expect("open");
+        app.view_generation = 9003;
+        app.editor_view = crate::editor::AppView::Disasm;
+        app.hex_view.offset = 0; // Cursor on call instruction
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 6)).expect("terminal");
+        terminal.draw(|f| {
+            app.screen = f.area();
+            draw_disasm_view(&mut app, f, f.area());
+        }).expect("draw");
+
+        let buf = terminal.backend().buffer();
+        for r in 0..6 {
+            let jump_col: String = (12..14).map(|x| buf[(x, r as u16)].symbol().to_string()).collect();
+            assert_eq!(jump_col, "  ", "row {} jump column should be blank: {:?}", r, jump_col);
+        }
+    }
+
+    #[test]
+    fn test_offscreen_jump_continues_vertical_line_without_text_glitch() {
+        let dir = std::env::temp_dir().join("dz6_jump_test");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("offscreen_jump.bin");
+        // 0x00: EB 7F (jmp +127, target far off screen)
+        // 0x02: 90    (nop)
+        // 0x03: 90    (nop)
+        // 0x04: 90    (nop)
+        let code = [0xEB, 0x7F, 0x90, 0x90, 0x90];
+        std::fs::write(&path, &code).expect("write");
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().expect("path"), 0, true).expect("open");
+        app.view_generation = 9004;
+        app.editor_view = crate::editor::AppView::Disasm;
+        app.hex_view.offset = 0; // Cursor on jmp instruction
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 4)).expect("terminal");
+        terminal.draw(|f| {
+            app.screen = f.area();
+            draw_disasm_view(&mut app, f, f.area());
+        }).expect("draw");
+
+        let buf = terminal.backend().buffer();
+        let row0: String = (0..120).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        let row1: String = (0..120).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        let row2: String = (0..120).map(|x| buf[(x, 2)].symbol().to_string()).collect();
+        let row3: String = (0..120).map(|x| buf[(x, 3)].symbol().to_string()).collect();
+
+        assert!(row0.contains("┌ "), "row 0 should have forward start: {}", row0);
+        assert!(row1.contains("│ "), "row 1 should have line continuation: {}", row1);
+        assert!(row2.contains("│ "), "row 2 should have line continuation: {}", row2);
+        // Row 3 (bottom line) must continue vertical line and MUST NOT have "v" letter glitch
+        assert!(row3.contains("│ "), "row 3 should have line continuation off-screen: {}", row3);
+        assert!(!row3.contains(" v"), "row 3 must not have ' v' glitch: {}", row3);
+    }
+
+    #[test]
+    fn test_function_brackets_prologue_to_ret() {
+        let dir = std::env::temp_dir().join("dz6_jump_test");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("func_bracket_test.bin");
+        // 0x00: 55       (push ebp) - Prologue -> ┌
+        // 0x01: 89 E5    (mov ebp, esp) - Body -> │
+        // 0x03: 5D       (pop ebp) - Body -> │
+        // 0x04: C3       (ret) - End -> └
+        // 0x05: CC       (int3) - Padding -> ' '
+        let code = [0x55, 0x89, 0xE5, 0x5D, 0xC3, 0xCC];
+        std::fs::write(&path, &code).expect("write");
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().expect("path"), 0, true).expect("open");
+        app.view_generation = 9005;
+        app.editor_view = crate::editor::AppView::Disasm;
+        app.hex_view.offset = 0; // Cursor on push ebp
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 5)).expect("terminal");
+        terminal.draw(|f| {
+            app.screen = f.area();
+            draw_disasm_view(&mut app, f, f.area());
+        }).expect("draw");
+
+        let buf = terminal.backend().buffer();
+        // Function column is at x = 11 (width 1)
+        assert_eq!(buf[(11, 0)].symbol(), "┌", "row 0 should have function start: {}", buf[(11, 0)].symbol());
+        assert_eq!(buf[(11, 1)].symbol(), "│", "row 1 should have function body: {}", buf[(11, 1)].symbol());
+        assert_eq!(buf[(11, 2)].symbol(), "│", "row 2 should have function body: {}", buf[(11, 2)].symbol());
+        assert_eq!(buf[(11, 3)].symbol(), "└", "row 3 should have function end: {}", buf[(11, 3)].symbol());
+        assert_eq!(buf[(11, 4)].symbol(), " ", "row 4 should have function none (padding): '{}'", buf[(11, 4)].symbol());
+    }
+
+    #[test]
+    fn test_function_brackets_with_internal_ret_and_nops() {
+        let dir = std::env::temp_dir().join("dz6_jump_test");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("func_bracket_nops_test.bin");
+        // 0x00: 55             (push ebp)     - Start -> ┌
+        // 0x01: 74 01          (jz short +1)  - Body (forward jump to 0x04 past ret) -> │
+        // 0x03: C3             (ret)          - Body (internal return, bypassed by jz) -> │
+        // 0x04: B9 07 00 00 00 (mov ecx, 7)   - Body -> │
+        // 0x09: 90             (nop)          - Body (internal alignment) -> │
+        // 0x0A: 89 C8          (mov eax, ecx) - End (followed by int3 padding) -> └
+        // 0x0C: CC             (int3)         - Padding -> ' '
+        let code = [0x55, 0x74, 0x01, 0xC3, 0xB9, 0x07, 0x00, 0x00, 0x00, 0x90, 0x89, 0xC8, 0xCC];
+        std::fs::write(&path, &code).expect("write");
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().expect("path"), 0, true).expect("open");
+        app.view_generation = 9006;
+        app.editor_view = crate::editor::AppView::Disasm;
+        app.hex_view.offset = 0;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 7)).expect("terminal");
+        terminal.draw(|f| {
+            app.screen = f.area();
+            draw_disasm_view(&mut app, f, f.area());
+        }).expect("draw");
+
+        let buf = terminal.backend().buffer();
+        // Function column is at x = 11
+        assert_eq!(buf[(11, 0)].symbol(), "┌", "row 0 (push ebp) should be start: {}", buf[(11, 0)].symbol());
+        assert_eq!(buf[(11, 1)].symbol(), "│", "row 1 (jz) should continue body: {}", buf[(11, 1)].symbol());
+        assert_eq!(buf[(11, 2)].symbol(), "│", "row 2 (ret) should continue internal return: {}", buf[(11, 2)].symbol());
+        assert_eq!(buf[(11, 3)].symbol(), "│", "row 3 (mov ecx, 7) should continue body: {}", buf[(11, 3)].symbol());
+        assert_eq!(buf[(11, 4)].symbol(), "│", "row 4 (nop) should continue body: {}", buf[(11, 4)].symbol());
+        assert_eq!(buf[(11, 5)].symbol(), "└", "row 5 (mov eax, ecx) should end before int3: {}", buf[(11, 5)].symbol());
+        assert_eq!(buf[(11, 6)].symbol(), " ", "row 6 (int3) should be padding none: '{}'", buf[(11, 6)].symbol());
+    }
+
+    #[test]
+    fn test_function_brackets_back_to_back_32bit_no_padding() {
+        let dir = std::env::temp_dir().join("dz6_jump_test");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("func_back_to_back_test.bin");
+        // Function 1:
+        // 0x00: 6A 30    (push 0x30)    - Start -> ┌
+        // 0x02: E8 01 .. (call func2)   - Body  -> │
+        // 0x07: C3       (ret)          - End   -> └
+        // Function 2 (target of call at 0x02, target VA = 0x08):
+        // 0x08: 6A 00    (push 0x00)    - Start -> ┌
+        // 0x0A: 90       (nop)          - Body  -> │
+        // 0x0B: C3       (ret)          - End   -> └
+        let code = [
+            0x6A, 0x30,
+            0xE8, 0x01, 0x00, 0x00, 0x00,
+            0xC3,
+            0x6A, 0x00,
+            0x90,
+            0xC3,
+        ];
+        std::fs::write(&path, &code).expect("write");
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().expect("path"), 0, true).expect("open");
+        app.view_generation = 9007;
+        app.editor_view = crate::editor::AppView::Disasm;
+        app.hex_view.offset = 0;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 6)).expect("terminal");
+        terminal.draw(|f| {
+            app.screen = f.area();
+            draw_disasm_view(&mut app, f, f.area());
+        }).expect("draw");
+
+        let buf = terminal.backend().buffer();
+        // Row 0: push 0x30 -> ┌
+        // Row 1: call ...  -> │
+        // Row 2: ret       -> └ (Function 1 closes!)
+        // Row 3: push 0x00 -> ┌ (Function 2 starts!)
+        // Row 4: nop       -> │
+        // Row 5: ret       -> └ (Function 2 closes!)
+        assert_eq!(buf[(11, 0)].symbol(), "┌", "row 0 (func1 start): {}", buf[(11, 0)].symbol());
+        assert_eq!(buf[(11, 1)].symbol(), "│", "row 1 (func1 body): {}", buf[(11, 1)].symbol());
+        assert_eq!(buf[(11, 2)].symbol(), "└", "row 2 (func1 end): {}", buf[(11, 2)].symbol());
+        assert_eq!(buf[(11, 3)].symbol(), "┌", "row 3 (func2 start): {}", buf[(11, 3)].symbol());
+        assert_eq!(buf[(11, 4)].symbol(), "│", "row 4 (func2 body): {}", buf[(11, 4)].symbol());
+        assert_eq!(buf[(11, 5)].symbol(), "└", "row 5 (func2 end): {}", buf[(11, 5)].symbol());
+    }
+
+    #[test]
+    fn test_pe_pdata_function_boundaries() {
+        let exe = match std::env::current_exe().ok().and_then(|p| p.to_str().map(str::to_owned)) {
+            Some(p) => p,
+            None => return,
+        };
+        let mut app = App::new();
+        app.config.database = false;
+        if app.load_file(&exe, 0, true).is_err() {
+            return;
+        }
+        if let Some(funcs) = parse_pe_pdata_functions(&app) {
+            assert!(!funcs.is_empty(), "expected .pdata functions in 64-bit exe");
+            for window in funcs.windows(2) {
+                assert!(window[0].0 < window[0].1, "start_va must be < end_va");
+                assert!(window[0].0 <= window[1].0, "functions must be sorted");
+            }
+        }
+    }
+
+    #[test]
+    fn test_import_thunks_are_not_rendered_as_functions() {
+        let dir = std::env::temp_dir().join("dz6_jump_test");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("import_thunk_test.bin");
+        // Function 1:
+        // 0x00: 55             (push ebp)                     - Start -> ┌
+        // 0x01: E8 02 00 00 00 (call thunk at 0x08)           - Body  -> │
+        // 0x06: C3             (ret)                          - End   -> └ (ends before thunk!)
+        // 0x07: 90             (nop)
+        // Thunk 1 (called by func 1, but points to IAT slot 0x403000):
+        // 0x08: FF 25 00 30 40 00 (jmp dword ptr ds:[0x403000]) - Thunk -> ' ' (None!)
+        // Thunk 2:
+        // 0x0E: FF 25 04 30 40 00 (jmp dword ptr ds:[0x403004]) - Thunk -> ' ' (None!)
+        // Function 2:
+        // 0x14: 55             (push ebp)                     - Start -> ┌
+        // 0x15: C3             (ret)                          - End   -> └
+        let code = [
+            0x55,
+            0xE8, 0x02, 0x00, 0x00, 0x00,
+            0xC3,
+            0x90,
+            0xFF, 0x25, 0x00, 0x30, 0x40, 0x00,
+            0xFF, 0x25, 0x04, 0x30, 0x40, 0x00,
+            0x55,
+            0xC3,
+        ];
+        std::fs::write(&path, &code).expect("write");
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().expect("path"), 0, true).expect("open");
+        app.view_generation = 9008;
+        app.editor_view = crate::editor::AppView::Disasm;
+        app.hex_view.offset = 0;
+
+        // Register the IAT slots in import_labels
+        app.import_labels.insert(0x00403000, "USER32.KillTimer".to_string());
+        app.import_labels.insert(0x00403004, "USER32.MessageBeep".to_string());
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 7)).expect("terminal");
+        terminal.draw(|f| {
+            app.screen = f.area();
+            draw_disasm_view(&mut app, f, f.area());
+        }).expect("draw");
+
+        let buf = terminal.backend().buffer();
+        // Row 0: push ebp           -> ┌
+        // Row 1: call thunk         -> │
+        // Row 2: ret                -> └ (func 1 end)
+        // Row 3: nop                ->   (space)
+        // Row 4: jmp [<KillTimer>]  ->   (space, thunk is None!)
+        // Row 5: jmp [<MessageBeep>]->   (space, thunk is None!)
+        // Row 6: push ebp           -> ┌ (func 2 start)
+        assert_eq!(buf[(11, 0)].symbol(), "┌", "row 0 (func1 start): {}", buf[(11, 0)].symbol());
+        assert_eq!(buf[(11, 1)].symbol(), "│", "row 1 (func1 body): {}", buf[(11, 1)].symbol());
+        assert_eq!(buf[(11, 2)].symbol(), "└", "row 2 (func1 end): {}", buf[(11, 2)].symbol());
+        assert_eq!(buf[(11, 4)].symbol(), " ", "row 4 (thunk 1 None): '{}'", buf[(11, 4)].symbol());
+        assert_eq!(buf[(11, 5)].symbol(), " ", "row 5 (thunk 2 None): '{}'", buf[(11, 5)].symbol());
+        assert_eq!(buf[(11, 6)].symbol(), "┌", "row 6 (func2 start): {}", buf[(11, 6)].symbol());
+    }
+
+    #[test]
+    fn test_thunk_call_formats_as_jmp_module_function() {
+        let dir = std::env::temp_dir().join("dz6_thunk_format_test");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("thunk_format.bin");
+        // 0x00: E8 05 00 00 00 (call 0x0A)
+        // 0x05: C3             (ret)
+        // 0x06: 90 90 90 90    (padding)
+        // 0x0A: FF 25 00 30 40 00 (jmp dword ptr ds:[0x403000])
+        let code = [
+            0xE8, 0x05, 0x00, 0x00, 0x00,
+            0xC3,
+            0x90, 0x90, 0x90, 0x90,
+            0xFF, 0x25, 0x00, 0x30, 0x40, 0x00,
+        ];
+        std::fs::write(&path, &code).expect("write");
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().expect("path"), 0, true).expect("open");
+        app.import_labels.insert(0x00403000, "USER32.TranslateMessage".to_string());
+
+        let decoder = Decoder::with_ip(32, &code, 0, DecoderOptions::NONE);
+        let call_instr = decoder.into_iter().next().unwrap();
+        assert_eq!(call_instr.mnemonic(), iced_x86::Mnemonic::Call);
+
+        let formatted = apply_import_symbol(&app, &call_instr, "call 0xA");
+        assert_eq!(formatted, "call <jmp.&USER32.TranslateMessage>");
+    }
+
+    #[test]
+    fn test_clean_instruction_text_preserves_bad_in_symbols() {
+        let app = App::new();
+        let instr = iced_x86::Instruction::default();
+        let cleaned = clean_instruction_text(&app, &instr, "call <std::bad_alloc>");
+        assert_eq!(cleaned, "call <std::bad_alloc>");
+
+        let bad_instr = clean_instruction_text(&app, &instr, "(bad)");
+        assert_eq!(bad_instr, "???");
     }
 }

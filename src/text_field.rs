@@ -161,6 +161,13 @@ pub fn handle_key(app: &mut App, field: Field, event: &Event) -> bool {
 
     if ctrl {
         match key.code {
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                let (input, anchor) = field(app);
+                let len = char_len(input.value());
+                *anchor = Some(0);
+                *input = Input::new(input.value().to_string()).with_cursor(len);
+                return false;
+            }
             // Copy: the selection, or the whole box when nothing is selected - the
             // same rule the Goto dialog uses.
             KeyCode::Char('c') | KeyCode::Char('C') => {
@@ -618,5 +625,21 @@ mod adoption_tests {
             "a ninth character got in: {:?}",
             app.goto_input.value()
         );
+    }
+
+    #[test]
+    fn ctrl_a_selects_all_text() {
+        let mut app = App::new();
+        app.goto_input = Input::new("test_pattern".to_string()).with_cursor(4);
+        app.goto_selection_anchor = None;
+
+        let res = handle_key(
+            &mut app,
+            |a| (&mut a.goto_input, &mut a.goto_selection_anchor),
+            &key(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        assert!(!res);
+        assert_eq!(selection(&app.goto_input, app.goto_selection_anchor), Some((0, 12)));
+        assert_eq!(app.goto_input.cursor(), 12);
     }
 }

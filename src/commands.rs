@@ -240,7 +240,11 @@ fn try_goto(app: &mut App, raw_offset: &str) {
         OffsetType::Absolute
     };
 
-    let parsed_val = eval_address_expression(app, raw_offset);
+    let eval_target = match offset_direction {
+        OffsetType::Forward | OffsetType::Backward => &trimmed[1..],
+        OffsetType::Absolute => raw_offset,
+    };
+    let parsed_val = eval_address_expression(app, eval_target);
 
     let mut final_ofs: Option<usize> = None;
 
@@ -266,14 +270,14 @@ fn try_goto(app: &mut App, raw_offset: &str) {
         }
     }
 
-    app.last_error = Dz6Error {
-        message: format!(
+    command_error(
+        app,
+        format!(
             "Invalid range or address expression: {}; maximum offset for this file is 0x{:X}",
             raw_offset,
             app.file_info.size.saturating_sub(1)
         ),
-    };
-    app.dialog_renderer = Some(command_error_draw);
+    );
 }
 
 fn tr(app: &App, message: M) -> String {
@@ -295,7 +299,7 @@ fn switch_error(app: &App, option: &str, got: &str) -> String {
 fn command_error(app: &mut App, message: String) {
     app.last_error = Dz6Error { message };
     app.dialog_renderer = Some(command_error_draw);
-    app.state = UIState::Normal;
+    app.state = UIState::Error;
 }
 
 fn parse_switch(value: Option<&str>, current: bool) -> std::result::Result<bool, String> {
@@ -460,7 +464,7 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
         return;
     }
 
-    let cmdline_str = quote_colour_literals(&resolve_keywords(app, cmdline_raw));
+    let cmdline_str = quote_colour_literals(raw_trimmed);
     let cmdline = cmdline_str.as_str();
 
     if cmdline.is_empty() {
@@ -472,10 +476,7 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
     let args = match shell_words::split(cmdline) {
         Ok(args) => args,
         Err(err) => {
-            app.last_error = Dz6Error {
-                message: format!("Invalid command syntax: {}", err),
-            };
-            app.dialog_renderer = Some(command_error_draw);
+            command_error(app, format!("Invalid command syntax: {}", err));
             return;
         }
     };
@@ -505,10 +506,10 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             }
                             Err(e) => {
                                 let err_str = e.to_string();
-                                app.last_error = Dz6Error {
-                                    message: crate::i18n::fill(M::ErrOpeningFile.tr(app.config.lang), &[fname_clean, &err_str]),
-                                };
-                                app.dialog_renderer = Some(command_error_draw);
+                                command_error(
+                                    app,
+                                    crate::i18n::fill(M::ErrOpeningFile.tr(app.config.lang), &[fname_clean, &err_str]),
+                                );
                             }
                         }
                     }
@@ -544,10 +545,10 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                 };
 
                 if let Err(e) = res {
-                    app.last_error = Dz6Error {
-                        message: crate::i18n::fill(M::ErrSaveError.tr(app.config.lang), &[&e.to_string()]),
-                    };
-                    app.dialog_renderer = Some(command_error_draw);
+                    command_error(
+                        app,
+                        crate::i18n::fill(M::ErrSaveError.tr(app.config.lang), &[&e.to_string()]),
+                    );
                 } else {
                     app.persist_annotations();
                     app.dialog_renderer = None;
@@ -582,10 +583,10 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                 };
 
                 if let Err(e) = res {
-                    app.last_error = Dz6Error {
-                        message: crate::i18n::fill(M::ErrSaveError.tr(app.config.lang), &[&e.to_string()]),
-                    };
-                    app.dialog_renderer = Some(command_error_draw);
+                    command_error(
+                        app,
+                        crate::i18n::fill(M::ErrSaveError.tr(app.config.lang), &[&e.to_string()]),
+                    );
                 } else {
                     app.persist_annotations();
                     app.dialog_renderer = None;
@@ -595,10 +596,7 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
             Some(Command::Wb { filename }) | Some(Command::Wblock { filename }) => {
                 let fname_clean = filename.as_deref().unwrap_or("").trim();
                 if fname_clean.is_empty() {
-                    app.last_error = Dz6Error {
-                        message: M::ErrFilenameRequiredForWb.tr(app.config.lang).to_string(),
-                    };
-                    app.dialog_renderer = Some(command_error_draw);
+                    command_error(app, M::ErrFilenameRequiredForWb.tr(app.config.lang).to_string());
                 } else {
                     let path_input = std::path::Path::new(fname_clean);
                     let target_path = if path_input.is_absolute() {
@@ -622,39 +620,37 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             app.state = UIState::Normal;
                         }
                         Err(e) => {
-                            app.last_error = Dz6Error {
-                                message: crate::i18n::fill(M::ErrSaveError.tr(app.config.lang), &[&e.to_string()]),
-                            };
-                            app.dialog_renderer = Some(command_error_draw);
+                            command_error(
+                                app,
+                                crate::i18n::fill(M::ErrSaveError.tr(app.config.lang), &[&e.to_string()]),
+                            );
                         }
                     }
                 }
             }
             Some(Command::Cmt { offset, comment }) => {
-                if let Ok(mut ofs) = parse_offset(&offset) {
-                    if offset.starts_with('+') {
+                let resolved_offset = resolve_keywords(app, &offset);
+                if let Ok(mut ofs) = parse_offset(&resolved_offset) {
+                    if resolved_offset.starts_with('+') {
                         ofs = ofs.saturating_add(app.hex_view.offset);
                     }
                     if ofs < app.file_info.buffer_len() {
                         Commands::comment(app, ofs, comment);
                         app.dialog_renderer = None;
+                        app.state = UIState::Normal;
                     } else {
-                        app.last_error = Dz6Error {
-                            message: format!(
+                        command_error(
+                            app,
+                            format!(
                                 "Invalid range: {}; maximum offset for this file is {}",
                                 cmdline,
                                 app.file_info.buffer_len().saturating_sub(1)
                             ),
-                        };
-                        app.dialog_renderer = Some(command_error_draw);
+                        );
                     }
                 } else {
-                    app.last_error = Dz6Error {
-                        message: format!("Invalid argument: {}", offset),
-                    };
-                    app.dialog_renderer = Some(command_error_draw);
+                    command_error(app, format!("Invalid argument: {}", offset));
                 }
-                app.state = UIState::Normal;
             }
             Some(Command::Matrix { glyphs }) => {
                 use crate::global::matrix::GlyphSource;
@@ -787,15 +783,15 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                                     }
                                 }
                                 None => {
-                                    app.last_error = Dz6Error {
-                                        message: tr2(
+                                    command_error(
+                                        app,
+                                        tr2(
                                             app,
                                             M::ErrUnknownEncoding,
                                             val.trim(),
                                             "utf-8, cp949, cp936, iso-8859-1, iso-8859-2, utf-16le, utf-16be",
                                         ),
-                                    };
-                                    app.dialog_renderer = Some(command_error_draw);
+                                    );
                                     return;
                                 }
                             }
@@ -820,17 +816,43 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                                         }
                                     }
                                     None => {
-                                        app.last_error = Dz6Error {
-                                            message: tr2(
+                                        command_error(
+                                            app,
+                                            tr2(
                                                 app,
                                                 M::ErrUnknownEncoding,
                                                 val.trim(),
                                                 "none, utf-8, cp949, cp936, iso-8859-1, iso-8859-2, utf-16le, utf-16be",
                                             ),
-                                        };
-                                        app.dialog_renderer = Some(command_error_draw);
+                                        );
                                         return;
                                     }
+                                }
+                            }
+                        }
+                        app.dialog_renderer = None;
+                    }
+                    "disasm_enc" | "disasm_encoding" | "comment_enc" | "comment_encoding" => {
+                        if let Some(val) = value {
+                            match crate::disasm::DisasmCommentEncoding::from_name(&val) {
+                                Some(enc) => {
+                                    app.disasm_comment_encoding = enc;
+                                    app.view_generation = app.view_generation.wrapping_add(1);
+                                    let msg = format!("Set disasm comment encoding to: {}", enc.as_str());
+                                    App::log(app, msg.clone());
+                                    app.status_info = Some(msg);
+                                }
+                                None => {
+                                    command_error(
+                                        app,
+                                        tr2(
+                                            app,
+                                            M::ErrUnknownEncoding,
+                                            val.trim(),
+                                            "auto, utf-16le, utf-8, cp949, cp936, ascii",
+                                        ),
+                                    );
+                                    return;
                                 }
                             }
                         }
@@ -840,10 +862,7 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         if let Some(val) = value {
                             let clean_val = val.trim();
                             if !crate::themes::theme_exists(clean_val) {
-                                app.last_error = Dz6Error {
-                                    message: format!("Unknown theme '{}'", clean_val),
-                                };
-                                app.dialog_renderer = Some(command_error_draw);
+                                command_error(app, format!("Unknown theme '{}'", clean_val));
                                 return;
                             }
                             if let Some(path) = crate::themes::find_theme_path(clean_val)
@@ -852,8 +871,9 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             {
                                 let disasm_only =
                                     crate::disasm::theme::has_disasm_keys(&data);
-                                app.last_error = Dz6Error {
-                                    message: if disasm_only {
+                                command_error(
+                                    app,
+                                    if disasm_only {
                                         format!(
                                             "'{}' holds only disassembly colours - use ':set disasmtheme {}'",
                                             clean_val,
@@ -865,20 +885,23 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                                             clean_val
                                         )
                                     },
-                                };
-                                app.dialog_renderer = Some(command_error_draw);
+                                );
                                 return;
                             }
 
                             app.config.theme = crate::themes::load_theme_or_fallback(clean_val);
                             app.config.theme.name = clean_val.to_string();
-                            app.save_initfile();
+                            if !app.loading_initfile {
+                                app.save_initfile();
+                            }
                             
                             match crate::disasm::theme::disasm_theme_from_file(clean_val) {
                                 Some(dt) => {
                                     app.config.disasm_theme = dt;
-                                    crate::disasm::theme::save_disasm_theme(&app.config.disasm_theme);
-                                    app.save_initfile();
+                                    if !app.loading_initfile {
+                                        crate::disasm::theme::save_disasm_theme(&app.config.disasm_theme);
+                                        app.save_initfile();
+                                    }
                                     App::log(
                                         app,
                                         format!(
@@ -902,6 +925,7 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         match value.as_deref().map(str::trim) {
                             Some("auto") | Some("") | None => {
                                 app.config.bitness_override = None;
+                                app.view_generation = app.view_generation.wrapping_add(1);
                                 let label = app.describe_bitness();
                                 App::log(app, format!("Decoding width: {}", label));
                                 app.dialog_renderer = None;
@@ -909,18 +933,19 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             Some(val) => match val.parse::<u32>() {
                                 Ok(bits) if App::BITNESS_CHOICES.contains(&bits) => {
                                     app.config.bitness_override = Some(bits);
+                                    app.view_generation = app.view_generation.wrapping_add(1);
                                     let label = app.describe_bitness();
                                     App::log(app, format!("Decoding width: {}", label));
                                     app.dialog_renderer = None;
                                 }
                                 _ => {
-                                    app.last_error = Dz6Error {
-                                        message: format!(
+                                    command_error(
+                                        app,
+                                        format!(
                                             "Invalid width '{}' (expected 16, 32, 64 or auto)",
                                             val
                                         ),
-                                    };
-                                    app.dialog_renderer = Some(command_error_draw);
+                                    );
                                     return;
                                 }
                             },
@@ -942,6 +967,24 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                     "nohintbar" | "nohints" => {
                         app.config.hint_bar = false;
                         App::log(app, "Hint bar: off".to_string());
+                        app.dialog_renderer = None;
+                    }
+                    "scrollbar" => {
+                        match parse_switch(value.as_deref(), app.config.scrollbar) {
+                            Ok(on) => {
+                                app.config.scrollbar = on;
+                                App::log(app, format!("Scrollbar: {}", if on { "on" } else { "off" }));
+                                app.dialog_renderer = None;
+                            }
+                            Err(bad) => {
+                                command_error(app, switch_error(app, "scrollbar", &bad));
+                                return;
+                            }
+                        }
+                    }
+                    "noscrollbar" => {
+                        app.config.scrollbar = false;
+                        App::log(app, "Scrollbar: off".to_string());
                         app.dialog_renderer = None;
                     }
                     "han" => {
@@ -970,10 +1013,10 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                                 app.dialog_renderer = None;
                             }
                             Some(bad) => {
-                                app.last_error = Dz6Error {
-                                    message: format!("Invalid block base '{}' (expected 10 or 16)", bad),
-                                };
-                                app.dialog_renderer = Some(command_error_draw);
+                                command_error(
+                                    app,
+                                    format!("Invalid block base '{}' (expected 10 or 16)", bad),
+                                );
                                 return;
                             }
                             None => {
@@ -1114,14 +1157,17 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                         }
                         let mode = if app.hex_view.show_va { "VA" } else { "file offset" };
                         App::log(app, format!("Address display: {}", mode));
+                        app.bump_view_generation();
                         app.dialog_renderer = None;
                     }
                     "va" => {
                         app.hex_view.show_va = true;
+                        app.bump_view_generation();
                         app.dialog_renderer = None;
                     }
                     "offset" => {
                         app.hex_view.show_va = false;
+                        app.bump_view_generation();
                         app.dialog_renderer = None;
                     }
                     "disasmtheme" | "disasm_theme" => {
@@ -1129,8 +1175,10 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             match crate::disasm::theme::resolve_disasm_theme(&val) {
                                 Some(theme) => {
                                     app.config.disasm_theme = theme;
-                                    crate::disasm::theme::save_disasm_theme(&app.config.disasm_theme);
-                                    app.save_initfile();
+                                    if !app.loading_initfile {
+                                        crate::disasm::theme::save_disasm_theme(&app.config.disasm_theme);
+                                        app.save_initfile();
+                                    }
                                     App::log(
                                         app,
                                         format!("Loaded disassembly theme '{}'", val.trim()),
@@ -1138,14 +1186,14 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                                     app.dialog_renderer = None;
                                 }
                                 None => {
-                                    app.last_error = Dz6Error {
-                                        message: format!(
+                                    command_error(
+                                        app,
+                                        format!(
                                             "Unknown disassembly theme '{}' (available: {}; or give a path to a .theme file)",
                                             val.trim(),
                                             crate::disasm::theme::DISASM_PRESETS.join(", ")
                                         ),
-                                    };
-                                    app.dialog_renderer = Some(command_error_draw);
+                                    );
                                     return;
                                 }
                             }
@@ -1640,6 +1688,13 @@ mod keyword_tests {
         let app = app_at(0x40);
         assert_eq!(resolve_keywords(&app, "base"), format!("0x{:X}", app.get_image_base()));
         assert_eq!(resolve_keywords(&app, "oep"), format!("0x{:X}", app.get_oep()));
+    }
+
+    #[test]
+    fn command_args_do_not_replace_keywords() {
+        let mut app = app_at(0x40);
+        parse_command(&mut app, ":cmt 0x10 \"check cur and base\"");
+        assert_eq!(app.hex_view.comments.get(&0x10), Some(&"check cur and base".to_string()));
     }
 }
 
@@ -2200,6 +2255,21 @@ mod option_name_tests {
         // base is 0x400000
         super::parse_command(&mut app, "? base + 200");
         assert_eq!(app.status_info.as_deref(), Some("HEX: 0x400200  DEC: 4194816"));
+    }
+
+    #[test]
+    fn test_set_disasm_enc_command() {
+        let mut app = crate::app::App::new();
+        assert_eq!(app.disasm_comment_encoding, crate::disasm::DisasmCommentEncoding::Auto);
+
+        super::parse_command(&mut app, "set disasm_enc utf16");
+        assert_eq!(app.disasm_comment_encoding, crate::disasm::DisasmCommentEncoding::Utf16Le);
+
+        super::parse_command(&mut app, "set disasm_enc cp949");
+        assert_eq!(app.disasm_comment_encoding, crate::disasm::DisasmCommentEncoding::Cp949);
+
+        super::parse_command(&mut app, "set disasm_enc auto");
+        assert_eq!(app.disasm_comment_encoding, crate::disasm::DisasmCommentEncoding::Auto);
     }
 }
 

@@ -24,6 +24,7 @@ pub struct DisasmTheme {
     /// address space* the access goes through, which is a different fact from the
     /// address itself, and x64dbg colours it separately for that reason.
     pub segment_fg: Color,
+    pub branch_target_fg: Color,
     /// Background behind an inlined import name (`<CreateFileW>`).
     pub import_bg: Color,
     /// Foreground for an inlined import name.
@@ -49,14 +50,15 @@ impl Default for DisasmTheme {
             push_pop_fg: Color::Rgb(0, 0, 255),      // #0000FF
             ret_bg: Color::Rgb(0, 255, 0),           // #00FF00
             ret_fg: Color::Rgb(0, 0, 0),            // #000000
-            register_fg: Color::Rgb(0, 0x99, 0),     // #009900
+            register_fg: Color::Rgb(0x80, 0, 0),     // #800000
             memory_op_fg: Color::Rgb(0x3B, 0x4A, 0x5A), // #3B4A5A
             immediate_fg: Color::Rgb(128, 128, 0),   // #808000
             keyword_fg: Color::Rgb(180, 0, 180),     // #B400B4
             comment_fg: Color::Rgb(0, 128, 128),     // #008080
-            segment_fg: Color::Rgb(0xCC, 0, 0xCC),     // #CC00CC
-            import_bg: Color::Rgb(255, 255, 0),      // #FFFF00
-            import_fg: Color::Rgb(0, 0, 0),          // #000000
+            segment_fg: Color::Rgb(0xCC, 0, 0xCC),   // #CC00CC
+            branch_target_fg: Color::Rgb(0, 0x99, 0), // #009900
+            import_bg: Color::Reset,                 // none
+            import_fg: Color::Rgb(0, 0x99, 0),       // #009900
         }
     }
 }
@@ -93,6 +95,7 @@ pub fn parse_color_str(s: &str) -> Option<Color> {
         }
     } else {
         match clean.to_lowercase().as_str() {
+            "none" | "reset" | "transparent" => return Some(Color::Reset),
             "black" => return Some(Color::Black),
             "red" => return Some(Color::Red),
             "green" => return Some(Color::Green),
@@ -117,6 +120,7 @@ pub fn parse_color_str(s: &str) -> Option<Color> {
 
 pub fn color_to_hex_str(c: Color) -> String {
     match c {
+        Color::Reset => "none".into(),
         Color::Rgb(r, g, b) => format!("#{:02X}{:02X}{:02X}", r, g, b),
         Color::Black => "#000000".into(),
         Color::Red => "#FF0000".into(),
@@ -171,6 +175,7 @@ macro_rules! disasm_theme_fields {
         $callback!($theme, keyword_fg);
         $callback!($theme, comment_fg);
         $callback!($theme, segment_fg);
+        $callback!($theme, branch_target_fg);
         $callback!($theme, import_bg);
         $callback!($theme, import_fg);
     };
@@ -393,6 +398,7 @@ pub fn disasm_preset(name: &str) -> Option<DisasmTheme> {
             keyword_fg: Color::Rgb(0x8B, 0x00, 0x8B),
             comment_fg: Color::Rgb(0x00, 0x7A, 0x7A),
             segment_fg: Color::Rgb(0xB0, 0x00, 0xB0),
+            branch_target_fg: Color::Rgb(0x06, 0x7A, 0x21),
             import_bg: Color::Rgb(0xF5, 0xD6, 0x4A),
             import_fg: Color::Rgb(0x00, 0x00, 0x00),
         },
@@ -416,6 +422,7 @@ pub fn disasm_preset(name: &str) -> Option<DisasmTheme> {
             keyword_fg: Color::Rgb(0xE0, 0xA6, 0xF0),
             comment_fg: Color::Rgb(0xB8, 0xD8, 0xB8),
             segment_fg: Color::Rgb(0xF0, 0x9E, 0xF0),
+            branch_target_fg: Color::Rgb(0x9B, 0xE0, 0xA5),
             import_bg: Color::Rgb(0xE3, 0xCE, 0x63),
             import_fg: Color::Rgb(0x14, 0x18, 0x1A),
         },
@@ -816,6 +823,39 @@ mod combined_file_tests {
             "a theme file without disassembly keys must resolve to None so \
              ':set theme' leaves the current disassembly colours alone"
         );
+    }
+
+    #[test]
+    fn test_import_bg_none_and_branch_target_fg_parsing() {
+        let mut theme = DisasmTheme::default();
+        apply_theme_text(&mut theme, "import_bg = none\nimport_fg = #008000\nbranch_target_fg = #00AA00\n");
+        assert_eq!(theme.import_bg, Color::Reset);
+        assert_eq!(color_to_hex_str(theme.import_bg), "none");
+        assert_eq!(theme.import_fg, Color::Rgb(0, 0x80, 0));
+        assert_eq!(theme.branch_target_fg, Color::Rgb(0, 0xAA, 0));
+    }
+
+    #[test]
+    fn test_disasm_default_matches_hexeid_reference() {
+        let def = DisasmTheme::default();
+        assert_eq!(color_to_hex_str(def.call_bg), "#00FFFF");
+        assert_eq!(color_to_hex_str(def.call_fg), "#000000");
+        assert_eq!(color_to_hex_str(def.jmp_bg), "#FFFF00");
+        assert_eq!(color_to_hex_str(def.jmp_fg), "#FF0000");
+        assert_eq!(color_to_hex_str(def.jcc_bg), "#FFFF00");
+        assert_eq!(color_to_hex_str(def.jcc_fg), "#FF0000");
+        assert_eq!(color_to_hex_str(def.push_pop_fg), "#0000FF");
+        assert_eq!(color_to_hex_str(def.ret_bg), "#00FF00");
+        assert_eq!(color_to_hex_str(def.ret_fg), "#000000");
+        assert_eq!(color_to_hex_str(def.register_fg), "#800000");
+        assert_eq!(color_to_hex_str(def.memory_op_fg), "#3B4A5A");
+        assert_eq!(color_to_hex_str(def.immediate_fg), "#808000");
+        assert_eq!(color_to_hex_str(def.keyword_fg), "#B400B4");
+        assert_eq!(color_to_hex_str(def.comment_fg), "#008080");
+        assert_eq!(color_to_hex_str(def.segment_fg), "#CC00CC");
+        assert_eq!(color_to_hex_str(def.branch_target_fg), "#009900");
+        assert_eq!(color_to_hex_str(def.import_bg), "none");
+        assert_eq!(color_to_hex_str(def.import_fg), "#009900");
     }
 }
 

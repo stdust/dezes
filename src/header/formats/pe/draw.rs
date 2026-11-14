@@ -615,7 +615,7 @@ pub fn pe_draw(app: &mut App, frame: &mut Frame, area: Rect) {
 
             let table = Table::new(rows, widths)
                 .block(detail_block)
-                .header(Row::new(vec!["#", "DLL Name", "Function Name", "RVA", "Raw Offset"]).style(main_style.add_modifier(Modifier::BOLD)));
+                .header(Row::new(vec!["#", "DLL Name", "Function Name", "RVA", "IAT RVA"]).style(main_style.add_modifier(Modifier::BOLD)));
 
             let mut state = TableState::default();
             if len > 0 {

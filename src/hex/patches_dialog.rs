@@ -456,6 +456,7 @@ pub fn dialog_patches_events(app: &mut App, event: &Event) -> Result<bool> {
                 }
                 app.view_generation = app.view_generation.wrapping_add(1);
                 app.hex_view.patches_dialog.items = collect_patches(app);
+                app.update_file_headers();
             }
         }
         KeyCode::Char('a') | KeyCode::Char('A') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -473,6 +474,7 @@ pub fn dialog_patches_events(app: &mut App, event: &Event) -> Result<bool> {
             }
             app.view_generation = app.view_generation.wrapping_add(1);
             app.hex_view.patches_dialog.items = collect_patches(app);
+            app.update_file_headers();
         }
         KeyCode::F(4) => {
             if let Some(item) = app.hex_view.patches_dialog.items.get(app.hex_view.patches_dialog.selected_index) {
@@ -490,8 +492,10 @@ pub fn dialog_patches_events(app: &mut App, event: &Event) -> Result<bool> {
                     app.hex_view.changed_bytes.remove(&ofs);
                     app.hex_view.disabled_bytes.remove(&ofs);
                 }
+                app.hex_view.changed_history.retain(|&o| o < offset || o >= offset.saturating_add(size));
                 app.view_generation = app.view_generation.wrapping_add(1);
                 app.hex_view.patches_dialog.items = collect_patches(app);
+                app.update_file_headers();
                 let new_len = app.hex_view.patches_dialog.items.len();
                 if app.hex_view.patches_dialog.selected_index >= new_len {
                     app.hex_view.patches_dialog.selected_index = new_len.saturating_sub(1);

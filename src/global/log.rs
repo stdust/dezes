@@ -57,6 +57,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn read_only_error(&mut self, action: crate::i18n::M) {
         let lang = self.config.lang;
         let message = crate::i18n::fill(

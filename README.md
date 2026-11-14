@@ -51,8 +51,9 @@ It is designed for reverse engineers and binary analysts to disassemble x86/x64 
   F7                   Text view (press again to come back)
   F4                   Header view (press again to come back)
   F5                   String References dialog
-  F8                   About / program info (paths, encodings, license)
+  F8                   Reload current file from disk (refresh)
   F9 / Ctrl+O          Open File dialog
+  F10                  About / program info (paths, encodings, license)
   F12                  Save and quit (same as ':wq')
   Alt+F1               Select Drive dialog
   Alt+F2               Toggle Offset <-> VA address display
@@ -197,7 +198,7 @@ It is designed for reverse engineers and binary analysts to disassemble x86/x64 
   Esc / q               Leave Header view
 ```
 
-#### HEADER VIEW - Section Tools (PE only, sidebar category 7)
+#### HEADER VIEW - Section Tools (PE only, sidebar 5. Section category)
 ```text
   Align Offset to VA    Set PointerToRawData = VirtualAddress
   Add New Section       Append a section of a given size (default 0x1000)
@@ -207,7 +208,7 @@ It is designed for reverse engineers and binary analysts to disassemble x86/x64 
 ### COMMAND LINE (':' to open)
 ```text
   :q                      Quit
-  :about  /  :ver         Program info (same as F8; 'y' copies it)
+  :about  /  :ver         Program info (same as F10; 'y' copies it)
   :w [file]               Save (to file, if given)
   :wq  /  :x [file]       Save and quit
   :wb <file>  /  :wblock <file>   Save selected block to file

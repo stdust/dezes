@@ -633,7 +633,7 @@ mod xref_copy_tests {
         app.disasm_xref_dialog.items = (0..4).map(|i| item(0x140002000 + i)).collect();
         app.state = UIState::DialogXref;
 
-        let press = |app: &mut crate::app::App, code: KeyCode| {
+        let _press = |app: &mut crate::app::App, code: KeyCode| {
             let key = KeyEvent {
                 code,
                 modifiers: KeyModifiers::NONE,

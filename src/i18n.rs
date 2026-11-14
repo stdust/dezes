@@ -101,6 +101,7 @@ pub enum M {
     DecodeWidth,
     // Status bar
     ReadOnly,
+    Running,
     // Dialog titles and footers
     HelpTitle,
     HelpFooter,
@@ -307,6 +308,7 @@ pub enum M {
     NoteWrapscan,
     NoteHighlight,
     NoteHintbar,
+    NoteScrollbar,
     NoteLang,
     NoteDisasmColor,
 }
@@ -336,11 +338,11 @@ impl M {
         M::Open, M::Save, M::SaveQuit, M::HexView, M::Type, M::Column, M::Case, M::Select, M::Done,
         M::Copy, M::Modify, M::Color, M::Clear, M::Data, M::Goto, M::Find, M::Replace,
         M::Patches, M::Xref, M::Addr, M::Undo, M::Redo, M::Encoding, M::Encoding2, M::Highlight,
-        M::Log, M::Names, M::Bookmarks, M::RevertByte, M::ImageBase, M::DecodeWidth, M::ReadOnly,
+        M::Log, M::Names, M::Bookmarks, M::RevertByte, M::ImageBase, M::DecodeWidth, M::ReadOnly, M::Running,
         M::HelpTitle, M::HelpFooter, M::SettingsTitle, M::SettingsFooter, M::NamesFooter,
         M::MinimumLength, M::NoteByteline, M::NoteCtrlchar, M::NoteEnc1, M::NoteEnc2,
         M::NoteAddr, M::NoteBitness, M::NoteView, M::NoteTheme, M::NoteDb, M::NoteDimctrl,
-        M::NoteDimzero, M::NoteWrapscan, M::NoteHighlight, M::NoteHintbar, M::NoteLang,
+        M::NoteDimzero, M::NoteWrapscan, M::NoteHighlight, M::NoteHintbar, M::NoteScrollbar, M::NoteLang,
         M::NoteDisasmColor, M::AboutTitle, M::AboutFooter, M::LogTitle, M::LogFooter,
         M::CalculatorTitle, M::GotoTitle, M::ModifyBlockTitle, M::OperationTitle,
         M::NamesTitle, M::NoNames, M::StringsTitle, M::RegexTitle, M::FilterRegexTitle,
@@ -462,6 +464,7 @@ impl M {
             M::DecodeWidth => ["Width", "비트수", "位宽"],
 
             M::ReadOnly => ["Read Only", "읽기 전용", "只读"],
+            M::Running => ["Running", "실행 중", "运行中"],
 
             M::HelpTitle => [" Help (F1) ", " 도움말 (F1) ", " 帮助 (F1) "],
             M::HelpFooter => [
@@ -486,7 +489,7 @@ impl M {
             ],
             M::MinimumLength => ["Minimum length", "최소 길이", "最小长度"],
 
-            M::AboutTitle => [" About Dezes (F8) ", " Dezes 정보 (F8) ", " 关于 Dezes (F8) "],
+            M::AboutTitle => [" About Dezes (F10) ", " Dezes 정보 (F10) ", " 关于 Dezes (F10) "],
             M::AboutFooter => [
                 " Ctrl+C copy to clipboard, Esc close ",
                 " Ctrl+C 클립보드 복사, Esc 닫기 ",
@@ -724,9 +727,9 @@ impl M {
             ],
             M::LblAllEncodings => ["All", "전체", "全部"],
             M::StringsFooterKeys => [
-                " F4: Edit | Ctrl+C: copy line | Ctrl+Shift+C: copy all ",
-                " F4: 편집 | Ctrl+C: 한줄복사 | Ctrl+Shift+C: 전체복사 ",
-                " F4: 编辑 | Ctrl+C: 复制单行 | Ctrl+Shift+C: 复制全部 ",
+                " F4: Edit | Ctrl+C: copy | Ctrl+A: all | Ctrl+Shift+C: copy all ",
+                " F4: 편집 | Ctrl+C: 복사 | Ctrl+A: 전체선택 | Ctrl+Shift+C: 전체복사 ",
+                " F4: 编辑 | Ctrl+C: 复制 | Ctrl+A: 全选 | Ctrl+Shift+C: 复制全部 ",
             ],
             M::StringEditFooterKeys => [
                 " Enter save | Esc cancel | Alt+E enc ",
@@ -734,9 +737,9 @@ impl M {
                 " Enter 保存 | Esc 取消 | Alt+E 编码 ",
             ],
             M::RefsFooterKeys => [
-                " Enter: code | Ctrl+Enter: hex | F4: Edit | Ctrl+C: copy line | Ctrl+Shift+C: copy all ",
-                " Enter: 코드 | Ctrl+Enter: 헥스 | F4: 편집 | Ctrl+C: 한줄복사 | Ctrl+Shift+C: 전체복사 ",
-                " Enter: 代码 | Ctrl+Enter: 十六进制 | F4: 编辑 | Ctrl+C: 复制单行 | Ctrl+Shift+C: 复制全部 ",
+                " Enter: code | Ctrl+Enter: hex | F4: Edit | Ctrl+C: copy | Ctrl+A: all ",
+                " Enter: 코드 | Ctrl+Enter: 헥스 | F4: 편집 | Ctrl+C: 복사 | Ctrl+A: 전체선택 ",
+                " Enter: 代码 | Ctrl+Enter: 十六进制 | F4: 编辑 | Ctrl+C: 复制 | Ctrl+A: 全选 ",
             ],
             M::XrefFooterKeys => [
                 " Enter: jump | Ctrl+C: copy line | Ctrl+Shift+C: copy all ",
@@ -1170,6 +1173,7 @@ impl M {
                 "反汇编语法配色",
             ],
             M::NoteHintbar => ["bottom hint line", "하단 힌트 줄", "底部提示栏"],
+            M::NoteScrollbar => ["scrollbar display", "스크롤 바 표시", "滚动条显示"],
             M::NoteLang => ["interface language", "인터페이스 언어", "界面语言"],
             M::NoteDisasmColor => ["disassembly colour", "디스어셈블 색상", "反汇编颜色"],
         }

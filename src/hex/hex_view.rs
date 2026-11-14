@@ -142,6 +142,9 @@ pub struct HexView {
     /// has to map through it.
     #[serde(skip)]
     pub strings_filtered: Vec<usize>,
+    /// Multi-row selection anchor for the strings dialog list, or `None`.
+    #[serde(skip)]
+    pub strings_selection_anchor: Option<usize>,
     #[serde(skip)]
     #[allow(dead_code)]
     pub table_state: TableState,
@@ -197,6 +200,7 @@ impl HexView {
         // `load_file` clears `App::strings`, so these indices would point into a
         // list that no longer exists.
         self.strings_filtered.clear();
+        self.strings_selection_anchor = None;
     }
 
     /// Secondary encoding, or UTF-8 when none is configured.

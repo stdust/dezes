@@ -1,7 +1,7 @@
 use std::io::Result;
 use ratatui::{
     Frame,
-    crossterm::event::{Event, KeyCode},
+    crossterm::event::{Event, KeyCode, KeyModifiers},
     layout::{Alignment, Constraint, Direction, Layout},
     widgets::{Block, Clear, Paragraph},
 };
@@ -33,7 +33,7 @@ pub fn draw_header_edit_dialog(app: &mut App, frame: &mut Frame) {
     // Wide enough for the title (plus its corner decorations) and the value,
     // but no wider - the old fixed 54 columns left a lot of empty box around a
     // short field name like "ImageBase".
-    let min_width = (title_str.chars().count() + 6) as u16;
+    let min_width = (unicode_width::UnicodeWidthStr::width(title_str.as_str()) + 6) as u16;
     let width = min_width
         .max(24)
         .min(detail_area.width.saturating_sub(4).max(24));
@@ -80,7 +80,7 @@ pub fn draw_header_edit_dialog(app: &mut App, frame: &mut Frame) {
     frame.render_widget(paragraph, dialog_area);
 
     // Render Cursor
-    let cursor_x = dialog_area.x + 1 + app.goto_input.cursor() as u16;
+    let cursor_x = dialog_area.x + 1 + app.goto_input.visual_cursor() as u16;
     let cursor_y = dialog_area.y + 2;
     frame.set_cursor_position((cursor_x.min(dialog_area.x + width - 2), cursor_y));
 }
@@ -95,6 +95,31 @@ fn header_edit_field(app: &mut App) -> (&mut tui_input::Input, &mut Option<usize
 
 pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<()> {
     if let Event::Key(key) = event {
+        let is_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if is_ctrl && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C')) {
+            let input_val = app.goto_input.value();
+            let text_to_copy = if app.goto_selection_all {
+                input_val.to_string()
+            } else if let Some(anchor) = app.goto_selection_anchor {
+                let cursor = app.goto_input.cursor();
+                let s = anchor.min(cursor);
+                let e = anchor.max(cursor);
+                input_val.chars().skip(s).take(e - s).collect::<String>()
+            } else {
+                input_val.to_string()
+            };
+            if !text_to_copy.is_empty() && let Ok(cb) = &mut app.clipboard {
+                let _ = cb.set_text(text_to_copy);
+                App::log(app, "Copied header edit text to clipboard".to_string());
+            }
+            return Ok(());
+        }
+        if is_ctrl && (key.code == KeyCode::Char('a') || key.code == KeyCode::Char('A')) {
+            app.goto_selection_all = true;
+            app.goto_selection_anchor = None;
+            return Ok(());
+        }
+
         match key.code {
             KeyCode::Esc => {
                 app.state = UIState::Normal;
@@ -103,7 +128,7 @@ pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<
             }
             // First keystroke over a fully-selected value replaces it, rather
             // than appending to the value the field was opened with.
-            KeyCode::Char(c) if app.goto_selection_all => {
+            KeyCode::Char(c) if app.goto_selection_all && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 app.goto_selection_all = false;
                 app.goto_input = tui_input::Input::new(c.to_string());
             }

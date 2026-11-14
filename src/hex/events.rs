@@ -131,12 +131,13 @@ pub fn movement_target(app: &App, key: &KeyEvent) -> Option<usize> {
     // the cursor where nothing is readable and drew an empty view.
     let last = app.file_info.buffer_len().saturating_sub(1);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
 
     let target = match key.code {
-        KeyCode::Left => ofs.saturating_sub(1),
-        KeyCode::Right => (ofs + 1).min(last),
-        KeyCode::Up => ofs.saturating_sub(bpl),
-        KeyCode::Down => (ofs + bpl).min(last),
+        KeyCode::Left if !ctrl && !alt => ofs.saturating_sub(1),
+        KeyCode::Right if !ctrl && !alt => (ofs + 1).min(last),
+        KeyCode::Up if !ctrl && !alt => ofs.saturating_sub(bpl),
+        KeyCode::Down if !ctrl && !alt => (ofs + bpl).min(last),
         KeyCode::Home => {
             if ctrl {
                 0
@@ -203,6 +204,7 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
 
             if count > 0 {
                 crate::app::App::log(app, format!("Reverted {} changed byte(s) in selected block", count));
+                app.update_file_headers();
             } else {
                 crate::beep!();
             }
@@ -214,6 +216,7 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.view_generation = app.view_generation.wrapping_add(1);
                     crate::app::App::log(app, format!("Undid change at offset 0x{:X}", ofs));
                     undid = true;
+                    app.update_file_headers();
                     break;
                 }
             }
@@ -227,6 +230,7 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         if let Some((ofs, val)) = app.hex_view.redo_history.pop() {
             crate::hex::edit::record_edit_redo(app, ofs, val);
             crate::app::App::log(app, format!("Redid change at offset 0x{:X}", ofs));
+            app.update_file_headers();
         } else {
             crate::beep!();
         }
@@ -245,6 +249,7 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 // silently do nothing.
                 app.hex_view.changed_history.retain(|o| *o != ofs);
                 app.hex_view.redo_history.push((ofs, val));
+                app.view_generation = app.view_generation.wrapping_add(1);
     
                 // Advance one byte, the way the F2 edit-mode fills do: reverting
                 // a run of patched bytes is the common case, so holding Alt+F3
@@ -307,11 +312,6 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     }
 
     fn paste_hex_bytes(app: &mut App) {
-        if app.file_info.is_read_only {
-            app.read_only_error(crate::i18n::M::RoPaste);
-            return;
-        }
-
         let text = if let Ok(clip) = app.clipboard.as_mut() {
             if let Ok(t) = clip.get_text() {
                 t
@@ -376,25 +376,15 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.hex_view.selection.end = anchor.max(target);
             app.hex_view.selection.direction = None;
             app.hex_view.selection.is_mouse = false;
-            app.goto(target);
-            return Ok(false);
-        }
-        // Moving without Shift drops the selection, matching the Disasm view.
-        if app.hex_view.shift_anchor.is_some() {
+        } else if app.hex_view.shift_anchor.is_some() || app.hex_view.selection.start != app.hex_view.selection.end {
             app.hex_view.shift_anchor = None;
             app.hex_view.selection.clear();
         }
+        app.goto(target);
+        return Ok(false);
     }
 
-    // it is important to call goto as it looks for the offset in the
-    // cache and, in case it is not there, it reads the needed block, and
-    // also checks and updates offset position, cursor position, etc.
     match key.code {
-        // move left
-        KeyCode::Left if app.hex_view.offset > 0 && !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.goto(app.hex_view.offset - 1);
-        }
-
         KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::ALT) => {
             if let Some(b) = app.read_u8(app.hex_view.offset) {
                 if app.hex_view.highlights.contains(&b) {
@@ -403,57 +393,6 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.hex_view.highlights.insert(b);
                 }
             }
-        }
-        // move right
-        KeyCode::Right if !key.modifiers.contains(KeyModifiers::ALT) && !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.goto(app.hex_view.offset + 1);
-        }
-        // move up
-        KeyCode::Up if app.hex_view.offset >= app.config.hex_mode_bytes_per_line => {
-            app.goto(app.hex_view.offset - app.config.hex_mode_bytes_per_line);
-        }
-        // move down
-        KeyCode::Down => {
-            app.goto(app.hex_view.offset + app.config.hex_mode_bytes_per_line);
-        }
-        KeyCode::Home => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                app.goto(0);
-            } else {
-                // `saturating_sub`: cursor.x can exceed offset right after a
-                // resize or a `:set byteline` change, before goto re-syncs it.
-                app.goto(app.hex_view.offset.saturating_sub(app.hex_view.cursor.x));
-            }
-        }
-
-        // EOL. The vi-style '$' alias is gone; End alone does this.
-        KeyCode::End if app.file_info.buffer_len() > 0 => {
-            let last_offset = app.file_info.buffer_len() - 1;
-            // `Ctrl+End` goes to EOF too
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                app.goto(last_offset);
-            } else {
-                // `End` or `$` alone go to EOL
-                let eol = app
-                    .hex_view
-                    .offset
-                    .saturating_add(app.config.hex_mode_bytes_per_line)
-                    .saturating_sub(app.hex_view.cursor.x)
-                    .saturating_sub(1);
-                app.goto(eol.min(last_offset));
-            }
-        }
-        // go down one page
-        KeyCode::PageDown => {
-            app.goto(app.hex_view.offset + app.reader.page_current_size);
-        }
-        // go up one page
-        KeyCode::PageUp => {
-            app.goto(
-                app.hex_view
-                    .offset
-                    .saturating_sub(app.reader.page_current_size),
-            );
         }
         // paste (Shift+V), replacing the old bare 'b'/'B'/'p'/'P'
         //
@@ -496,10 +435,6 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         // The read-only check used to sit in this guard, so the key fell through to
         // `_ => {}` and did nothing without saying why. It is inside the arm now.
         KeyCode::Char('~') if app.hex_view.offset < app.file_info.size => {
-            if app.file_info.is_read_only {
-                app.read_only_error(crate::i18n::M::RoCase);
-                return Ok(false);
-            }
             // With a selection, flip the case of every byte in it; otherwise
             // just the byte under the cursor (and advance, as before).
             if app.hex_view.selection.start != app.hex_view.selection.end {
@@ -539,9 +474,7 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         // - so an unguarded arm here toggled the address column *and* dropped into
         // edit mode.
         KeyCode::F(2) if !key.modifiers.contains(KeyModifiers::ALT) => {
-            if app.file_info.is_read_only {
-                app.read_only_error(crate::i18n::M::RoEditMode);
-            } else if app.hex_view.offset < app.file_info.size {
+            if app.hex_view.offset < app.file_info.size {
                 app.state = UIState::HexEditing;
             }
         }
@@ -575,15 +508,6 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         // active these cover the whole range; with none they act on the byte
         // under the cursor, which is a useful shorthand in its own right.
         KeyCode::Insert | KeyCode::Delete => {
-            if app.file_info.is_read_only {
-                let what = if key.code == KeyCode::Insert {
-                    crate::i18n::M::RoFillZero
-                } else {
-                    crate::i18n::M::RoFillNop
-                };
-                app.read_only_error(what);
-                return Ok(false);
-            }
             let value = if key.code == KeyCode::Insert { 0x00 } else { 0x90 };
             let has_selection = app.hex_view.selection.start != app.hex_view.selection.end;
             if has_selection {

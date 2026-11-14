@@ -40,20 +40,20 @@ pub fn is_truncated(items: &[XrefItem]) -> bool {
 }
 
 pub fn find_xrefs(app: &App, target_va: u64) -> Vec<XrefItem> {
-    let mut items = Vec::new();
-    let buffer = app.file_info.get_buffer_ref();
-    let filesize = buffer.len();
-    if filesize == 0 {
-        return items;
-    }
-
     // A zero target matches every zeroed immediate and displacement in the
     // file, which on non-code data is most of them - hundreds of meaningless
     // hits. Callers are expected to reject this before searching; this is the
     // backstop.
     if target_va == 0 {
-        return items;
+        return Vec::new();
     }
+
+    app.with_effective_buffer(|buffer| {
+        let mut items = Vec::new();
+        let filesize = buffer.len();
+        if filesize == 0 {
+            return items;
+        }
 
     let bitness = app.bitness();
 
@@ -176,7 +176,8 @@ pub fn find_xrefs(app: &App, target_va: u64) -> Vec<XrefItem> {
         find_data_references(app, target_va, buffer, &mut items);
     }
 
-    items
+        items
+    })
 }
 
 /// Offsets in `haystack` where `value` appears as a little-endian `u64`.

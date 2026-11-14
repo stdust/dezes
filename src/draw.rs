@@ -17,6 +17,18 @@ use crate::{
 /// widgets by calling the right functions to do so.
 /// It is passed as callback function to terminal.draw()
 /// in the main() loop.
+fn split_content_and_scrollbar(middle_area: Rect, show_scrollbar: bool) -> (Rect, Rect) {
+    if show_scrollbar && middle_area.width >= 4 {
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![Constraint::Min(0), Constraint::Length(2)])
+            .split(middle_area);
+        (split[0], split[1])
+    } else {
+        (middle_area, Rect::default())
+    }
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     if frame.area().width < 68 || frame.area().height < 10 {
         let err = Paragraph::new("dezes needs at least a 68x10 terminal.");
@@ -57,6 +69,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
             app.command_area = vertical_layout[3];
 
+            let (content_area, scrollbar_area) =
+                split_content_and_scrollbar(vertical_layout[1], app.config.scrollbar);
+            app.scrollbar_area = scrollbar_area;
+
             let addr_col_width = app.get_addr_col_width() as u16;
             // `max(1)` + `saturating_sub`: `:set byteline 0` used to make this
             // `0 * 3 - 1` and panic on the next frame.
@@ -83,7 +99,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         Constraint::Length(1), // vertical separator 4 (right of enc2)
                         Constraint::Min(0),    // remaining space
                     ])
-                    .split(vertical_layout[1]);
+                    .split(content_area);
 
                 let sep_height = horizontal_layout[0].height as usize;
                 let bg_color = app.config.theme.main.bg.unwrap_or(Color::Reset);
@@ -116,7 +132,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         Constraint::Length(1), // vertical separator 3 (right of enc1)
                         Constraint::Min(0),    // remaining space
                     ])
-                    .split(vertical_layout[1]);
+                    .split(content_area);
 
                 let sep_height = horizontal_layout[0].height as usize;
                 let bg_color = app.config.theme.main.bg.unwrap_or(Color::Reset);
@@ -134,6 +150,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 frame.render_widget(sep_para3, horizontal_layout[5]);
             }
             comment::comment_show_draw(app, frame);
+            if app.config.scrollbar {
+                crate::scrollbar::draw_scrollbar(app, frame, scrollbar_area);
+            }
         }
         AppView::Text => {
             let constraints = vec![
@@ -152,13 +171,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
             app.command_area = vertical_layout[2];
 
+            let (content_area, scrollbar_area) =
+                split_content_and_scrollbar(vertical_layout[0], app.config.scrollbar);
+            app.scrollbar_area = scrollbar_area;
+
             let horizontal_layout = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints(vec![Constraint::Percentage(100)])
-                .split(vertical_layout[0]);
+                .split(content_area);
 
             text::draw::text_contents_draw(app, frame, horizontal_layout[0]);
             app.text_view.area_height = horizontal_layout[0].height;
+
+            if app.config.scrollbar {
+                crate::scrollbar::draw_scrollbar(app, frame, scrollbar_area);
+            }
         }
         AppView::Header => {
             let constraints = vec![
@@ -177,13 +204,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
             app.command_area = vertical_layout[2];
 
+            let (content_area, scrollbar_area) =
+                split_content_and_scrollbar(vertical_layout[0], app.config.scrollbar);
+            app.scrollbar_area = scrollbar_area;
+
             let horizontal_layout = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints(vec![Constraint::Percentage(100)])
-                .split(vertical_layout[0]);
+                .split(content_area);
 
             header::draw::header_contents_draw(app, frame, horizontal_layout[0]);
             app.text_view.area_height = horizontal_layout[0].height;
+
+            if app.config.scrollbar {
+                crate::scrollbar::draw_scrollbar(app, frame, scrollbar_area);
+            }
         }
         AppView::Disasm => {
             let constraints = vec![
@@ -205,12 +240,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
             app.command_area = vertical_layout[3];
 
+            let (content_area, scrollbar_area) =
+                split_content_and_scrollbar(vertical_layout[1], app.config.scrollbar);
+            app.scrollbar_area = scrollbar_area;
+
             let horizontal_layout = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints(vec![Constraint::Percentage(100)])
-                .split(vertical_layout[1]);
+                .split(content_area);
 
             crate::disasm::draw::draw_disasm_view(app, frame, horizontal_layout[0]);
+
+            if app.config.scrollbar {
+                crate::scrollbar::draw_scrollbar(app, frame, scrollbar_area);
+            }
         }
     }
 

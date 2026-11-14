@@ -31,9 +31,10 @@ pub fn get_visual_lines(app: &App) -> Vec<String> {
         } else {
             let mut cur = String::new();
             let mut cur_w = 0;
+            use unicode_width::UnicodeWidthChar;
             for ch in cleaned.chars() {
-                let ch_w = 1;
-                if cur_w + ch_w > width {
+                let ch_w = ch.width().unwrap_or(1);
+                if cur_w + ch_w > width && !cur.is_empty() {
                     visual_lines.push(cur);
                     cur = String::new();
                     cur_w = 0;
@@ -186,4 +187,28 @@ pub fn text_contents_draw(app: &mut App, frame: &mut Frame, area: Rect) {
         .scroll(app.text_view.scroll_offset);
 
     frame.render_widget(paragraph, text_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cjk_visual_lines_width_calculation() {
+        let dir = std::env::temp_dir().join("dezes_cjk_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("cjk.txt");
+        let _ = std::fs::write(&path, "가나다라마".as_bytes());
+
+        let mut app = App::new();
+        app.config.database = false;
+        app.load_file(path.to_str().unwrap(), 0, true).expect("open");
+        app.text_view.area_width = 6;
+        app.text_view.area_height = 10;
+        let lines = get_visual_lines(&app);
+        assert_eq!(lines, vec!["가나다", "라마"]);
+
+        app.file_info.mmap = None;
+        let _ = std::fs::remove_file(&path);
+    }
 }

@@ -120,6 +120,7 @@ pub const OPTION_NAMES: &[&str] = &[
     "highlight",
     "hilight",
     "hintbar",
+    "scrollbar",
     "backup",
     "nobackup",
     "view",
@@ -269,12 +270,17 @@ pub fn current_settings(app: &App) -> Vec<Setting> {
             note: M::NoteHintbar.tr(lang),
         },
         Setting {
+            name: "scrollbar",
+            value: on_off(app.config.scrollbar),
+            note: M::NoteScrollbar.tr(lang),
+        },
+        Setting {
             name: "backup",
             value: on_off(app.config.backup),
             note: match lang {
-                crate::i18n::Lang::Ko => "저장 시 원본 .bak 백업 파일 생성 여부 (:set backup on|off)",
-                crate::i18n::Lang::Zh => "保存时是否创建.bak备份文件 (:set backup on|off)",
-                _ => "create .bak backup before saving (:set backup on|off)",
+                crate::i18n::Lang::Ko => "저장 시 원본 Backup-파일명 백업 파일 생성 여부 (:set backup on|off)",
+                crate::i18n::Lang::Zh => "保存时是否创建Backup-文件名备份文件 (:set backup on|off)",
+                _ => "create Backup-<filename> backup before saving (:set backup on|off)",
             },
         },
     ];

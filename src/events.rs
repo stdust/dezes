@@ -8,9 +8,6 @@ use crate::hex;
 use crate::text;
 use crate::{commands, header};
 
-/// Longest possible x86 instruction, used to size decode windows.
-const MAX_INSTR_BYTES: usize = 16;
-
 /// Maps a column inside the hex dump to the byte index within its row.
 ///
 /// The previous inline version hardcoded the 16-bytes-per-line geometry
@@ -32,8 +29,7 @@ fn hex_column_to_byte(rel_x: usize, bpl: usize) -> usize {
 
 /// Byte index within a row for a mouse click at absolute column `col_idx`.
 fn mouse_column_to_byte(col_idx: usize, addr_width: usize, bpl: usize) -> usize {
-    let extra_sep = if bpl >= 16 { 1 } else { 0 };
-    let hex_dump_width = (bpl * 3).saturating_sub(1) + extra_sep;
+    let hex_dump_width = (bpl * 3).saturating_sub(1);
     let hex_start = addr_width + 1;
 
     if col_idx >= hex_start && col_idx < hex_start + hex_dump_width {
@@ -50,50 +46,24 @@ fn mouse_column_to_byte(col_idx: usize, addr_width: usize, bpl: usize) -> usize 
 /// The scan window is sized from the requested row instead of the old hardcoded
 /// 500 bytes, which made rows past roughly row 100 unclickable.
 fn disasm_offset_at_row(
-    buffer: &[u8],
+    app: &App,
     page_start: usize,
-    initial_va: u64,
-    bitness: u32,
+    _initial_va: u64,
+    _bitness: u32,
     filesize: usize,
     target_row: usize,
 ) -> usize {
-    if page_start >= buffer.len() {
-        return page_start;
-    }
-    let scan_end = page_start
-        .saturating_add((target_row + 2) * MAX_INSTR_BYTES)
-        .min(filesize)
-        .min(buffer.len());
-    let bytes = &buffer[page_start..scan_end];
-    let decoder = iced_x86::Decoder::with_ip(bitness, bytes, initial_va, iced_x86::DecoderOptions::NONE);
-
     let mut current_offset = page_start;
     let mut found_ofs = page_start;
-    for (row_count, instr) in decoder.into_iter().enumerate() {
+    for row_count in 0..=target_row {
         found_ofs = current_offset;
-        if row_count == target_row {
+        if row_count == target_row || current_offset >= filesize {
             break;
         }
-        current_offset += instr.len();
-        if current_offset >= filesize {
-            break;
-        }
+        let len = crate::disasm::nav::instruction_len(app, current_offset).unwrap_or(1);
+        current_offset = (current_offset + len).min(filesize);
     }
     found_ofs
-}
-
-/// Length of the first instruction at `offset`, used for wheel scrolling.
-fn first_instr_len(buffer: &[u8], offset: usize, initial_va: u64, bitness: u32, filesize: usize) -> usize {
-    if offset >= buffer.len() {
-        return 1;
-    }
-    let end = offset
-        .saturating_add(MAX_INSTR_BYTES)
-        .min(filesize)
-        .min(buffer.len());
-    let bytes = &buffer[offset..end];
-    let dec = iced_x86::Decoder::with_ip(bitness, bytes, initial_va, iced_x86::DecoderOptions::NONE);
-    dec.into_iter().next().map(|i| i.len()).unwrap_or(1)
 }
 
 #[allow(dead_code)]
@@ -136,6 +106,10 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
             app.status_info = None;
             app.status_bar_selection = None;
             app.status_bar_dragging = false;
+            if app.state == UIState::Error {
+                app.dialog_renderer = None;
+                app.state = UIState::Normal;
+            }
             match app.state {
                 UIState::Normal | UIState::Error => {
                     if app.editor_view == AppView::Header && key.code == KeyCode::Enter {
@@ -167,6 +141,7 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                 UIState::DialogHelp => { hex::help::dialog_help_events(app, key)?; },
                 UIState::DialogEncoding => { text::dialog_encoding::dialog_encoding_events(app, key)?; },
                 UIState::DialogEncoding2 => { text::dialog_encoding::dialog_encoding2_events(app, key)?; },
+                UIState::DialogDisasmEncoding => { crate::disasm::events::dialog_disasm_encoding_events(app, key)?; },
                 UIState::DialogEditData => { hex::edit_dialog::dialog_edit_events(app, &event)?; },
                 UIState::DialogModifyBlock => { hex::modify_dialog::dialog_modify_events(app, &event)?; },
                 UIState::DialogReplacePattern => { handle_replace_pattern_events(app, &event)?; },
@@ -236,19 +211,25 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
             if matches!(app.state, UIState::DialogStrings) =>
         {
             hex::strings::dialog_strings_events(app, &event)?;
-            return Ok(false);
+            return Ok(true);
         }
         Event::Mouse(_)
             if matches!(app.state, UIState::DialogBookmarks) =>
         {
             hex::bookmark::dialog_bookmarks_events(app, &event)?;
-            return Ok(false);
+            return Ok(true);
         }
         Event::Mouse(_)
             if matches!(app.state, UIState::DialogStringRef) =>
         {
             crate::disasm::string_ref_dialog::dialog_string_ref_events(app, &event)?;
-            return Ok(false);
+            return Ok(true);
+        }
+        Event::Mouse(_)
+            if matches!(app.state, UIState::DialogPatches) =>
+        {
+            crate::hex::patches_dialog::dialog_patches_events(app, &event)?;
+            return Ok(true);
         }
         Event::Mouse(_)
             if !matches!(app.state, UIState::Normal | UIState::HexSelection | UIState::Error) =>
@@ -256,6 +237,44 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
             return Ok(false);
         }
         Event::Mouse(mouse) => {
+            if app.state == UIState::Error {
+                app.dialog_renderer = None;
+                app.state = UIState::Normal;
+            }
+            // Scrollbar mouse interaction (left-click jump and drag)
+            if app.config.scrollbar
+                && app.scrollbar_area.width > 0
+                && app.scrollbar_area.height > 0
+            {
+                let on_scrollbar = mouse.column >= app.scrollbar_area.x
+                    && mouse.column < app.scrollbar_area.x + app.scrollbar_area.width
+                    && mouse.row >= app.scrollbar_area.y
+                    && mouse.row < app.scrollbar_area.y + app.scrollbar_area.height;
+
+                match mouse.kind {
+                    ratatui::crossterm::event::MouseEventKind::Down(
+                        ratatui::crossterm::event::MouseButton::Left,
+                    ) if on_scrollbar => {
+                        app.scrollbar_dragging = true;
+                        crate::scrollbar::handle_mouse_click(app, mouse.row);
+                        return Ok(true);
+                    }
+                    ratatui::crossterm::event::MouseEventKind::Drag(
+                        ratatui::crossterm::event::MouseButton::Left,
+                    ) if app.scrollbar_dragging => {
+                        crate::scrollbar::handle_mouse_click(app, mouse.row);
+                        return Ok(true);
+                    }
+                    ratatui::crossterm::event::MouseEventKind::Up(
+                        ratatui::crossterm::event::MouseButton::Left,
+                    ) if app.scrollbar_dragging => {
+                        app.scrollbar_dragging = false;
+                        return Ok(true);
+                    }
+                    _ => {}
+                }
+            }
+
             // Status bar mouse drag selection & copy
             if mouse.row == app.command_area.y || app.status_bar_dragging {
                 if let Some(text) = app.status_info.clone().or_else(|| app.status_error.clone()) {
@@ -337,7 +356,7 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
             // why the Section Tools actions looked unclickable.
             if app.editor_view == crate::editor::AppView::Header {
                 header_mouse(app, &mouse);
-                return Ok(false);
+                return Ok(true);
             }
 
             let bpl = app.config.hex_mode_bytes_per_line.max(1);
@@ -357,9 +376,8 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         if in_rows =>
                     {
                         let target_row = (mouse.row - 1) as usize;
-                        let buffer = app.file_info.get_buffer_ref();
                         let found_ofs =
-                            disasm_offset_at_row(buffer, page_start, initial_va, bitness, filesize, target_row);
+                            disasm_offset_at_row(app, page_start, initial_va, bitness, filesize, target_row);
 
                         let now = std::time::Instant::now();
                         let is_double_click = if let Some((last_time, last_row, _)) = app.last_left_click {
@@ -377,42 +395,33 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         } else {
                             app.last_left_click = Some((now, mouse.row, mouse.column));
                         }
+                        return Ok(true);
                     }
                     ratatui::crossterm::event::MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left)
                         if in_rows =>
                     {
                         let target_row = (mouse.row - 1) as usize;
-                        let buffer = app.file_info.get_buffer_ref();
                         let found_ofs =
-                            disasm_offset_at_row(buffer, page_start, initial_va, bitness, filesize, target_row);
+                            disasm_offset_at_row(app, page_start, initial_va, bitness, filesize, target_row);
                         if app.disasm_selection_anchor.is_none() {
                             app.disasm_selection_anchor = Some(app.hex_view.offset);
                         }
                         app.hex_view.offset = found_ofs;
+                        return Ok(true);
                     }
                     ratatui::crossterm::event::MouseEventKind::ScrollUp => {
-                        let buffer = app.file_info.get_buffer_ref();
-                        let mut curr_ofs = page_start;
-                        for _ in 0..3 {
-                            let curr_va = app.get_va(curr_ofs);
-                            let advance = first_instr_len(buffer, curr_ofs, curr_va, bitness, filesize);
-                            curr_ofs = curr_ofs.saturating_sub(advance);
-                        }
+                        let curr_ofs = crate::disasm::nav::retreat(app, page_start, 3);
                         app.reader.page_start = curr_ofs;
                         app.hex_view.offset = curr_ofs;
                         app.disasm_selection_anchor = None;
+                        return Ok(true);
                     }
                     ratatui::crossterm::event::MouseEventKind::ScrollDown => {
-                        let buffer = app.file_info.get_buffer_ref();
-                        let mut curr_ofs = page_start;
-                        for _ in 0..3 {
-                            let curr_va = app.get_va(curr_ofs);
-                            let advance = first_instr_len(buffer, curr_ofs, curr_va, bitness, filesize);
-                            curr_ofs = (curr_ofs + advance).min(filesize.saturating_sub(1));
-                        }
+                        let curr_ofs = crate::disasm::nav::advance(app, page_start, 3);
                         app.reader.page_start = curr_ofs;
                         app.hex_view.offset = curr_ofs;
                         app.disasm_selection_anchor = None;
+                        return Ok(true);
                     }
                     _ => {}
                 }
@@ -430,6 +439,7 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         let max_l = app.text_view.lines_to_show.saturating_sub(1);
                         app.text_view.cursor = (click_line.min(max_l), click_col);
                         app.text_view.selection_anchor = None;
+                        return Ok(true);
                     }
                     ratatui::crossterm::event::MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left)
                         if in_rows =>
@@ -441,6 +451,7 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         let drag_col = ((mouse.column as usize).saturating_sub(1)).saturating_add(app.text_view.scroll_offset.1 as usize);
                         let max_l = app.text_view.lines_to_show.saturating_sub(1);
                         app.text_view.cursor = (drag_line.min(max_l), drag_col);
+                        return Ok(true);
                     }
                     ratatui::crossterm::event::MouseEventKind::ScrollUp => {
                         if app.text_view.cursor.0 >= 3 {
@@ -453,6 +464,7 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         } else {
                             app.text_view.scroll_offset.0 = 0;
                         }
+                        return Ok(true);
                     }
                     ratatui::crossterm::event::MouseEventKind::ScrollDown => {
                         let max_l = app.text_view.lines_to_show.saturating_sub(1);
@@ -460,6 +472,7 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         if (app.text_view.scroll_offset.0 as usize) + 3 < app.text_view.lines_to_show {
                             app.text_view.scroll_offset.0 += 3;
                         }
+                        return Ok(true);
                     }
                     _ => {}
                 }
@@ -487,6 +500,7 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         app.hex_view.cursor.y = row_idx;
                         app.hex_view.cursor.x = byte_in_row;
 
+                        app.hex_view.shift_anchor = Some(offset);
                         app.hex_view.selection.start = offset;
                         app.hex_view.selection.end = offset;
                         app.hex_view.selection.direction = None;
@@ -495,12 +509,8 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
 
                         if is_double_click {
                             app.last_left_click = None;
-                            if !app.file_info.is_read_only {
-                                app.state = UIState::DialogEditData;
-                                crate::hex::edit_dialog::open_edit_dialog(app);
-                            } else {
-                                app.read_only_error(crate::i18n::M::RoEditData);
-                            }
+                            app.state = UIState::DialogEditData;
+                            crate::hex::edit_dialog::open_edit_dialog(app);
                         } else {
                             app.last_left_click = Some((now, mouse.row, mouse.column));
                         }
@@ -514,13 +524,9 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         let byte_in_row = mouse_column_to_byte(col_idx, addr_width, bpl);
 
                         let offset = (page_start + row_idx * bpl + byte_in_row).min(app.file_info.size.saturating_sub(1));
-                        let start = app.hex_view.selection.start;
-                        if offset < start {
-                            app.hex_view.selection.start = offset;
-                            app.hex_view.selection.end = start;
-                        } else {
-                            app.hex_view.selection.end = offset;
-                        }
+                        let anchor = app.hex_view.shift_anchor.unwrap_or(app.hex_view.selection.start);
+                        app.hex_view.selection.start = anchor.min(offset);
+                        app.hex_view.selection.end = anchor.max(offset);
                         app.hex_view.selection.is_mouse = true;
                         // A mouse drag happens over the byte grid, so it is a hex
                         // selection regardless of which column last had keyboard
@@ -616,7 +622,19 @@ fn header_mouse(app: &mut App, mouse: &ratatui::crossterm::event::MouseEvent) {
                     }
                 } else {
                     let Some(table_row) = mouse.row.checked_sub(2) else { return };
-                    let picked = table_row as usize;
+                    let sel_table_idx = if app.header_view.detail_index < sec_count {
+                        app.header_view.detail_index
+                    } else {
+                        app.header_view.tools_section_index.min(sec_count.saturating_sub(1))
+                    };
+                    let table_h = total_h.saturating_sub(tools_h);
+                    let visible_rows = (table_h as usize).saturating_sub(2);
+                    let (start_idx, _) = crate::header::formats::pe::fields::visible_window(
+                        sec_count,
+                        sel_table_idx,
+                        visible_rows,
+                    );
+                    let picked = start_idx + table_row as usize;
                     if picked < sec_count {
                         app.header_view.detail_index = picked;
                         app.header_view.tools_section_index = picked;
@@ -636,11 +654,15 @@ fn header_mouse(app: &mut App, mouse: &ratatui::crossterm::event::MouseEvent) {
             }
 
             let Some(row) = row.checked_sub(1) else { return }; // column headings
-            let picked = row as usize;
             let max = crate::header::formats::pe::events::max_detail_index_for_mouse(app);
-            if picked > max {
-                return;
-            }
+            let total = max + 1;
+            let visible_rows = (app.screen.height as usize).saturating_sub(4);
+            let (start_idx, _) = crate::header::formats::pe::fields::visible_window(
+                total,
+                app.header_view.detail_index,
+                visible_rows,
+            );
+            let picked = (start_idx + row as usize).min(max);
             app.header_view.detail_index = picked;
 
             if is_double_click {
@@ -689,6 +711,7 @@ pub fn handle_replace_pattern_events(app: &mut App, event: &Event) -> Result<boo
                 app.dialog_renderer = Some(crate::hex::find_dialog::draw_find_dialog);
                 if !current_text.is_empty() {
                     app.hex_view.find_dialog.input_hex = tui_input::Input::new(current_text);
+                    app.hex_view.find_dialog.focus = crate::hex::edit_dialog::EditDialogFocus::Hex;
                     let enc1 = app.text_view.table;
                     app.hex_view.find_dialog.sync_from_focus(enc1);
                 }

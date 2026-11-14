@@ -179,12 +179,13 @@ pub fn draw_modify_dialog(app: &mut App, frame: &mut Frame) {
 
     frame.render_widget(Clear, dialog_area);
 
-    let (range_start, range_end) = if app.hex_view.selection.end > app.hex_view.selection.start {
-        (app.hex_view.selection.start, app.hex_view.selection.end)
+    let (range_start, range_end, block_size) = if app.hex_view.selection.end > app.hex_view.selection.start {
+        let s = app.hex_view.selection.start;
+        let e = app.hex_view.selection.end;
+        (s, e, e.saturating_sub(s).saturating_add(1))
     } else {
-        (app.hex_view.offset, (app.hex_view.offset + 1).min(app.file_info.size))
+        (app.hex_view.offset, app.hex_view.offset, 1)
     };
-    let block_size = range_end.saturating_sub(range_start);
 
     let dialog_style = app.config.theme.dialog;
     let highlight_style = app.config.theme.highlight;
@@ -469,13 +470,6 @@ pub fn apply_block_modification(app: &mut App) {
         return;
     }
 
-    if app.file_info.is_read_only {
-        // The opening shortcuts refuse read-only files already; this is the
-        // backstop, and it says so rather than dropping the operation silently.
-        app.read_only_error(crate::i18n::M::RoModifyBlock);
-        return;
-    }
-
     let (op, val_str, step_str, is_hex, bit_size) = {
         let dialog = &app.hex_view.modify_dialog;
         (
@@ -487,16 +481,18 @@ pub fn apply_block_modification(app: &mut App) {
         )
     };
 
+    let clean_val = val_str.trim().strip_prefix("0x").or_else(|| val_str.trim().strip_prefix("0X")).unwrap_or(val_str.trim());
     let operand: u64 = if is_hex {
-        u64::from_str_radix(&val_str, 16).unwrap_or(0)
+        u64::from_str_radix(clean_val, 16).unwrap_or(0)
     } else {
-        val_str.parse::<u64>().unwrap_or(0)
+        clean_val.parse::<u64>().unwrap_or(0)
     };
 
+    let clean_step = step_str.trim().strip_prefix("0x").or_else(|| step_str.trim().strip_prefix("0X")).unwrap_or(step_str.trim());
     let step: u64 = if is_hex {
-        u64::from_str_radix(&step_str, 16).unwrap_or(1)
+        u64::from_str_radix(clean_step, 16).unwrap_or(1)
     } else {
-        step_str.parse::<u64>().unwrap_or(1)
+        clean_step.parse::<u64>().unwrap_or(1)
     };
 
     let span = end.saturating_sub(start).saturating_add(1);

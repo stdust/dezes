@@ -78,6 +78,8 @@ pub struct StringRefDialog {
     pub focus_filter: bool,
     pub encoding_filter: EncodingFilter,
     pub selected_index: usize,
+    /// Selection anchor for multi-row block selection in the table, or `None`.
+    pub selection_anchor: Option<usize>,
 }
 
 impl Default for StringRefDialog {
@@ -90,6 +92,7 @@ impl Default for StringRefDialog {
             focus_filter: false,
             encoding_filter: EncodingFilter::All,
             selected_index: 0,
+            selection_anchor: None,
         }
     }
 }
@@ -105,10 +108,12 @@ impl StringRefDialog {
         self.filter_input = Input::default();
         self.focus_filter = false;
         self.selected_index = 0;
+        self.selection_anchor = None;
         self.update_filter();
     }
 
     pub fn update_filter(&mut self) {
+        self.selection_anchor = None;
         let pattern = self.filter_input.value().trim();
         self.filtered_indices.clear();
 
@@ -172,6 +177,7 @@ impl StringRefDialog {
         self.focus_filter = false;
         self.encoding_filter = EncodingFilter::All;
         self.selected_index = 0;
+        self.selection_anchor = None;
     }
 }
 
@@ -266,13 +272,26 @@ pub fn draw_string_ref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
         (start, end, Some(rel_sel))
     };
 
+    let (sel_min, sel_max) = match dialog.selection_anchor {
+        Some(anchor) => (
+            anchor.min(dialog.selected_index),
+            anchor.max(dialog.selected_index),
+        ),
+        None => (dialog.selected_index, dialog.selected_index),
+    };
+
     let mut rows = Vec::with_capacity(end_idx - start_idx);
     for idx in start_idx..end_idx {
         let item_idx = dialog.filtered_indices[idx];
         let item = &dialog.items[item_idx];
+        let in_selection = total_count > 0 && idx >= sel_min && idx <= sel_max;
         let is_selected = idx == dialog.selected_index;
-        let row_style = if is_selected {
-            app.config.theme.highlight.add_modifier(Modifier::BOLD)
+        let row_style = if in_selection {
+            let mut style = app.config.theme.highlight;
+            if is_selected {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            style
         } else {
             dialog_style
         };
@@ -360,11 +379,15 @@ pub fn draw_string_ref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 }
 
-fn measure_string_capacity(buffer: &[u8], offset: usize, is_utf16: bool) -> (usize, usize) {
-    if offset >= buffer.len() {
+fn measure_string_capacity(app: &App, offset: usize, is_utf16: bool) -> (usize, usize) {
+    let buf_len = app.file_info.buffer_len();
+    if offset >= buf_len {
         return (0, 0);
     }
-    let slice = &buffer[offset..];
+    let max_read = (buf_len - offset).min(1024);
+    let mut temp = vec![0u8; max_read];
+    app.read_effective_slice(offset, &mut temp);
+    let slice = &temp[..];
     let term_size = if is_utf16 { 2 } else { 1 };
     if is_utf16 {
         let mut len = 0;
@@ -379,13 +402,14 @@ fn measure_string_capacity(buffer: &[u8], offset: usize, is_utf16: bool) -> (usi
         }
         let mut total_len = len;
         // Count contiguous trailing 00 padding bytes
-        while offset + total_len + 1 < buffer.len() && buffer[offset + total_len] == 0 && buffer[offset + total_len + 1] == 0 {
+        while total_len + 1 < slice.len() && slice[total_len] == 0 && slice[total_len + 1] == 0 {
             total_len += 2;
             if total_len >= 1024 {
                 break;
             }
         }
-        let budget = total_len.saturating_sub(term_size);
+        let mut budget = total_len.saturating_sub(term_size);
+        budget -= budget % 2;
         (budget, total_len)
     } else {
         let mut len = 0;
@@ -400,7 +424,7 @@ fn measure_string_capacity(buffer: &[u8], offset: usize, is_utf16: bool) -> (usi
         }
         let mut total_len = len;
         // Count contiguous trailing 00 padding bytes
-        while offset + total_len < buffer.len() && buffer[offset + total_len] == 0 {
+        while total_len < slice.len() && slice[total_len] == 0 {
             total_len += 1;
             if total_len >= 1024 {
                 break;
@@ -412,11 +436,6 @@ fn measure_string_capacity(buffer: &[u8], offset: usize, is_utf16: bool) -> (usi
 }
 
 pub fn open_string_ref_edit(app: &mut App) {
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoStringEdit);
-        return;
-    }
-
     let dialog = &app.disasm_string_ref_dialog;
     let Some(&real_idx) = dialog.filtered_indices.get(dialog.selected_index) else {
         crate::beep!();
@@ -434,8 +453,7 @@ pub fn open_string_ref_edit(app: &mut App) {
         item.string_text.trim_matches('"').to_string()
     };
 
-    let buffer = app.file_info.get_buffer_ref();
-    let (budget, total_capacity) = measure_string_capacity(buffer, item.string_offset, is_utf16);
+    let (budget, total_capacity) = measure_string_capacity(app, item.string_offset, is_utf16);
     let (budget, total_capacity) = if total_capacity == 0 {
         let raw_len = crate::util::encode_text(
             &raw_text,
@@ -489,47 +507,79 @@ pub fn dialog_string_ref_events(app: &mut App, event: &Event) -> Result<bool> {
                 false
             };
 
-            if is_double_click {
+            let total = app.disasm_string_ref_dialog.filtered_indices.len();
+            let height = (app.screen.height * 9 / 10).max(22).min(app.screen.height);
+            let dialog_y = app.screen.y + (app.screen.height.saturating_sub(height)) / 2;
+            let table_start_y = dialog_y + 4;
+            let visible_rows = (height.saturating_sub(10) as usize).max(1);
+            let is_in_table = mouse.row >= table_start_y && (mouse.row - table_start_y) < visible_rows as u16;
+
+            if is_double_click && is_in_table {
                 // First click already selected the correct row — just open edit.
                 app.last_left_click = None;
                 open_string_ref_edit(app);
-            } else {
-                // Single click: move selection to the clicked row.
+            } else if total > 0 {
                 let dialog = &mut app.disasm_string_ref_dialog;
-                let total = dialog.filtered_indices.len();
-                if total > 0 {
-                    let popup_height = 22u16.min(app.screen.height);
-                    let dialog_y = app.screen.y + (app.screen.height.saturating_sub(popup_height)) / 2;
-                    let table_start_y = dialog_y + 4;
-                    let visible_rows = 12usize;
+                let sel = dialog.selected_index.min(total - 1);
+                let half = visible_rows / 2;
+                let start = if sel > half {
+                    (sel - half).min(total.saturating_sub(visible_rows))
+                } else {
+                    0
+                };
 
-                    let sel = dialog.selected_index.min(total - 1);
-                    let half = visible_rows / 2;
-                    let start = if sel > half {
-                        (sel - half).min(total.saturating_sub(visible_rows))
-                    } else {
-                        0
-                    };
-
-                    if mouse.row >= table_start_y && (mouse.row - table_start_y) < visible_rows as u16 {
-                        let clicked_row = (mouse.row - table_start_y) as usize;
-                        let clicked_index = start + clicked_row;
-                        if clicked_index < total {
-                            dialog.selected_index = clicked_index;
+                if mouse.row >= table_start_y && (mouse.row - table_start_y) < visible_rows as u16 {
+                    let clicked_row = (mouse.row - table_start_y) as usize;
+                    let clicked_index = (start + clicked_row).min(total - 1);
+                    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                        if dialog.selection_anchor.is_none() {
+                            dialog.selection_anchor = Some(dialog.selected_index);
                         }
+                    } else {
+                        dialog.selection_anchor = None;
                     }
+                    dialog.selected_index = clicked_index;
                 }
-                app.last_left_click = Some((now, mouse.row, mouse.column));
+            }
+            app.last_left_click = Some((now, mouse.row, mouse.column));
+        }
+        if let ratatui::crossterm::event::MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left) = mouse.kind {
+            let dialog = &mut app.disasm_string_ref_dialog;
+            let total = dialog.filtered_indices.len();
+            if total > 0 {
+                let height = (app.screen.height * 9 / 10).max(22).min(app.screen.height);
+                let dialog_y = app.screen.y + (app.screen.height.saturating_sub(height)) / 2;
+                let table_start_y = dialog_y + 4;
+                let visible_rows = (height.saturating_sub(10) as usize).max(1);
+
+                let sel = dialog.selected_index.min(total - 1);
+                let half = visible_rows / 2;
+                let start = if sel > half {
+                    (sel - half).min(total.saturating_sub(visible_rows))
+                } else {
+                    0
+                };
+
+                if mouse.row >= table_start_y && (mouse.row - table_start_y) < visible_rows as u16 {
+                    let clicked_row = (mouse.row - table_start_y) as usize;
+                    let clicked_index = (start + clicked_row).min(total - 1);
+                    if dialog.selection_anchor.is_none() {
+                        dialog.selection_anchor = Some(dialog.selected_index);
+                    }
+                    dialog.selected_index = clicked_index;
+                }
             }
         }
         match mouse.kind {
             ratatui::crossterm::event::MouseEventKind::ScrollUp => {
+                app.disasm_string_ref_dialog.selection_anchor = None;
                 if app.disasm_string_ref_dialog.selected_index > 0 {
                     app.disasm_string_ref_dialog.selected_index =
                         app.disasm_string_ref_dialog.selected_index.saturating_sub(3);
                 }
             }
             ratatui::crossterm::event::MouseEventKind::ScrollDown => {
+                app.disasm_string_ref_dialog.selection_anchor = None;
                 let cnt = app.disasm_string_ref_dialog.filtered_indices.len();
                 if cnt > 0 {
                     app.disasm_string_ref_dialog.selected_index =
@@ -553,6 +603,8 @@ pub fn dialog_string_ref_events(app: &mut App, event: &Event) -> Result<bool> {
             KeyCode::Esc => {
                 if is_filter_focused {
                     app.disasm_string_ref_dialog.focus_filter = false;
+                } else if app.disasm_string_ref_dialog.selection_anchor.is_some() {
+                    app.disasm_string_ref_dialog.selection_anchor = None;
                 } else {
                     app.disasm_string_ref_dialog.reset();
                     app.dialog_renderer = None;
@@ -580,41 +632,41 @@ pub fn dialog_string_ref_events(app: &mut App, event: &Event) -> Result<bool> {
                 return Ok(false);
             }
             KeyCode::Home if !is_filter_focused => {
-                app.disasm_string_ref_dialog.selected_index = 0;
+                set_string_ref_selection(app, 0, key.modifiers.contains(KeyModifiers::SHIFT));
                 return Ok(false);
             }
             KeyCode::End if !is_filter_focused => {
                 let cnt = app.disasm_string_ref_dialog.filtered_indices.len();
-                if cnt > 0 {
-                    app.disasm_string_ref_dialog.selected_index = cnt - 1;
-                }
+                set_string_ref_selection(app, cnt.saturating_sub(1), key.modifiers.contains(KeyModifiers::SHIFT));
                 return Ok(false);
             }
             KeyCode::Up if !is_filter_focused => {
-                if app.disasm_string_ref_dialog.selected_index > 0 {
-                    app.disasm_string_ref_dialog.selected_index -= 1;
-                }
+                move_string_ref_selection(app, -1, key.modifiers.contains(KeyModifiers::SHIFT));
                 return Ok(false);
             }
             KeyCode::Down if !is_filter_focused => {
-                let cnt = app.disasm_string_ref_dialog.filtered_indices.len();
-                if cnt > 0 && app.disasm_string_ref_dialog.selected_index + 1 < cnt {
-                    app.disasm_string_ref_dialog.selected_index += 1;
-                }
+                move_string_ref_selection(app, 1, key.modifiers.contains(KeyModifiers::SHIFT));
                 return Ok(false);
             }
             KeyCode::PageUp if !is_filter_focused => {
-                if !app.disasm_string_ref_dialog.filtered_indices.is_empty() {
-                    app.disasm_string_ref_dialog.selected_index =
-                        app.disasm_string_ref_dialog.selected_index.saturating_sub(12);
-                }
+                move_string_ref_selection(app, -12, key.modifiers.contains(KeyModifiers::SHIFT));
                 return Ok(false);
             }
             KeyCode::PageDown if !is_filter_focused => {
-                let cnt = app.disasm_string_ref_dialog.filtered_indices.len();
-                if cnt > 0 {
-                    app.disasm_string_ref_dialog.selected_index =
-                        (app.disasm_string_ref_dialog.selected_index + 12).min(cnt - 1);
+                move_string_ref_selection(app, 12, key.modifiers.contains(KeyModifiers::SHIFT));
+                return Ok(false);
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if is_filter_focused {
+                    if crate::text_field::handle_key(app, refs_filter_field, event) {
+                        app.disasm_string_ref_dialog.update_filter();
+                    }
+                } else {
+                    let cnt = app.disasm_string_ref_dialog.filtered_indices.len();
+                    if cnt > 0 {
+                        app.disasm_string_ref_dialog.selection_anchor = Some(0);
+                        app.disasm_string_ref_dialog.selected_index = cnt - 1;
+                    }
                 }
                 return Ok(false);
             }
@@ -625,18 +677,22 @@ pub fn dialog_string_ref_events(app: &mut App, event: &Event) -> Result<bool> {
             }
             KeyCode::Char('c') | KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if is_filter_focused {
-                    let filter_val = app.disasm_string_ref_dialog.filter_input.value().to_string();
-                    app.copy_to_clipboard(filter_val, "filter text".to_string());
+                    let (input, anchor) = refs_filter_field(app);
+                    let (_, selected, _) = crate::text_field::split(input, *anchor);
+                    let text = if selected.is_empty() {
+                        input.value().to_string()
+                    } else {
+                        selected.to_string()
+                    };
+                    app.copy_to_clipboard(text, "filter text".to_string());
                 } else {
-                    let dialog = &app.disasm_string_ref_dialog;
-                    let is_64 = app.is_64();
-                    let text = dialog
-                        .filtered_indices
-                        .get(dialog.selected_index)
-                        .and_then(|&i| dialog.items.get(i))
-                        .map(|item| item_as_tsv(item, is_64))
-                        .unwrap_or_default();
-                    app.copy_to_clipboard(text, "1 reference".to_string());
+                    let (text, count) = selected_rows_as_tsv(app);
+                    let label = if count == 1 {
+                        "1 reference".to_string()
+                    } else {
+                        format!("{} reference(s)", count)
+                    };
+                    app.copy_to_clipboard(text, label);
                 }
                 return Ok(false);
             }
@@ -740,6 +796,66 @@ fn filtered_rows_as_tsv(app: &App) -> (String, usize) {
     // CRLF: a Windows clipboard, and a spreadsheet pasting LF-only text puts every
     // row in one cell.
     (rows.join("\r\n"), rows.len())
+}
+
+/// Selected row or block of rows as TSV lines, and how many rows there are.
+pub fn selected_rows_as_tsv(app: &App) -> (String, usize) {
+    let dialog = &app.disasm_string_ref_dialog;
+    let cnt = dialog.filtered_indices.len();
+    if cnt == 0 {
+        return (String::new(), 0);
+    }
+    let is_64 = app.is_64();
+    let (s, e) = match dialog.selection_anchor {
+        Some(anchor) => (
+            anchor.min(dialog.selected_index),
+            anchor.max(dialog.selected_index).min(cnt - 1),
+        ),
+        None => (dialog.selected_index.min(cnt - 1), dialog.selected_index.min(cnt - 1)),
+    };
+    let rows: Vec<String> = (s..=e)
+        .filter_map(|idx| dialog.filtered_indices.get(idx))
+        .filter_map(|&i| dialog.items.get(i))
+        .map(|item| item_as_tsv(item, is_64))
+        .collect();
+    let count = rows.len();
+    (rows.join("\r\n"), count)
+}
+
+fn move_string_ref_selection(app: &mut App, delta: isize, is_shift: bool) {
+    let cnt = app.disasm_string_ref_dialog.filtered_indices.len();
+    if cnt == 0 {
+        app.disasm_string_ref_dialog.selected_index = 0;
+        app.disasm_string_ref_dialog.selection_anchor = None;
+        return;
+    }
+    if is_shift {
+        if app.disasm_string_ref_dialog.selection_anchor.is_none() {
+            app.disasm_string_ref_dialog.selection_anchor = Some(app.disasm_string_ref_dialog.selected_index);
+        }
+    } else {
+        app.disasm_string_ref_dialog.selection_anchor = None;
+    }
+    let current = app.disasm_string_ref_dialog.selected_index as isize;
+    let next = current.saturating_add(delta).clamp(0, cnt as isize - 1);
+    app.disasm_string_ref_dialog.selected_index = next as usize;
+}
+
+fn set_string_ref_selection(app: &mut App, target: usize, is_shift: bool) {
+    let cnt = app.disasm_string_ref_dialog.filtered_indices.len();
+    if cnt == 0 {
+        app.disasm_string_ref_dialog.selected_index = 0;
+        app.disasm_string_ref_dialog.selection_anchor = None;
+        return;
+    }
+    if is_shift {
+        if app.disasm_string_ref_dialog.selection_anchor.is_none() {
+            app.disasm_string_ref_dialog.selection_anchor = Some(app.disasm_string_ref_dialog.selected_index);
+        }
+    } else {
+        app.disasm_string_ref_dialog.selection_anchor = None;
+    }
+    app.disasm_string_ref_dialog.selected_index = target.min(cnt - 1);
 }
 
 /// Switches to `view`, keeping the way back and the page in order.
@@ -1045,7 +1161,7 @@ mod copy_tests {
         app.disasm_string_ref_dialog.update_filter();
         app.state = UIState::DialogStringRef;
 
-        let press = |app: &mut App, code: KeyCode| {
+        let _press = |app: &mut App, code: KeyCode| {
             let key = KeyEvent {
                 code,
                 modifiers: KeyModifiers::NONE,
@@ -1151,5 +1267,66 @@ mod copy_tests {
         assert_eq!(app.hex_view.string_edit.budget, 46);
         assert_eq!(app.hex_view.string_edit.total_capacity, 48);
         assert_eq!(app.hex_view.string_edit.input.value(), "分辨率 %d×%d 颜色%d位 刷新率%d");
+    }
+
+    #[test]
+    fn string_ref_block_selection_and_ctrl_a_ctrl_c() {
+        let mut app = App::new();
+        app.disasm_string_ref_dialog.items = vec![
+            item(0x600, 0x140001000, 0x1000, "first"),
+            item(0x610, 0x140001010, 0x1010, "second"),
+            item(0x620, 0x140001020, 0x1020, "third"),
+            item(0x630, 0x140001030, 0x1030, "fourth"),
+        ];
+        app.disasm_string_ref_dialog.update_filter();
+        app.state = UIState::DialogStringRef;
+
+        // Initially row 0 selected, no anchor
+        assert_eq!(app.disasm_string_ref_dialog.selected_index, 0);
+        assert_eq!(app.disasm_string_ref_dialog.selection_anchor, None);
+
+        // Single row copy
+        let (text1, count1) = selected_rows_as_tsv(&app);
+        assert_eq!(count1, 1);
+        assert!(text1.contains("first"));
+
+        // Shift+Down extends selection to row 1
+        let shift_down = KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT);
+        let _ = dialog_string_ref_events(&mut app, &Event::Key(shift_down));
+        assert_eq!(app.disasm_string_ref_dialog.selection_anchor, Some(0));
+        assert_eq!(app.disasm_string_ref_dialog.selected_index, 1);
+
+        // Block copy copies 2 rows
+        let (text2, count2) = selected_rows_as_tsv(&app);
+        assert_eq!(count2, 2);
+        assert_eq!(text2.lines().count(), 2);
+        assert!(text2.contains("first") && text2.contains("second"));
+
+        // Plain Down moves to row 2 and clears anchor
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        let _ = dialog_string_ref_events(&mut app, &Event::Key(down));
+        assert_eq!(app.disasm_string_ref_dialog.selection_anchor, None);
+        assert_eq!(app.disasm_string_ref_dialog.selected_index, 2);
+
+        // Ctrl+A selects all 4 rows
+        let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let _ = dialog_string_ref_events(&mut app, &Event::Key(ctrl_a));
+        assert_eq!(app.disasm_string_ref_dialog.selection_anchor, Some(0));
+        assert_eq!(app.disasm_string_ref_dialog.selected_index, 3);
+
+        // Block copy after Ctrl+A copies all 4 rows
+        let (text_all, count_all) = selected_rows_as_tsv(&app);
+        assert_eq!(count_all, 4);
+        assert_eq!(text_all.lines().count(), 4);
+
+        // Esc clears block selection without closing dialog
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let _ = dialog_string_ref_events(&mut app, &Event::Key(esc));
+        assert_eq!(app.disasm_string_ref_dialog.selection_anchor, None);
+        assert_eq!(app.state, UIState::DialogStringRef);
+
+        // Second Esc closes dialog
+        let _ = dialog_string_ref_events(&mut app, &Event::Key(esc));
+        assert_eq!(app.state, UIState::Normal);
     }
 }

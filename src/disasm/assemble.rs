@@ -1,7 +1,7 @@
 use iced_x86::{Code, Encoder, Instruction, Register};
 use ratatui::{
     Frame,
-    crossterm::event::{Event, KeyCode},
+    crossterm::event::{Event, KeyCode, KeyModifiers},
     layout::Alignment,
     widgets::{Block, Clear, Paragraph},
 };
@@ -373,10 +373,6 @@ pub fn stage_assembled_bytes(
         return Err(crate::i18n::M::ErrNothingToAssemble.tr(app.config.lang).to_string());
     }
 
-    if app.file_info.is_read_only {
-        return Err(crate::i18n::M::ErrFileReadOnly.tr(app.config.lang).to_string());
-    }
-
     let new_len = bytes.len();
     let limit = app.file_info.buffer_len();
     let span = covering_span(app, offset, new_len).unwrap_or(new_len).max(new_len);
@@ -413,6 +409,141 @@ pub fn stage_assembled_bytes(
             &[&new_len_str, &va_str],
         )
     })
+}
+
+fn assemble_alu_op(
+    op: &str,
+    input_after_op: &str,
+    bitness: u32,
+) -> Option<Vec<u8>> {
+    let parts: Vec<&str> = input_after_op.split(',').map(|s| s.trim()).collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let dst_reg = parse_reg(parts[0])?;
+    let size = get_reg_size(dst_reg);
+
+    // Case 1: Register to Register (e.g. xor eax, eax, add rsp, rbx)
+    if let Some(src_reg) = parse_reg(parts[1]) {
+        let code = match (op, size) {
+            ("add", RegSize::R64) => Code::Add_rm64_r64,
+            ("add", RegSize::R32) => Code::Add_rm32_r32,
+            ("add", RegSize::R16) => Code::Add_rm16_r16,
+            ("add", RegSize::R8)  => Code::Add_rm8_r8,
+
+            ("sub", RegSize::R64) => Code::Sub_rm64_r64,
+            ("sub", RegSize::R32) => Code::Sub_rm32_r32,
+            ("sub", RegSize::R16) => Code::Sub_rm16_r16,
+            ("sub", RegSize::R8)  => Code::Sub_rm8_r8,
+
+            ("cmp", RegSize::R64) => Code::Cmp_rm64_r64,
+            ("cmp", RegSize::R32) => Code::Cmp_rm32_r32,
+            ("cmp", RegSize::R16) => Code::Cmp_rm16_r16,
+            ("cmp", RegSize::R8)  => Code::Cmp_rm8_r8,
+
+            ("xor", RegSize::R64) => Code::Xor_rm64_r64,
+            ("xor", RegSize::R32) => Code::Xor_rm32_r32,
+            ("xor", RegSize::R16) => Code::Xor_rm16_r16,
+            ("xor", RegSize::R8)  => Code::Xor_rm8_r8,
+
+            ("and", RegSize::R64) => Code::And_rm64_r64,
+            ("and", RegSize::R32) => Code::And_rm32_r32,
+            ("and", RegSize::R16) => Code::And_rm16_r16,
+            ("and", RegSize::R8)  => Code::And_rm8_r8,
+
+            ("or", RegSize::R64)  => Code::Or_rm64_r64,
+            ("or", RegSize::R32)  => Code::Or_rm32_r32,
+            ("or", RegSize::R16)  => Code::Or_rm16_r16,
+            ("or", RegSize::R8)   => Code::Or_rm8_r8,
+
+            ("test", RegSize::R64) => Code::Test_rm64_r64,
+            ("test", RegSize::R32) => Code::Test_rm32_r32,
+            ("test", RegSize::R16) => Code::Test_rm16_r16,
+            ("test", RegSize::R8)  => Code::Test_rm8_r8,
+
+            _ => return None,
+        };
+        if let Ok(instr) = Instruction::with2(code, dst_reg, src_reg)
+            && let Some(bytes) = encode_instruction(&instr, bitness)
+        {
+            return Some(bytes);
+        }
+    }
+
+    // Case 2: Register to Immediate (e.g. sub rsp, 0x28, cmp eax, 1, test al, 0x80)
+    let bits = match size {
+        RegSize::R64 | RegSize::R32 => 32,
+        RegSize::R16 => 16,
+        RegSize::R8 => 8,
+    };
+    if let Some(fitted) = parse_imm(parts[1]).and_then(|v| fit_imm(v, bits)) {
+        let imm_val = fitted as i32;
+        let fits_i8 = fitted >= -128 && fitted <= 127;
+
+        let code = match (op, size) {
+            ("add", RegSize::R64) if fits_i8 => Code::Add_rm64_imm8,
+            ("add", RegSize::R64) => Code::Add_rm64_imm32,
+            ("add", RegSize::R32) if fits_i8 => Code::Add_rm32_imm8,
+            ("add", RegSize::R32) => Code::Add_rm32_imm32,
+            ("add", RegSize::R16) if fits_i8 => Code::Add_rm16_imm8,
+            ("add", RegSize::R16) => Code::Add_rm16_imm16,
+            ("add", RegSize::R8)  => Code::Add_rm8_imm8,
+
+            ("sub", RegSize::R64) if fits_i8 => Code::Sub_rm64_imm8,
+            ("sub", RegSize::R64) => Code::Sub_rm64_imm32,
+            ("sub", RegSize::R32) if fits_i8 => Code::Sub_rm32_imm8,
+            ("sub", RegSize::R32) => Code::Sub_rm32_imm32,
+            ("sub", RegSize::R16) if fits_i8 => Code::Sub_rm16_imm8,
+            ("sub", RegSize::R16) => Code::Sub_rm16_imm16,
+            ("sub", RegSize::R8)  => Code::Sub_rm8_imm8,
+
+            ("cmp", RegSize::R64) if fits_i8 => Code::Cmp_rm64_imm8,
+            ("cmp", RegSize::R64) => Code::Cmp_rm64_imm32,
+            ("cmp", RegSize::R32) if fits_i8 => Code::Cmp_rm32_imm8,
+            ("cmp", RegSize::R32) => Code::Cmp_rm32_imm32,
+            ("cmp", RegSize::R16) if fits_i8 => Code::Cmp_rm16_imm8,
+            ("cmp", RegSize::R16) => Code::Cmp_rm16_imm16,
+            ("cmp", RegSize::R8)  => Code::Cmp_rm8_imm8,
+
+            ("xor", RegSize::R64) if fits_i8 => Code::Xor_rm64_imm8,
+            ("xor", RegSize::R64) => Code::Xor_rm64_imm32,
+            ("xor", RegSize::R32) if fits_i8 => Code::Xor_rm32_imm8,
+            ("xor", RegSize::R32) => Code::Xor_rm32_imm32,
+            ("xor", RegSize::R16) if fits_i8 => Code::Xor_rm16_imm8,
+            ("xor", RegSize::R16) => Code::Xor_rm16_imm16,
+            ("xor", RegSize::R8)  => Code::Xor_rm8_imm8,
+
+            ("and", RegSize::R64) if fits_i8 => Code::And_rm64_imm8,
+            ("and", RegSize::R64) => Code::And_rm64_imm32,
+            ("and", RegSize::R32) if fits_i8 => Code::And_rm32_imm8,
+            ("and", RegSize::R32) => Code::And_rm32_imm32,
+            ("and", RegSize::R16) if fits_i8 => Code::And_rm16_imm8,
+            ("and", RegSize::R16) => Code::And_rm16_imm16,
+            ("and", RegSize::R8)  => Code::And_rm8_imm8,
+
+            ("or", RegSize::R64) if fits_i8 => Code::Or_rm64_imm8,
+            ("or", RegSize::R64) => Code::Or_rm64_imm32,
+            ("or", RegSize::R32) if fits_i8 => Code::Or_rm32_imm8,
+            ("or", RegSize::R32) => Code::Or_rm32_imm32,
+            ("or", RegSize::R16) if fits_i8 => Code::Or_rm16_imm8,
+            ("or", RegSize::R16) => Code::Or_rm16_imm16,
+            ("or", RegSize::R8)  => Code::Or_rm8_imm8,
+
+            ("test", RegSize::R64) => Code::Test_rm64_imm32,
+            ("test", RegSize::R32) => Code::Test_rm32_imm32,
+            ("test", RegSize::R16) => Code::Test_rm16_imm16,
+            ("test", RegSize::R8)  => Code::Test_rm8_imm8,
+
+            _ => return None,
+        };
+        if let Ok(instr) = Instruction::with2(code, dst_reg, imm_val)
+            && let Some(bytes) = encode_instruction(&instr, bitness)
+        {
+            return Some(bytes);
+        }
+    }
+
+    None
 }
 
 pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8>> {
@@ -469,7 +600,27 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
 
     match op {
         "nop" => return encode_instruction(&Instruction::with(Code::Nopd), bitness),
-        "ret" | "retn" => return encode_instruction(&Instruction::with(if is_64 { Code::Retnq } else { Code::Retnd }), bitness),
+        "ret" | "retn" => {
+            let rest = lower[op.len()..].trim();
+            if !rest.is_empty() {
+                if let Some(imm) = parse_imm(rest) && let Ok(val) = u16::try_from(imm) {
+                    let code = if is_64 {
+                        Code::Retnq_imm16
+                    } else if bitness == 32 {
+                        Code::Retnd_imm16
+                    } else {
+                        Code::Retnw_imm16
+                    };
+                    if let Ok(instr) = Instruction::with1(code, val as u32)
+                        && let Some(bytes) = encode_instruction(&instr, bitness)
+                    {
+                        return Some(bytes);
+                    }
+                }
+            } else {
+                return encode_instruction(&Instruction::with(if is_64 { Code::Retnq } else { Code::Retnd }), bitness);
+            }
+        }
         "int3" => return encode_instruction(&Instruction::with(Code::Int3), bitness),
         "hlt" => return encode_instruction(&Instruction::with(Code::Hlt), bitness),
         "clc" => return encode_instruction(&Instruction::with(Code::Clc), bitness),
@@ -489,6 +640,7 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             {
                 let code = match get_reg_size(reg) {
                     RegSize::R64 => Code::Pop_r64,
+                    RegSize::R16 => Code::Pop_r16,
                     _ => Code::Pop_r32,
                 };
                 if let Ok(instr) = Instruction::with1(code, reg)
@@ -505,6 +657,7 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
                 if let Some(reg) = parse_reg(target) {
                     let code = match get_reg_size(reg) {
                         RegSize::R64 => Code::Push_r64,
+                        RegSize::R16 => Code::Push_r16,
                         _ => Code::Push_r32,
                     };
                     if let Ok(instr) = Instruction::with1(code, reg)
@@ -568,103 +721,10 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             }
         }
 
-        "xor" => {
-            let rest = lower.trim_start_matches("xor").trim();
-            let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
-            if parts.len() == 2
-                && let (Some(dst), Some(src)) = (parse_reg(parts[0]), parse_reg(parts[1]))
-            {
-                let code = match get_reg_size(dst) {
-                    RegSize::R64 => Code::Xor_rm64_r64,
-                    RegSize::R32 => Code::Xor_rm32_r32,
-                    RegSize::R16 => Code::Xor_rm16_r16,
-                    RegSize::R8  => Code::Xor_rm8_r8,
-                };
-                if let Ok(instr) = Instruction::with2(code, dst, src)
-                    && let Some(bytes) = encode_instruction(&instr, bitness)
-                {
-                    return Some(bytes);
-                }
-            }
-        }
-
-        "add" => {
-            let rest = lower.trim_start_matches("add").trim();
-            let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
-            if parts.len() == 2
-                && let (Some(dst), Some(src)) = (parse_reg(parts[0]), parse_reg(parts[1]))
-            {
-                let code = match get_reg_size(dst) {
-                    RegSize::R64 => Code::Add_rm64_r64,
-                    RegSize::R32 => Code::Add_rm32_r32,
-                    RegSize::R16 => Code::Add_rm16_r16,
-                    RegSize::R8  => Code::Add_rm8_r8,
-                };
-                if let Ok(instr) = Instruction::with2(code, dst, src)
-                    && let Some(bytes) = encode_instruction(&instr, bitness)
-                {
-                    return Some(bytes);
-                }
-            }
-        }
-
-        "sub" => {
-            let rest = lower.trim_start_matches("sub").trim();
-            let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
-            if parts.len() == 2
-                && let (Some(dst), Some(src)) = (parse_reg(parts[0]), parse_reg(parts[1]))
-            {
-                let code = match get_reg_size(dst) {
-                    RegSize::R64 => Code::Sub_rm64_r64,
-                    RegSize::R32 => Code::Sub_rm32_r32,
-                    RegSize::R16 => Code::Sub_rm16_r16,
-                    RegSize::R8  => Code::Sub_rm8_r8,
-                };
-                if let Ok(instr) = Instruction::with2(code, dst, src)
-                    && let Some(bytes) = encode_instruction(&instr, bitness)
-                {
-                    return Some(bytes);
-                }
-            }
-        }
-
-        "cmp" => {
-            let rest = lower.trim_start_matches("cmp").trim();
-            let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
-            if parts.len() == 2
-                && let (Some(dst), Some(src)) = (parse_reg(parts[0]), parse_reg(parts[1]))
-            {
-                let code = match get_reg_size(dst) {
-                    RegSize::R64 => Code::Cmp_rm64_r64,
-                    RegSize::R32 => Code::Cmp_rm32_r32,
-                    RegSize::R16 => Code::Cmp_rm16_r16,
-                    RegSize::R8  => Code::Cmp_rm8_r8,
-                };
-                if let Ok(instr) = Instruction::with2(code, dst, src)
-                    && let Some(bytes) = encode_instruction(&instr, bitness)
-                {
-                    return Some(bytes);
-                }
-            }
-        }
-
-        "test" => {
-            let rest = lower.trim_start_matches("test").trim();
-            let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
-            if parts.len() == 2
-                && let (Some(dst), Some(src)) = (parse_reg(parts[0]), parse_reg(parts[1]))
-            {
-                let code = match get_reg_size(dst) {
-                    RegSize::R64 => Code::Test_rm64_r64,
-                    RegSize::R32 => Code::Test_rm32_r32,
-                    RegSize::R16 => Code::Test_rm16_r16,
-                    RegSize::R8  => Code::Test_rm8_r8,
-                };
-                if let Ok(instr) = Instruction::with2(code, dst, src)
-                    && let Some(bytes) = encode_instruction(&instr, bitness)
-                {
-                    return Some(bytes);
-                }
+        "add" | "sub" | "cmp" | "xor" | "and" | "or" | "test" => {
+            let rest = lower[op.len()..].trim();
+            if let Some(bytes) = assemble_alu_op(op, rest, bitness) {
+                return Some(bytes);
             }
         }
 
@@ -711,6 +771,7 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
             {
                 let code = match get_reg_size(dst_reg) {
                     RegSize::R64 => Code::Lea_r64_m,
+                    RegSize::R16 => Code::Lea_r16_m,
                     _ => Code::Lea_r32_m,
                 };
                 if let Some(bytes) = encode_mem_op2_reg_mem(code, dst_reg, src_str, is_64, bitness, ip) {
@@ -934,11 +995,11 @@ pub fn dialog_assemble_draw(app: &mut App, frame: &mut Frame) {
 
     frame.render_widget(paragraph, dialog_area);
 
-    let cursor_x = dialog_area.x + 1 + app.assemble_input.cursor() as u16;
+    let cursor_x = dialog_area.x + 1 + app.assemble_input.visual_cursor() as u16;
     let cursor_y = dialog_area.y + 1;
-    if cursor_x < dialog_area.x + dialog_area.width - 1 {
-        frame.set_cursor_position((cursor_x, cursor_y));
-    }
+    let max_x = dialog_area.x + dialog_area.width.saturating_sub(2);
+    let clamped_x = cursor_x.min(max_x);
+    frame.set_cursor_position((clamped_x, cursor_y));
 }
 
 fn safe_slice_parts(text: &str, start_pos: usize, end_pos: usize) -> (&str, &str, &str) {
@@ -981,6 +1042,12 @@ pub fn dialog_assemble_events(app: &mut App, event: &Event) -> Result<bool> {
                 let _ = cb.set_text(text_to_copy);
                 App::log(app, "Copied assembly text to clipboard".to_string());
             }
+            return Ok(false);
+        }
+
+        if is_ctrl && (key.code == KeyCode::Char('a') || key.code == KeyCode::Char('A')) {
+            app.assemble_selection_all = true;
+            app.assemble_selection_anchor = None;
             return Ok(false);
         }
 
@@ -1108,12 +1175,12 @@ pub fn dialog_assemble_events(app: &mut App, event: &Event) -> Result<bool> {
                 app.assemble_selection_anchor = None;
                 tui_input::backend::crossterm::EventHandler::handle_event(&mut app.assemble_input, event);
             }
-            KeyCode::Char(c) if app.assemble_selection_all => {
+            KeyCode::Char(c) if app.assemble_selection_all && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 app.assemble_selection_all = false;
                 app.assemble_selection_anchor = None;
                 app.assemble_input = tui_input::Input::new(c.to_string());
             }
-            KeyCode::Char(c) if app.assemble_selection_anchor.is_some() => {
+            KeyCode::Char(c) if app.assemble_selection_anchor.is_some() && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 if let Some(anchor) = app.assemble_selection_anchor {
                     let cursor = app.assemble_input.cursor();
                     let val = app.assemble_input.value();
@@ -1146,11 +1213,13 @@ pub fn dialog_assemble_events(app: &mut App, event: &Event) -> Result<bool> {
                 }
             }
             _ => {
-                if app.assemble_selection_all {
-                    app.assemble_selection_all = false;
-                }
-                if app.assemble_selection_anchor.is_some() {
-                    app.assemble_selection_anchor = None;
+                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                    if app.assemble_selection_all {
+                        app.assemble_selection_all = false;
+                    }
+                    if app.assemble_selection_anchor.is_some() {
+                        app.assemble_selection_anchor = None;
+                    }
                 }
                 tui_input::backend::crossterm::EventHandler::handle_event(&mut app.assemble_input, event);
             }
@@ -1212,6 +1281,53 @@ mod assemble_tests {
         assert_ne!(hex, dec, "hex and decimal spellings must differ");
         assert_eq!(hex.last_chunk::<4>().map(|c| u32::from_le_bytes(*c)), Some(0x10));
         assert_eq!(dec.last_chunk::<4>().map(|c| u32::from_le_bytes(*c)), Some(10));
+    }
+
+    #[test]
+    fn alu_immediate_and_ret_support() {
+        // sub rsp, 0x28
+        let sub_rsp = parse_assemble_input("sub rsp, 0x28", 64, 0).expect("sub rsp, 0x28");
+        assert_eq!(sub_rsp, vec![0x48, 0x83, 0xEC, 0x28]);
+
+        // add rsp, 0x28
+        let add_rsp = parse_assemble_input("add rsp, 0x28", 64, 0).expect("add rsp, 0x28");
+        assert_eq!(add_rsp, vec![0x48, 0x83, 0xC4, 0x28]);
+
+        // cmp eax, 1
+        let cmp_eax = parse_assemble_input("cmp eax, 1", 64, 0).expect("cmp eax, 1");
+        assert_eq!(cmp_eax, vec![0x83, 0xF8, 0x01]);
+
+        // cmp al, 0
+        let cmp_al = parse_assemble_input("cmp al, 0", 64, 0).expect("cmp al, 0");
+        assert_eq!(cmp_al, vec![0x80, 0xF8, 0x00]);
+
+        // xor eax, 1
+        let xor_eax = parse_assemble_input("xor eax, 1", 64, 0).expect("xor eax, 1");
+        assert_eq!(xor_eax, vec![0x83, 0xF0, 0x01]);
+
+        // and rax, 0xff
+        let and_rax = parse_assemble_input("and rax, 0xff", 64, 0).expect("and rax, 0xff");
+        assert_eq!(and_rax, vec![0x48, 0x81, 0xE0, 0xFF, 0x00, 0x00, 0x00]);
+
+        // or rbx, 0x10
+        let or_rbx = parse_assemble_input("or rbx, 0x10", 64, 0).expect("or rbx, 0x10");
+        assert_eq!(or_rbx, vec![0x48, 0x83, 0xCB, 0x10]);
+
+        // test rax, 1
+        let test_rax = parse_assemble_input("test rax, 1", 64, 0).expect("test rax, 1");
+        assert_eq!(test_rax, vec![0x48, 0xF7, 0xC0, 0x01, 0x00, 0x00, 0x00]);
+
+        // ret 4 (32-bit stdcall return)
+        let ret_4 = parse_assemble_input("ret 4", 32, 0).expect("ret 4");
+        assert_eq!(ret_4, vec![0xC2, 0x04, 0x00]);
+
+        // ret 0x10 (64-bit return)
+        let ret_10 = parse_assemble_input("ret 0x10", 64, 0).expect("ret 0x10");
+        assert_eq!(ret_10, vec![0xC2, 0x10, 0x00]);
+
+        // bare ret
+        let ret_bare = parse_assemble_input("ret", 64, 0).expect("bare ret");
+        assert_eq!(ret_bare, vec![0xC3]);
     }
 
     #[test]
@@ -1399,13 +1515,13 @@ mod patch_padding_tests {
     }
 
     #[test]
-    fn a_read_only_file_is_refused() {
+    fn a_read_only_file_allows_assemble() {
         let mut app = app_with_code();
         app.file_info.is_read_only = true;
         let bytes = parse_assemble_input("nop", 64, 0).expect("nop");
 
-        assert!(stage_assembled_bytes(&mut app, 1, &bytes).is_err());
-        assert!(app.hex_view.changed_bytes.is_empty());
+        assert!(stage_assembled_bytes(&mut app, 1, &bytes).is_ok());
+        assert!(!app.hex_view.changed_bytes.is_empty());
     }
 
     #[test]

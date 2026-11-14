@@ -314,31 +314,16 @@ pub fn select_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
 
         KeyCode::Insert => {
-            if app.file_info.is_read_only {
-                app.read_only_error(crate::i18n::M::RoFillZero);
-                return Ok(true);
-            }
-
             fill_selection_with(app, 0x00);
             app.state = UIState::Normal;
             app.hex_view.selection.clear();
         }
         KeyCode::Delete => {
-            if app.file_info.is_read_only {
-                app.read_only_error(crate::i18n::M::RoFillNop);
-                return Ok(true);
-            }
-
             fill_selection_with(app, 0x90);
             app.state = UIState::Normal;
             app.hex_view.selection.clear();
         }
         KeyCode::Char('~') => {
-            if app.file_info.is_read_only {
-                app.read_only_error(crate::i18n::M::RoCase);
-                return Ok(true);
-            }
-
             for offset in app.hex_view.selection {
                 if let Some(b) = app.read_u8(offset) {
                     if b.is_ascii_lowercase() {
@@ -378,10 +363,6 @@ pub fn select_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.state = UIState::Normal;
         }
         KeyCode::Char('k') | KeyCode::Char('K') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if app.file_info.is_read_only {
-                app.read_only_error(crate::i18n::M::RoModifyBlock);
-                return Ok(true);
-            }
             app.state = UIState::DialogModifyBlock;
             app.dialog_renderer = Some(crate::hex::modify_dialog::draw_modify_dialog);
             app.hex_view.modify_dialog.reset();

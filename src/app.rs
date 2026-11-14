@@ -26,6 +26,8 @@ pub struct FileInfo {
     pub file: Option<File>,
     pub path: String,
     pub is_read_only: bool,
+    pub cli_read_only: bool,
+    pub is_running_locked: bool,
     pub name: String,
     pub r#type: &'static str,
     pub size: usize,
@@ -96,9 +98,22 @@ impl FileInfo {
     /// offsets that already exist in the buffer, so growing the file itself
     /// (not just recording an edit) requires materializing the extra bytes
     /// here instead.
-    pub fn stage_extension(&mut self, bytes: &[u8]) {
+    pub fn reopen_mmap(&mut self) -> io::Result<()> {
+        if self.path.is_empty() {
+            return Ok(());
+        }
+        match MemoryMappedFile::builder(&self.path).mode(MmapMode::ReadOnly).open() {
+            Ok(mmap) => {
+                self.mmap = Some(mmap);
+                Ok(())
+            }
+            Err(e) => Err(io::Error::other(format!("could not reopen mmap: {}", e))),
+        }
+    }
+
+    pub fn stage_extension(&mut self, bytes: &[u8]) -> Result<(), String> {
         if bytes.is_empty() {
-            return;
+            return Ok(());
         }
 
         let mut combined = match self.combined_cache.take() {
@@ -108,7 +123,7 @@ impl FileInfo {
                     let mmap_slice = mmap.as_slice_bytes(0, mmap.len()).unwrap_or(&[]);
                     let mut v = Vec::new();
                     if v.try_reserve(mmap_slice.len() + bytes.len()).is_err() {
-                        return;
+                        return Err("Memory allocation failed (out of memory)".to_string());
                     }
                     v.extend_from_slice(mmap_slice);
                     v
@@ -117,10 +132,14 @@ impl FileInfo {
             },
         };
 
+        if combined.try_reserve(bytes.len()).is_err() {
+            return Err("Memory allocation failed while extending buffer".to_string());
+        }
         combined.extend_from_slice(bytes);
         self.size = combined.len();
         self.staged_extension.extend_from_slice(bytes);
         self.combined_cache = Some(combined);
+        Ok(())
     }
 
     /// Bytes covered by the mmap alone, ignoring any staged extension - i.e.
@@ -191,7 +210,7 @@ impl App {
 
     pub fn get_addr_col_width(&self) -> usize {
         if self.is_64() {
-            let max_addr = if self.hex_view.show_va {
+            let max_addr = if self.hex_view.show_va || self.editor_view == crate::editor::AppView::Disasm {
                 let last_offset = self.file_info.size.saturating_sub(1);
                 self.get_va(last_offset)
             } else {
@@ -218,7 +237,11 @@ impl App {
             let default_header_size = pe.optional_header.as_ref()
                 .map(|opt| opt.windows_fields.size_of_headers as usize)
                 .unwrap_or(0x400);
-            let first_section_offset = pe.sections.first().map(|s| s.pointer_to_raw_data as usize).unwrap_or(default_header_size);
+            let first_section_offset = pe.sections.iter()
+                .map(|s| s.pointer_to_raw_data as usize)
+                .filter(|&off| off > 0)
+                .min()
+                .unwrap_or(default_header_size);
             if offset < first_section_offset {
                 return image_base.wrapping_add(offset as u64);
             }
@@ -276,7 +299,7 @@ impl App {
             } else if self.image_base_override.is_some() && self.is_in_image(va, old_base) {
                 va - old_base
             } else {
-                va
+                return None;
             };
 
             for section in &pe.sections {
@@ -291,6 +314,7 @@ impl App {
                     if offset < limit {
                         return Some(offset as usize);
                     }
+                    return None;
                 }
             }
 
@@ -302,6 +326,7 @@ impl App {
             if rva < default_header_size && rva < limit {
                 return Some(rva as usize);
             }
+            return None;
         }
 
         if let Some(elf) = &self.header_view.elf {
@@ -311,7 +336,7 @@ impl App {
             } else if self.image_base_override.is_some() && self.is_in_image(va, old_base) {
                 (va as i64 + self.rebase_delta()) as u64
             } else {
-                va
+                return None;
             };
             for ph in &elf.phdrs {
                 let p_vaddr = ph.p_vaddr;
@@ -321,8 +346,10 @@ impl App {
                     if offset < limit {
                         return Some(offset as usize);
                     }
+                    return None;
                 }
             }
+            return None;
         }
 
         // Headerless (or overridden) case: subtract the base, so `get_va` and this
@@ -334,6 +361,117 @@ impl App {
         } else {
             None
         }
+    }
+
+    /// Determine which section (or Header / Overlay) a raw file offset belongs to.
+    pub fn section_at_offset(&self, offset: usize) -> Option<String> {
+        if let Some(pe) = &self.header_view.pe {
+            let default_header_size = pe
+                .optional_header
+                .as_ref()
+                .map(|opt| opt.windows_fields.size_of_headers as usize)
+                .unwrap_or(0x400);
+
+            let first_section_offset = pe
+                .sections
+                .iter()
+                .map(|s| s.pointer_to_raw_data as usize)
+                .filter(|&off| off > 0)
+                .min()
+                .unwrap_or(default_header_size);
+
+            if offset < first_section_offset {
+                return Some("Header".to_string());
+            }
+
+            for section in &pe.sections {
+                let section_offset = section.pointer_to_raw_data as usize;
+                let raw_size = section.size_of_raw_data as usize;
+                if raw_size > 0 && offset >= section_offset && offset < section_offset.saturating_add(raw_size) {
+                    return Some(section.name().unwrap_or("?").to_string());
+                }
+            }
+
+            let max_raw_end = pe
+                .sections
+                .iter()
+                .map(|s| (s.pointer_to_raw_data as usize).saturating_add(s.size_of_raw_data as usize))
+                .max()
+                .unwrap_or(first_section_offset);
+
+            if offset >= max_raw_end && max_raw_end > 0 {
+                return Some("Overlay".to_string());
+            }
+
+            return None;
+        }
+
+        if let Some(elf) = &self.header_view.elf {
+            let strtab = elf.sections.get(elf.header.e_shstrndx as usize);
+            let buf = self.file_info.get_buffer_ref();
+
+            for sec in elf.sections.iter() {
+                if sec.sh_type == goblin::elf::section_header::SHT_NULL
+                    || sec.sh_type == goblin::elf::section_header::SHT_NOBITS
+                {
+                    continue;
+                }
+                let sec_start = sec.sh_offset as usize;
+                let sec_size = sec.sh_size as usize;
+                if sec_size > 0 && offset >= sec_start && offset < sec_start.saturating_add(sec_size) {
+                    if let Some(strtab) = strtab {
+                        let start = (strtab.sh_offset as usize).saturating_add(sec.sh_name);
+                        if let Some(tail) = buf.get(start..) {
+                            let end = tail.iter().position(|b| *b == 0).unwrap_or(tail.len());
+                            if let Ok(name) = std::str::from_utf8(&tail[..end]) {
+                                if !name.is_empty() {
+                                    return Some(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                    return Some(format!("sec_{:X}", sec.sh_name));
+                }
+            }
+
+            let ehsize = elf.header.e_ehsize as usize;
+            let first_sec_offset = elf
+                .sections
+                .iter()
+                .filter(|s| {
+                    s.sh_type != goblin::elf::section_header::SHT_NULL
+                        && s.sh_type != goblin::elf::section_header::SHT_NOBITS
+                })
+                .map(|s| s.sh_offset as usize)
+                .filter(|&off| off > 0)
+                .min()
+                .unwrap_or(ehsize);
+
+            if offset < first_sec_offset {
+                return Some("Header".to_string());
+            }
+
+            let max_sec_end = elf
+                .sections
+                .iter()
+                .filter(|s| s.sh_type != goblin::elf::section_header::SHT_NOBITS)
+                .map(|s| (s.sh_offset as usize).saturating_add(s.sh_size as usize))
+                .max()
+                .unwrap_or(ehsize);
+
+            let sh_table_end = (elf.header.e_shoff as usize).saturating_add(
+                (elf.header.e_shnum as usize).saturating_mul(elf.header.e_shentsize as usize),
+            );
+            let max_file_structure_end = max_sec_end.max(sh_table_end);
+
+            if offset >= max_file_structure_end && max_file_structure_end > 0 {
+                return Some("Overlay".to_string());
+            }
+
+            return None;
+        }
+
+        None
     }
 
     pub fn is_64(&self) -> bool {
@@ -379,7 +517,12 @@ impl App {
             Some(32) => Some(64),
             _ => None,
         };
+        self.view_generation = self.view_generation.wrapping_add(1);
         self.describe_bitness()
+    }
+
+    pub fn bump_view_generation(&mut self) {
+        self.view_generation = self.view_generation.wrapping_add(1);
     }
 
     pub fn describe_bitness(&self) -> String {
@@ -427,7 +570,7 @@ impl App {
         if self.image_base_override.is_none() {
             return 0;
         }
-        self.get_image_base() as i64 - self.header_image_base() as i64
+        (self.get_image_base() as i128 - self.header_image_base() as i128) as i64
     }
 
     pub fn is_in_image(&self, addr: u64, base: u64) -> bool {
@@ -711,6 +854,7 @@ pub struct App {
     pub calculator: Calculator,
     pub clipboard: Result<Clipboard, arboard::Error>,
     pub command_area: Rect,
+    pub scrollbar_area: Rect,
     pub command_input: InputHistory,
     pub config: Config,
     pub dialog_2nd_renderer: Option<fn(&mut App, &mut Frame)>,
@@ -722,6 +866,7 @@ pub struct App {
     pub assemble_selection_all: bool,
     pub assemble_selection_anchor: Option<usize>,
     pub disasm_selection_anchor: Option<usize>,
+    pub disasm_comment_encoding: crate::disasm::DisasmCommentEncoding,
     pub disasm_string_ref_dialog: crate::disasm::string_ref_dialog::StringRefDialog,
     pub disasm_xref_dialog: crate::disasm::xref_dialog::XrefDialog,
     pub goto_input: Input,
@@ -747,6 +892,7 @@ pub struct App {
     pub status_info: Option<String>,
     pub status_bar_selection: Option<(u16, u16)>,
     pub status_bar_dragging: bool,
+    pub scrollbar_dragging: bool,
     pub help_scroll_offset: u16,
     /// Scroll position of the `:set` table.
     pub settings_scroll_offset: u16,
@@ -819,6 +965,7 @@ impl App {
             calculator: Calculator::default(),
             clipboard: Clipboard::new(),
             command_area: Rect::default(),
+            scrollbar_area: Rect::default(),
             command_input: InputHistory::default(),
             config: Config {
                 database: true,
@@ -841,6 +988,7 @@ impl App {
                 bitness_override: None,
                 syntax_highlight: true,
                 backup: true,
+                scrollbar: true,
                 show_ime: false,
                 block_base: 16,
                 theme: dark_theme,
@@ -857,6 +1005,7 @@ impl App {
             assemble_selection_all: false,
             assemble_selection_anchor: None,
             disasm_selection_anchor: None,
+            disasm_comment_encoding: crate::disasm::DisasmCommentEncoding::Auto,
             disasm_string_ref_dialog: crate::disasm::string_ref_dialog::StringRefDialog::new(),
             disasm_xref_dialog: crate::disasm::xref_dialog::XrefDialog::new(),
             goto_input: Input::default(),
@@ -906,6 +1055,7 @@ impl App {
             status_info: None,
             status_bar_selection: None,
             status_bar_dragging: false,
+            scrollbar_dragging: false,
             loading_initfile: false,
             initfile_loaded: None,
             about_scroll_offset: 0,
@@ -1120,8 +1270,34 @@ impl App {
 
         let meta = path.metadata()?;
 
-        // Set read-only status based on parameter and file writability test without keeping the handle open
-        self.file_info.is_read_only = read_only || OpenOptions::new().write(true).open(path).is_err();
+        // Set read-only / running-locked status based on parameter and file writability test without keeping the handle open
+        let (is_ro, is_running) = if read_only {
+            (true, false)
+        } else {
+            match OpenOptions::new().write(true).open(path) {
+                Ok(_) => (false, false),
+                Err(err) => {
+                    let is_sharing_violation = {
+                        #[cfg(windows)]
+                        {
+                            matches!(err.raw_os_error(), Some(32) | Some(33))
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            matches!(err.raw_os_error(), Some(26))
+                        }
+                    };
+                    if is_sharing_violation {
+                        (false, true)
+                    } else {
+                        (true, false)
+                    }
+                }
+            }
+        };
+        self.file_info.is_read_only = is_ro;
+        self.file_info.cli_read_only = read_only;
+        self.file_info.is_running_locked = is_running;
         self.file_info.file = None;
 
         // We map it on memory readonly as changed to mapped memory also changes it on disk
@@ -1137,6 +1313,11 @@ impl App {
         self.file_info.clear_staged_extension();
         self.file_info.size = meta.len() as usize;
         self.strings.clear();
+        self.last_result = None;
+        self.result_return = None;
+        self.disasm_selection_anchor = None;
+        self.disasm_string_ref_dialog.reset();
+        self.disasm_xref_dialog.reset();
 
         // Everything tied to the file being replaced goes now - pending edits,
         // annotations and stale offsets. See `HexView::reset_for_new_file` for
@@ -1205,7 +1386,7 @@ impl App {
             return Ok(());
         }
         let ofs = self.hex_view.offset;
-        let ro = self.file_info.is_read_only;
+        let ro = self.file_info.cli_read_only;
         let current_view = self.editor_view;
         let current_va = self.hex_view.show_va;
 
@@ -1270,49 +1451,222 @@ impl App {
         Ok(total_written)
     }
 
-    /// write what's cached to the actual file
-    pub fn write_to_file(&mut self) -> io::Result<()> {
-        if self.file_info.is_read_only {
-            return Err(io::Error::other("file is read-only"));
+    pub(crate) fn generate_backup_path(orig_path: &Path) -> std::path::PathBuf {
+        let parent = orig_path.parent().unwrap_or_else(|| Path::new(""));
+        let file_name = orig_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+
+        let mut bak_path = parent.join(format!("Backup-{}", file_name));
+        if bak_path.exists() {
+            let mut counter = 1;
+            loop {
+                let candidate = parent.join(format!("Backup-{}-{}", counter, file_name));
+                if !candidate.exists() {
+                    bak_path = candidate;
+                    break;
+                }
+                counter += 1;
+            }
         }
-        if self.file_info.path.is_empty() {
-            return Err(io::Error::other("no file loaded"));
+        bak_path
+    }
+
+    fn try_write_in_place(&mut self) -> io::Result<usize> {
+        let path = self.file_info.path.clone();
+
+        if self.file_info.cli_read_only {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "file was opened in read-only mode (--readonly)"));
         }
 
-        // Create a safety backup (.bak) of the original file prior to in-place patching
+        // If the file is marked read-only or running-locked, trigger Rename & Replace
+        if self.file_info.is_read_only || self.file_info.is_running_locked {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "file is read-only or locked"));
+        }
+
+        // Test write access before modifying or making backup
+        let file = OpenOptions::new().write(true).open(&path)?;
+
+        // Writable! If backup enabled, create Backup-<filename>
         if self.config.backup {
-            let orig_path = Path::new(&self.file_info.path);
-            if orig_path.exists() {
-                let mut bak_path = orig_path.to_path_buf();
-                bak_path.as_mut_os_string().push(".bak");
-                let _ = std::fs::copy(orig_path, &bak_path);
-            }
+            let orig_path = Path::new(&path);
+            let bak_path = Self::generate_backup_path(orig_path);
+            let _ = std::fs::copy(orig_path, &bak_path);
         }
 
         // Grow the file on disk first so `changed_bytes` offsets that fall
         // inside a staged extension (e.g. a newly added PE section's
         // payload) land on real bytes instead of past the end of the file.
         if !self.file_info.staged_extension.is_empty() {
-            let mut file = OpenOptions::new().append(true).open(&self.file_info.path)?;
-            file.write_all(&self.file_info.staged_extension)?;
-            file.flush()?;
+            let mut ext_file = OpenOptions::new().append(true).open(&path)?;
+            ext_file.write_all(&self.file_info.staged_extension)?;
+            ext_file.flush()?;
             // Marked written immediately: anything below can still fail and
             // return early, and these bytes are already on disk. Leaving them
             // staged made the next `:w` append the payload a second time.
             self.file_info.mark_extension_written();
         }
 
-        let file = OpenOptions::new().write(true).open(&self.file_info.path)?;
-        file.set_len(self.file_info.size as u64)?;
-        let total_written = Self::flush_changed_bytes(file, &self.hex_view.changed_bytes)?;
+        let cur_phys_len = self.file_info.physical_len();
+        if self.file_info.size != cur_phys_len {
+            // On Windows, resizing a file (especially shrinking) while a memory mapping (Section Object)
+            // is open fails with ERROR_USER_MAPPED_FILE (1224). Drop the mmap handle before resizing.
+            self.file_info.mmap = None;
+            if let Err(e) = file.set_len(self.file_info.size as u64) {
+                let _ = self.file_info.reopen_mmap();
+                return Err(e);
+            }
+        }
+        let res = Self::flush_changed_bytes(file, &self.hex_view.changed_bytes);
+        if res.is_err() && self.file_info.mmap.is_none() {
+            let _ = self.file_info.reopen_mmap();
+        }
+        res
+    }
 
-        let msg = crate::i18n::fill(crate::i18n::M::DoneBytesWritten.tr(self.config.lang), &[&total_written.to_string()]);
-        self.hex_view.changed_bytes.clear();
-        self.hex_view.changed_history.clear();
-        self.hex_view.redo_history.clear();
-        self.reload_file()?;
-        self.info(msg);
-        Ok(())
+    fn save_with_rename_replace(&mut self, orig_path: &Path) -> io::Result<(usize, String)> {
+        if !orig_path.exists() {
+            return Err(io::Error::other("original file does not exist"));
+        }
+
+        // 1. Determine an unused backup path in the same directory (Backup-<filename>)
+        let old_path = Self::generate_backup_path(orig_path);
+
+        // 2. Rename the locked/running/read-only executable to old_path
+        std::fs::rename(orig_path, &old_path)?;
+
+        // 3. Copy old_path -> orig_path so the new file exists with full contents and permissions
+        if let Err(e) = std::fs::copy(&old_path, orig_path) {
+            // Rollback: move old_path back to orig_path if possible
+            let _ = std::fs::rename(&old_path, orig_path);
+            return Err(e);
+        }
+
+        // If the original file had read-only attributes on disk, ensure replacement is writable
+        if let Ok(metadata) = std::fs::metadata(orig_path) {
+            let mut perms = metadata.permissions();
+            if perms.readonly() {
+                perms.set_readonly(false);
+                let _ = std::fs::set_permissions(orig_path, perms);
+            }
+        }
+
+        // 4. If there is a staged extension, append it
+        if !self.file_info.staged_extension.is_empty() {
+            if let Ok(mut ext_file) = OpenOptions::new().append(true).open(orig_path) {
+                if let Err(e) = ext_file.write_all(&self.file_info.staged_extension) {
+                    let _ = std::fs::remove_file(orig_path);
+                    let _ = std::fs::rename(&old_path, orig_path);
+                    return Err(e);
+                }
+                let _ = ext_file.flush();
+                self.file_info.mark_extension_written();
+            }
+        }
+
+        // 5. Open newly created orig_path and apply changes
+        let file = match OpenOptions::new().write(true).open(orig_path) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = std::fs::remove_file(orig_path);
+                let _ = std::fs::rename(&old_path, orig_path);
+                return Err(e);
+            }
+        };
+
+        if let Err(e) = file.set_len(self.file_info.size as u64) {
+            drop(file);
+            let _ = std::fs::remove_file(orig_path);
+            let _ = std::fs::rename(&old_path, orig_path);
+            return Err(e);
+        }
+        let total_written = match Self::flush_changed_bytes(file, &self.hex_view.changed_bytes) {
+            Ok(n) => n,
+            Err(e) => {
+                let _ = std::fs::remove_file(orig_path);
+                let _ = std::fs::rename(&old_path, orig_path);
+                return Err(e);
+            }
+        };
+
+        let backup_name = old_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| old_path.to_string_lossy().to_string());
+
+        Ok((total_written, backup_name))
+    }
+
+    /// write what's cached to the actual file
+    pub fn write_to_file(&mut self) -> io::Result<()> {
+        if self.file_info.path.is_empty() {
+            return Err(io::Error::other("no file loaded"));
+        }
+
+        if self.file_info.cli_read_only {
+            let err = io::Error::new(io::ErrorKind::PermissionDenied, "File was opened in read-only mode (--readonly)");
+            App::log(self, format!("Cannot save: {}", err));
+            return Err(err);
+        }
+
+        match self.try_write_in_place() {
+            Ok(total_written) => {
+                let msg = crate::i18n::fill(
+                    crate::i18n::M::DoneBytesWritten.tr(self.config.lang),
+                    &[&total_written.to_string()],
+                );
+                self.hex_view.changed_bytes.clear();
+                self.hex_view.changed_history.clear();
+                self.hex_view.redo_history.clear();
+                self.file_info.is_read_only = false;
+                self.file_info.is_running_locked = false;
+                self.reload_file()?;
+                self.info(msg);
+                Ok(())
+            }
+            Err(in_place_err) => {
+                // If in-place write fails (e.g. sharing violation on Windows while program is running),
+                // fall back to Rename & Replace.
+                let orig_path = Path::new(&self.file_info.path).to_path_buf();
+                match self.save_with_rename_replace(&orig_path) {
+                    Ok((total_written, backup_name)) => {
+                        let msg = crate::i18n::fill(
+                            crate::i18n::M::DoneBytesWritten.tr(self.config.lang),
+                            &[&total_written.to_string()],
+                        );
+                        App::log(
+                            self,
+                            format!(
+                                "Saved running executable via Rename & Replace (original binary preserved as '{}')",
+                                backup_name
+                            ),
+                        );
+                        self.hex_view.changed_bytes.clear();
+                        self.hex_view.changed_history.clear();
+                        self.hex_view.redo_history.clear();
+                        self.file_info.is_read_only = false;
+                        self.file_info.is_running_locked = false;
+                        self.reload_file()?;
+                        self.info(msg);
+                        Ok(())
+                    }
+                    Err(rr_err) => {
+                        App::log(
+                            self,
+                            format!(
+                                "In-place write failed: {}; Rename & Replace failed: {}",
+                                in_place_err, rr_err
+                            ),
+                        );
+                        if self.file_info.mmap.is_none() {
+                            let _ = self.file_info.reopen_mmap();
+                        }
+                        Err(in_place_err)
+                    }
+                }
+            }
+        }
     }
 
     /// write modified contents to a new target file path (Save As)
@@ -1340,8 +1694,9 @@ impl App {
             std::fs::write(target_path, orig_buffer)?;
         }
 
-        // Open newly created target file and apply changed_bytes
+        // Open newly created target file, truncate/extend to desired size, and apply changed_bytes
         let file = OpenOptions::new().write(true).open(target_path)?;
+        file.set_len(self.file_info.size as u64)?;
         let total_written = Self::flush_changed_bytes(file, &self.hex_view.changed_bytes)?;
 
         let target_str = target_path.to_string_lossy().to_string();
@@ -1355,8 +1710,7 @@ impl App {
         // switch itself clears them, via `HexView::reset_for_new_file`, but only
         // once it is certain to happen.
         let current_ofs = self.hex_view.offset;
-        let is_readonly = self.file_info.is_read_only;
-        if let Err(e) = self.load_file(&target_str, current_ofs, is_readonly) {
+        if let Err(e) = self.load_file(&target_str, current_ofs, false) {
             App::log(
                 self,
                 format!(
@@ -1498,6 +1852,23 @@ impl App {
         }
     }
 
+    /// Fills out with file bytes starting at offset, overlaying any in-memory edits (changed_bytes).
+    /// Returns the number of bytes actually read (may be less than out.len() if near EOF).
+    pub fn read_effective_slice(&self, offset: usize, out: &mut [u8]) -> usize {
+        let base = self.file_info.get_buffer();
+        if offset >= base.len() {
+            return 0;
+        }
+        let len = out.len().min(base.len() - offset);
+        out[..len].copy_from_slice(&base[offset..offset + len]);
+        for (&ch_off, &byte) in &self.hex_view.changed_bytes {
+            if ch_off >= offset && ch_off < offset + len {
+                out[ch_off - offset] = byte;
+            }
+        }
+        len
+    }
+
     pub fn read_i8(&self, offset: usize) -> Option<i8> {
         Some(self.read_array::<1>(offset)?[0] as i8)
     }
@@ -1594,7 +1965,7 @@ mod staged_extension_tests {
     #[test]
     fn marking_written_keeps_the_bytes_readable() {
         let mut info = FileInfo::default();
-        info.stage_extension(&[0xAA, 0xBB, 0xCC]);
+        let _ = info.stage_extension(&[0xAA, 0xBB, 0xCC]);
 
         assert_eq!(info.staged_extension.len(), 3);
         assert_eq!(info.size, 3);
@@ -1618,7 +1989,7 @@ mod staged_extension_tests {
     #[test]
     fn clearing_drops_the_bytes() {
         let mut info = FileInfo::default();
-        info.stage_extension(&[0xAA, 0xBB, 0xCC]);
+        let _ = info.stage_extension(&[0xAA, 0xBB, 0xCC]);
 
         info.clear_staged_extension();
 
@@ -1632,8 +2003,8 @@ mod staged_extension_tests {
     #[test]
     fn staging_accumulates() {
         let mut info = FileInfo::default();
-        info.stage_extension(&[1, 2]);
-        info.stage_extension(&[3]);
+        let _ = info.stage_extension(&[1, 2]);
+        let _ = info.stage_extension(&[3]);
         assert_eq!(info.staged_extension, vec![1, 2, 3]);
         assert_eq!(info.size, 3);
         assert_eq!(info.get_buffer_ref(), &[1, 2, 3]);
@@ -1643,7 +2014,7 @@ mod staged_extension_tests {
     #[test]
     fn staging_nothing_changes_nothing() {
         let mut info = FileInfo::default();
-        info.stage_extension(&[]);
+        let _ = info.stage_extension(&[]);
         assert_eq!(info.size, 0);
         assert!(info.staged_extension.is_empty());
     }
@@ -1713,7 +2084,7 @@ mod addressable_bounds_tests {
     /// Every offset it does return must be readable.
     #[test]
     fn returned_offsets_are_always_readable() {
-        let mut app = app_with_oversized_size();
+        let app = app_with_oversized_size();
         for va in [0u64, 1, 0x7F, 0x80, 0xFF, 0x100, 0x101, 0x1000, 0x8_0000] {
             if let Some(offset) = app.va_to_offset(va) {
                 assert!(
@@ -2009,19 +2380,67 @@ mod header_reparse_tests {
     }
 
     #[test]
+    fn va_to_offset_rejects_out_of_image_constants() {
+        let Some(app) = loaded_app() else { return };
+        assert_eq!(app.va_to_offset(0x1000), None);
+        assert_eq!(app.va_to_offset(0x10000), None);
+        assert_eq!(app.va_to_offset(0xDEAD_BEEF_0000), None);
+    }
+
+    #[test]
     fn test_autoeye32kr_no_bogus_dos_string_comment() {
         let mut app = App::new();
         app.config.database = false;
-        let path = "M:\\Tools\\나의 정리\\hexeid\\autoeye32kr.exe";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
-        app.load_file(path, 0, true).expect("load");
+        let path = match std::env::var("DEZES_TEST_AUTOEYE_PATH") {
+            Ok(p) if std::path::Path::new(&p).exists() => p,
+            _ => return,
+        };
+        app.load_file(&path, 0, true).expect("load");
         let ofs = app.va_to_offset(0x44C9CA).expect("offset");
         let comment = crate::disasm::draw::line_comment(&app, ofs, "mov ds:[0x616070], edx");
         assert_eq!(
             comment, None,
             "0x616070 is BSS and must not produce DOS stub comment"
         );
+    }
+
+    #[test]
+    fn test_section_at_offset_pe() {
+        let Some(app) = loaded_app() else { return };
+        // Offset 0 must be in Header
+        assert_eq!(app.section_at_offset(0), Some("Header".to_string()));
+
+        let pe = app.header_view.pe.as_ref().unwrap();
+        if let Some(first_sec) = pe.sections.first() {
+            let start = first_sec.pointer_to_raw_data as usize;
+            let size = first_sec.size_of_raw_data as usize;
+            if size > 0 {
+                let expected_name = first_sec.name().unwrap_or("?").to_string();
+                assert_eq!(app.section_at_offset(start), Some(expected_name.clone()));
+                assert_eq!(app.section_at_offset(start + size / 2), Some(expected_name));
+            }
+        }
+
+        // Overlay test
+        let max_raw_end = pe
+            .sections
+            .iter()
+            .map(|s| (s.pointer_to_raw_data as usize).saturating_add(s.size_of_raw_data as usize))
+            .max()
+            .unwrap_or(0);
+        if max_raw_end > 0 {
+            assert_eq!(
+                app.section_at_offset(max_raw_end + 0x1000),
+                Some("Overlay".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn test_section_at_offset_raw_binary() {
+        let app = App::new();
+        // Raw file with no PE or ELF parsed
+        assert_eq!(app.section_at_offset(0), None);
+        assert_eq!(app.section_at_offset(0x100), None);
     }
 }

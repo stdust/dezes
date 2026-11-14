@@ -1,4 +1,4 @@
-//! About / program information dialog (F8, or `:about`).
+//! About / program information dialog (F10, or `:about`).
 //!
 //! Two kinds of information live here, and they are why this is a dialog of its
 //! own rather than another section appended to the F1 help text:
@@ -122,7 +122,7 @@ fn database_sidecar(app: &App) -> String {
         .join(&db_name);
     let beside_startup = crate::util::startup_dir().join(&db_name);
 
-    for candidate in [&beside_startup, &beside_file] {
+    for candidate in [&beside_file, &beside_startup] {
         if candidate.is_file() {
             return format!("on   {}", candidate.display());
         }

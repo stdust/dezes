@@ -51,19 +51,28 @@ pub fn align_up(value: u64, align: u64) -> u64 {
 
 fn write_u16(app: &mut App, offset: usize, value: u16) {
     for (i, b) in value.to_le_bytes().iter().enumerate() {
-        crate::hex::edit::record_edit(app, offset + i, *b);
+        let ofs = offset + i;
+        if ofs < app.file_info.buffer_len() {
+            crate::hex::edit::record_edit(app, ofs, *b);
+        }
     }
 }
 
 fn write_u32(app: &mut App, offset: usize, value: u32) {
     for (i, b) in value.to_le_bytes().iter().enumerate() {
-        crate::hex::edit::record_edit(app, offset + i, *b);
+        let ofs = offset + i;
+        if ofs < app.file_info.buffer_len() {
+            crate::hex::edit::record_edit(app, ofs, *b);
+        }
     }
 }
 
 fn write_bytes(app: &mut App, offset: usize, bytes: &[u8]) {
     for (i, b) in bytes.iter().enumerate() {
-        crate::hex::edit::record_edit(app, offset + i, *b);
+        let ofs = offset + i;
+        if ofs < app.file_info.buffer_len() {
+            crate::hex::edit::record_edit(app, ofs, *b);
+        }
     }
 }
 
@@ -73,11 +82,6 @@ fn section_header_offset(pe: &Pe, section_index: usize) -> usize {
 }
 
 pub fn align_offset_to_va(app: &mut App) {
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoSectionTools);
-        return;
-    }
-
     let Some(pe) = app.header_view.pe.as_ref() else {
         let msg = crate::i18n::M::ErrNoPeHeaders.tr(app.config.lang).to_string();
         app.header_view.tools_last_message = Some(msg.clone());
@@ -119,11 +123,6 @@ pub fn align_offset_to_va(app: &mut App) {
 }
 
 pub fn remove_aslr(app: &mut App) {
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoSectionTools);
-        return;
-    }
-
     let Some(pe) = app.header_view.pe.as_ref() else {
         let msg = crate::i18n::M::ErrNoPeHeaders.tr(app.config.lang).to_string();
         app.header_view.tools_last_message = Some(msg.clone());
@@ -278,7 +277,29 @@ pub fn add_new_section(app: &mut App, requested_size: u32) -> std::result::Resul
     let target_len = plan.new_raw_offset + plan.raw_size;
     let extension_len = target_len.saturating_sub(current_len);
     if extension_len > 0 {
-        app.file_info.stage_extension(&vec![0u8; extension_len as usize]);
+        const MAX_SECTION_EXTENSION: u64 = 1024 * 1024 * 1024; // 1GB limit
+        if extension_len > MAX_SECTION_EXTENSION {
+            let msg = format!("Requested section size is too large ({} bytes > 1GB)", extension_len);
+            App::log(app, msg.clone());
+            app.header_view.tools_last_message = Some(msg);
+            crate::beep!();
+            return Ok(());
+        }
+        let mut ext_vec = Vec::new();
+        if ext_vec.try_reserve_exact(extension_len as usize).is_err() {
+            let msg = "Failed to allocate memory for section extension (OOM)".to_string();
+            App::log(app, msg.clone());
+            app.header_view.tools_last_message = Some(msg);
+            crate::beep!();
+            return Ok(());
+        }
+        ext_vec.resize(extension_len as usize, 0u8);
+        if let Err(e) = app.file_info.stage_extension(&ext_vec) {
+            App::log(app, format!("Failed to stage extension: {}", e));
+            app.header_view.tools_last_message = Some(format!("Error: {}", e));
+            crate::beep!();
+            return Ok(());
+        }
     }
 
     let msg = crate::i18n::fill(
@@ -371,6 +392,20 @@ pub fn dialog_section_size_events(app: &mut App, event: &Event) -> Result<bool> 
             app.header_view.section_size_dialog.selection_all = false;
         }
 
+        let is_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if is_ctrl && (key.code == KeyCode::Char('a') || key.code == KeyCode::Char('A')) {
+            app.header_view.section_size_dialog.selection_all = true;
+            app.header_view.section_size_dialog.selection_anchor = None;
+            return Ok(false);
+        }
+        if is_ctrl && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C')) {
+            let input_val = app.header_view.section_size_dialog.input.value().to_string();
+            if !input_val.is_empty() && let Ok(cb) = &mut app.clipboard {
+                let _ = cb.set_text(input_val);
+            }
+            return Ok(false);
+        }
+
         match key.code {
             KeyCode::Esc => {
                 app.header_view.section_size_dialog = Default::default();
@@ -396,7 +431,7 @@ pub fn dialog_section_size_events(app: &mut App, event: &Event) -> Result<bool> 
                     }
                 }
             }
-            KeyCode::Char(c) if app.header_view.section_size_dialog.selection_all => {
+            KeyCode::Char(c) if app.header_view.section_size_dialog.selection_all && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 app.header_view.section_size_dialog.selection_all = false;
                 app.header_view.section_size_dialog.selection_anchor = None;
                 app.header_view.section_size_dialog.input = tui_input::Input::new(c.to_string());
@@ -419,10 +454,6 @@ pub fn dialog_section_size_events(app: &mut App, event: &Event) -> Result<bool> 
 
 pub fn delete_last_section(app: &mut App) -> std::result::Result<(), String> {
     let lang = app.config.lang;
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoSectionTools);
-        return Err("File is read-only".to_string());
-    }
 
     let (
         sec_hdr_off,
@@ -514,6 +545,14 @@ pub fn delete_last_section(app: &mut App) -> std::result::Result<(), String> {
 
     app.update_file_headers();
 
+    let max_offset = app.file_info.buffer_len().saturating_sub(1);
+    if app.hex_view.offset > max_offset {
+        app.hex_view.offset = max_offset;
+    }
+    if app.reader.page_start > max_offset {
+        app.reader.page_start = max_offset;
+    }
+
     let msg = format!(
         "Deleted last section '{}' (SizeOfImage -> 0x{:X}, NumberOfSections -> {})",
         last_name, new_size_of_image, nsections - 1
@@ -525,10 +564,6 @@ pub fn delete_last_section(app: &mut App) -> std::result::Result<(), String> {
 
 pub fn prompt_delete_last_section(app: &mut App) {
     let lang = app.config.lang;
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoSectionTools);
-        return;
-    }
     let Some(pe) = app.header_view.pe.as_ref() else {
         app.error(crate::i18n::M::ErrNoPeHeaders.tr(lang).to_string());
         return;
@@ -613,11 +648,6 @@ pub fn dialog_confirm_delete_section_events(app: &mut App, key: KeyEvent) -> Res
 }
 
 pub fn fix_size_of_image(app: &mut App) {
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoSectionTools);
-        return;
-    }
-
     let Some((opt_off, current_size_of_image, expected_size_of_image)) = (|| {
         let pe = app.header_view.pe.as_ref()?;
         let opt = pe.optional_header.as_ref()?;
@@ -754,6 +784,20 @@ pub fn dialog_dump_section_events(app: &mut App, event: &Event) -> Result<bool> 
             app.header_view.dump_dialog.selection_all = false;
         }
 
+        let is_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if is_ctrl && (key.code == KeyCode::Char('a') || key.code == KeyCode::Char('A')) {
+            app.header_view.dump_dialog.selection_all = true;
+            app.header_view.dump_dialog.selection_anchor = None;
+            return Ok(false);
+        }
+        if is_ctrl && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C')) {
+            let input_val = app.header_view.dump_dialog.input.value().to_string();
+            if !input_val.is_empty() && let Ok(cb) = &mut app.clipboard {
+                let _ = cb.set_text(input_val);
+            }
+            return Ok(false);
+        }
+
         match key.code {
             KeyCode::Esc => {
                 app.header_view.dump_dialog = Default::default();
@@ -827,7 +871,7 @@ pub fn dialog_dump_section_events(app: &mut App, event: &Event) -> Result<bool> 
                     }
                 }
             }
-            KeyCode::Char(c) if app.header_view.dump_dialog.selection_all => {
+            KeyCode::Char(c) if app.header_view.dump_dialog.selection_all && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 app.header_view.dump_dialog.selection_all = false;
                 app.header_view.dump_dialog.selection_anchor = None;
                 app.header_view.dump_dialog.input = tui_input::Input::new(c.to_string());
@@ -958,20 +1002,17 @@ mod tools_feedback_tests {
     }
 
     #[test]
-    fn read_only_refuses_the_tools() {
+    fn read_only_allows_the_tools() {
         let Some(mut app) = loaded(true) else { return };
         let sec_count = app.header_view.pe.as_ref().map(|p| p.sections.len()).unwrap_or(0);
 
         app.header_view.detail_index = sec_count;
         enter(&mut app);
-        assert!(app.hex_view.changed_bytes.is_empty(), "a read-only file was edited");
-        assert!(app.status_error.is_some(), "the refusal was not reported");
+        assert!(!app.hex_view.changed_bytes.is_empty(), "a read-only file should allow in-memory editing");
 
-        app.status_error = None;
         app.header_view.detail_index = sec_count + 1;
         enter(&mut app);
-        assert!(app.state != UIState::DialogSectionSize, "the size prompt opened anyway");
-        assert!(app.status_error.is_some());
+        assert_eq!(app.state, UIState::DialogSectionSize, "the size prompt should open on read-only file");
     }
 
     #[test]

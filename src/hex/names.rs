@@ -227,6 +227,8 @@ pub fn dialog_names_draw(app: &mut App, frame: &mut Frame) {
 
 pub fn dialog_names_events(app: &mut App, event: &Event) -> Result<bool> {
     let shown = filtered_comments(app);
+    let count = shown.len();
+    let max = count.saturating_sub(1);
     if let Event::Key(key) = event {
         match key.code {
             KeyCode::Esc => {
@@ -239,38 +241,41 @@ pub fn dialog_names_events(app: &mut App, event: &Event) -> Result<bool> {
                 crate::hex::comment::open_comment_dialog(app);
             }
             KeyCode::Down => {
-                app.hex_view.names_list_state.select_next();
+                if let Some(curr) = app.hex_view.names_list_state.selected() {
+                    app.hex_view.names_list_state.select(Some((curr + 1).min(max)));
+                } else if count > 0 {
+                    app.hex_view.names_list_state.select(Some(0));
+                }
             }
             KeyCode::Up => {
-                app.hex_view.names_list_state.select_previous();
+                if let Some(curr) = app.hex_view.names_list_state.selected() {
+                    app.hex_view.names_list_state.select(Some(curr.saturating_sub(1)));
+                } else if count > 0 {
+                    app.hex_view.names_list_state.select(Some(0));
+                }
             }
             KeyCode::PageDown => {
-                app.hex_view.names_list_state.scroll_down_by(30);
+                if let Some(curr) = app.hex_view.names_list_state.selected() {
+                    app.hex_view.names_list_state.select(Some((curr + 30).min(max)));
+                } else if count > 0 {
+                    app.hex_view.names_list_state.select(Some(0));
+                }
             }
             KeyCode::PageUp => {
-                app.hex_view.names_list_state.scroll_up_by(30);
+                if let Some(curr) = app.hex_view.names_list_state.selected() {
+                    app.hex_view.names_list_state.select(Some(curr.saturating_sub(30)));
+                } else if count > 0 {
+                    app.hex_view.names_list_state.select(Some(0));
+                }
             }
             KeyCode::Home => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    app.hex_view.names_list_state.select_first();
-                } else if let Some(n) = app.hex_view.names_list_state.selected() {
-                    // we show 30 strings at a time, so this will select
-                    // the string at the top of the list
-                    let new_index = n.saturating_sub(29);
-                    app.hex_view.names_list_state.select(Some(new_index));
+                if count > 0 {
+                    app.hex_view.names_list_state.select(Some(0));
                 }
             }
             KeyCode::End => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    app.hex_view.names_list_state.select_last();
-                } else if let Some(n) = app.hex_view.names_list_state.selected() {
-                    // Clamped to the last entry. An index past the end leaves the
-                    // list with nothing selected, so Enter then does nothing and
-                    // the dialog looks stuck.
-                    let last = app.hex_view.comment_name_list.len().saturating_sub(1);
-                    app.hex_view
-                        .names_list_state
-                        .select(Some((n + 29).min(last)));
+                if count > 0 {
+                    app.hex_view.names_list_state.select(Some(max));
                 }
             }
             KeyCode::Enter => {

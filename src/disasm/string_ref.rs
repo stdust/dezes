@@ -23,46 +23,19 @@ pub struct StringRefItem {
     pub full_text_str: String,
 }
 
-pub fn try_read_string_at_offset(buffer: &[u8], offset: usize) -> Option<(String, &'static str)> {
-    if offset >= buffer.len() {
-        return None;
-    }
-
-    let bytes = &buffer[offset..(offset + 256).min(buffer.len())];
-    if bytes.is_empty() || bytes[0] == 0 {
-        return None;
-    }
-
-    // Fast-scan candidate non-zero printable / DBCS byte run directly on slice without allocating
-    let mut text_len = 0usize;
-    let mut is_pure_ascii = true;
-    for &b in bytes {
-        if b == 0 {
-            break;
-        }
-        if b.is_ascii_graphic() || b == b' ' || b == b'\t' {
-            text_len += 1;
-        } else if b >= 0x80 {
-            text_len += 1;
-            is_pure_ascii = false;
-        } else {
-            break;
+fn try_decode_ascii(text_slice: &[u8]) -> Option<(String, &'static str)> {
+    if text_slice.len() >= 3 && text_slice.iter().all(|&b| b.is_ascii_graphic() || b == b' ' || b == b'\t') {
+        if let Ok(s) = std::str::from_utf8(text_slice) {
+            let s_trimmed = s.trim();
+            if s_trimmed.len() >= 3 {
+                return Some((format!("\"{}\"", s_trimmed), "ASCII"));
+            }
         }
     }
+    None
+}
 
-    let text_slice = &bytes[..text_len];
-
-    // 1. Try ASCII
-    if is_pure_ascii && text_slice.len() >= 3
-        && let Ok(s) = std::str::from_utf8(text_slice)
-    {
-        let s_trimmed = s.trim();
-        if s_trimmed.len() >= 3 {
-            return Some((format!("\"{}\"", s_trimmed), "ASCII"));
-        }
-    }
-
-    // 2. Try UTF-8
+fn try_decode_utf8(text_slice: &[u8]) -> Option<(String, &'static str)> {
     if text_slice.len() >= 4 {
         let mut valid_len = 0;
         for i in 1..=text_slice.len() {
@@ -85,30 +58,10 @@ pub fn try_read_string_at_offset(buffer: &[u8], offset: usize) -> Option<(String
             }
         }
     }
+    None
+}
 
-    // 3. Try Korean CP949 (EUC-KR)
-    if text_slice.len() >= 4 {
-        let (cow, has_eval) = encoding_rs::EUC_KR.decode_without_bom_handling(text_slice);
-        if !has_eval {
-            let s = cow.trim();
-            if s.chars().count() >= 2 && s.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)) {
-                return Some((format!("\"{}\"", s), "CP949"));
-            }
-        }
-    }
-
-    // 4. Try Chinese CP936 (GBK)
-    if text_slice.len() >= 4 {
-        let (cow, has_eval) = encoding_rs::GBK.decode_without_bom_handling(text_slice);
-        if !has_eval {
-            let s = cow.trim();
-            if s.chars().count() >= 2 && s.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)) {
-                return Some((format!("\"{}\"", s), "CP936"));
-            }
-        }
-    }
-
-    // 4. Try UTF-16 LE
+fn try_decode_utf16le(bytes: &[u8]) -> Option<(String, &'static str)> {
     if bytes.len() >= 4 {
         let mut u16_chars = Vec::new();
         for chunk in bytes.chunks_exact(2) {
@@ -153,8 +106,120 @@ pub fn try_read_string_at_offset(buffer: &[u8], offset: usize) -> Option<(String
             }
         }
     }
-
     None
+}
+
+fn try_decode_cp949(text_slice: &[u8]) -> Option<(String, &'static str)> {
+    if text_slice.len() >= 4 {
+        let (cow, has_eval) = encoding_rs::EUC_KR.decode_without_bom_handling(text_slice);
+        if !has_eval {
+            let s = cow.trim();
+            if s.chars().count() >= 2 && s.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)) {
+                return Some((format!("\"{}\"", s), "CP949"));
+            }
+        }
+    }
+    None
+}
+
+fn try_decode_cp936(text_slice: &[u8]) -> Option<(String, &'static str)> {
+    if text_slice.len() >= 4 {
+        let (cow, has_eval) = encoding_rs::GBK.decode_without_bom_handling(text_slice);
+        if !has_eval {
+            let s = cow.trim();
+            if s.chars().count() >= 2 && s.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)) {
+                return Some((format!("\"{}\"", s), "CP936"));
+            }
+        }
+    }
+    None
+}
+
+pub fn try_read_string_at_offset_enc(
+    buffer: &[u8],
+    offset: usize,
+    encoding: crate::disasm::DisasmCommentEncoding,
+) -> Option<(String, &'static str)> {
+    if offset >= buffer.len() {
+        return None;
+    }
+
+    let bytes = &buffer[offset..(offset + 256).min(buffer.len())];
+    if bytes.is_empty() || bytes[0] == 0 {
+        return None;
+    }
+
+    // Fast-scan candidate non-zero printable / DBCS byte run directly on slice without allocating
+    let mut text_len = 0usize;
+    let mut is_pure_ascii = true;
+    for &b in bytes {
+        if b == 0 {
+            break;
+        }
+        if b.is_ascii_graphic() || b == b' ' || b == b'\t' {
+            text_len += 1;
+        } else if b >= 0x80 {
+            text_len += 1;
+            is_pure_ascii = false;
+        } else {
+            break;
+        }
+    }
+
+    let text_slice = &bytes[..text_len];
+
+    match encoding {
+        crate::disasm::DisasmCommentEncoding::Utf16Le => {
+            try_decode_utf16le(bytes)
+        }
+        crate::disasm::DisasmCommentEncoding::Utf8 => {
+            try_decode_ascii(text_slice).or_else(|| try_decode_utf8(text_slice))
+        }
+        crate::disasm::DisasmCommentEncoding::Cp949 => {
+            try_decode_cp949(text_slice).or_else(|| try_decode_ascii(text_slice))
+        }
+        crate::disasm::DisasmCommentEncoding::Cp936 => {
+            try_decode_cp936(text_slice).or_else(|| try_decode_ascii(text_slice))
+        }
+        crate::disasm::DisasmCommentEncoding::Ascii => {
+            try_decode_ascii(text_slice)
+        }
+        crate::disasm::DisasmCommentEncoding::Auto => {
+            // 1. Try ASCII
+            if is_pure_ascii {
+                if let Some(res) = try_decode_ascii(text_slice) {
+                    return Some(res);
+                }
+            }
+
+            // 2. Try UTF-8
+            if let Some(res) = try_decode_utf8(text_slice) {
+                return Some(res);
+            }
+
+            // 3. Try UTF-16 LE (checked before DBCS to prevent GBK hijacking valid UTF-16LE strings)
+            if let Some(res) = try_decode_utf16le(bytes) {
+                return Some(res);
+            }
+
+            // 4. Try Korean CP949 (EUC-KR)
+            if let Some(res) = try_decode_cp949(text_slice) {
+                return Some(res);
+            }
+
+            // 5. Try Chinese CP936 (GBK)
+            if let Some(res) = try_decode_cp936(text_slice) {
+                return Some(res);
+            }
+
+            // Fallback to ASCII if not pure but has valid graphic ascii run
+            try_decode_ascii(text_slice)
+        }
+    }
+}
+
+pub fn try_read_string_at_offset(buffer: &[u8], offset: usize) -> Option<(String, &'static str)> {
+    try_read_string_at_offset_enc(buffer, offset, crate::disasm::DisasmCommentEncoding::Auto)
 }
 
 /// Upper bound on collected string references.
@@ -347,7 +412,7 @@ mod string_location_tests {
         app.config.database = false;
         let Ok(exe) = std::env::current_exe() else { return };
         let Some(path) = exe.to_str() else { return };
-        if app.load_file(path, 0, false).is_err() {
+        if app.load_file(&path, 0, false).is_err() {
             return;
         }
         if app.header_view.pe.is_none() {
@@ -411,14 +476,41 @@ mod string_location_tests {
     }
 
     #[test]
+    fn utf16_user_string_is_decoded_as_utf16_in_auto_and_utf16_mode() {
+        // FA 59 9A 5B 30 52 D1 C9 00 00 = "妸定到집" in UTF-16LE
+        let bytes = vec![0xFA, 0x59, 0x9A, 0x5B, 0x30, 0x52, 0xD1, 0xC9, 0x00, 0x00];
+
+        // 1. Auto mode: must not be hijacked by CP936 (which decoded it as "鶼歔0R焉")
+        let read_auto = try_read_string_at_offset_enc(&bytes, 0, crate::disasm::DisasmCommentEncoding::Auto);
+        assert!(read_auto.is_some());
+        let (s_auto, enc_auto) = read_auto.unwrap();
+        assert_eq!(enc_auto, "UTF-16LE");
+        assert_eq!(s_auto, "L\"姺定到집\"");
+
+        // 2. Forced UTF-16LE mode
+        let read_u16 = try_read_string_at_offset_enc(&bytes, 0, crate::disasm::DisasmCommentEncoding::Utf16Le);
+        assert!(read_u16.is_some());
+        let (s_u16, enc_u16) = read_u16.unwrap();
+        assert_eq!(enc_u16, "UTF-16LE");
+        assert_eq!(s_u16, "L\"姺定到집\"");
+
+        // 3. Forced CP936 mode
+        let read_cp936 = try_read_string_at_offset_enc(&bytes, 0, crate::disasm::DisasmCommentEncoding::Cp936);
+        assert!(read_cp936.is_some());
+        let (s_936, enc_936) = read_cp936.unwrap();
+        assert_eq!(enc_936, "CP936");
+        assert_eq!(s_936, "\"鶼歔0R焉\"");
+    }
+
+    #[test]
     fn inspect_string_references_finds_all_references() {
-        let path = "C:\\Users\\Administrator\\Desktop\\pecmd\\dumped_SCY.exe";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
+        let path = match std::env::var("DEZES_TEST_PECMD_PATH") {
+            Ok(p) if std::path::Path::new(&p).exists() => p,
+            _ => return,
+        };
         let mut app = crate::app::App::new();
         app.config.database = false;
-        if app.load_file(path, 0, false).is_err() {
+        if app.load_file(&path, 0, false).is_err() {
             return;
         }
         let items = scan_string_references(&app);

@@ -1,3 +1,4 @@
+use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::io::Result;
 
@@ -68,6 +69,7 @@ fn revert_byte_at_cursor(app: &mut App) {
         Some(val) => {
             app.hex_view.changed_history.retain(|o| *o != ofs);
             app.hex_view.redo_history.push((ofs, val));
+            app.view_generation = app.view_generation.wrapping_add(1);
     
             app.goto_with_history(ofs, false);
             crate::app::App::log(app, format!("Reverted byte at offset 0x{:X} to its original value", ofs));
@@ -89,11 +91,6 @@ fn instr_len_at(app: &mut App, offset: usize, _bitness: u32, _filesize: usize) -
 /// the following instructions.
 #[allow(dead_code)]
 fn nop_current_instruction(app: &mut App, offset: usize, bitness: u32, filesize: usize) {
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoNopOut);
-        return;
-    }
-
     let Some(len) = instr_len_at(app, offset, bitness, filesize) else {
         crate::beep!();
         return;
@@ -173,7 +170,20 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         let page_start = start_ofs.min(slice_end);
         let ip = app.get_va(page_start);
         let buffer = app.file_info.get_buffer_ref();
-        let code_bytes = &buffer[page_start..slice_end];
+        let raw_slice = &buffer[page_start..slice_end];
+        let modified_vec: Vec<u8>;
+        let code_bytes = if (page_start..slice_end).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs)) {
+            let mut bytes = raw_slice.to_vec();
+            for (idx, b_val) in bytes.iter_mut().enumerate() {
+                if let Some(&b) = app.hex_view.changed_bytes.get(&(page_start + idx)) {
+                    *b_val = b;
+                }
+            }
+            modified_vec = bytes;
+            &modified_vec[..]
+        } else {
+            raw_slice
+        };
 
         let decoder = Decoder::with_ip(bitness, code_bytes, ip, DecoderOptions::NONE);
         let mut formatter = iced_x86::IntelFormatter::new();
@@ -196,7 +206,9 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             let len = instr.len();
             let hex_end = (cur_ofs + len).min(filesize);
             let mut hex_str = String::with_capacity(len * 3);
-            for (i, b) in buffer[cur_ofs.min(hex_end)..hex_end].iter().enumerate() {
+            let s_start = cur_ofs.saturating_sub(page_start);
+            let s_end = hex_end.saturating_sub(page_start).min(code_bytes.len());
+            for (i, b) in code_bytes[s_start..s_end].iter().enumerate() {
                 if i > 0 {
                     hex_str.push(' ');
                 }
@@ -270,10 +282,10 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             // page and only acted when it landed exactly on the cursor, so on a
             // tall terminal - or with the cursor off a boundary - the key did
             // nothing at all, with no feedback.
-            let end = (offset + MAX_INSTR_BYTES).min(filesize);
             let start_va = app.get_va(offset);
-            let buffer = app.file_info.get_buffer_ref();
-            let bytes = &buffer[offset.min(end)..end.min(buffer.len())];
+            let mut code_buf = [0u8; MAX_INSTR_BYTES];
+            let n = app.read_effective_slice(offset, &mut code_buf);
+            let bytes = &code_buf[..n];
             let mut decoder = Decoder::with_ip(bitness, bytes, start_va, DecoderOptions::NONE);
 
             let mut current_ofs = offset;
@@ -407,36 +419,15 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         // With a Shift-selection active, the whole range is filled;
         // without one, Delete NOPs the current instruction, Insert zeroes it.
         KeyCode::Delete | KeyCode::Insert => {
-            if app.file_info.is_read_only {
-                let what = if key.code == KeyCode::Delete {
-                    crate::i18n::M::RoFillNop
-                } else {
-                    crate::i18n::M::RoFillZero
-                };
-                app.read_only_error(what);
-                return Ok(false);
-            }
             let value: u8 = if key.code == KeyCode::Delete { 0x90 } else { 0x00 };
             if let Some(anchor) = app.disasm_selection_anchor {
                 let start = anchor.min(offset);
                 let end = anchor.max(offset);
                 // Walk instruction boundaries from start to find end range
                 let fill_end = {
-                    let slice_end = (end + MAX_INSTR_BYTES).min(filesize);
-                    let buffer = app.file_info.get_buffer_ref();
-                    let code_bytes = &buffer[end..slice_end];
-                    let ip = app.get_va(end);
-                    let mut decoder = Decoder::with_ip(bitness, code_bytes, ip, DecoderOptions::NONE);
-                    if let Some(instr) = decoder.iter().next() {
-                        if !instr.is_invalid() {
-                            end + instr.len()
-                        } else {
-                            end + 1
-                        }
-                    } else {
-                        end + 1
-                    }
-                }.min(filesize);
+                    let len = instr_len_at(app, end, bitness, filesize).unwrap_or(1);
+                    (end + len).min(filesize)
+                };
                 let count = fill_end - start;
                 for ofs in start..fill_end {
                     crate::hex::edit::record_edit(app, ofs, value);
@@ -473,15 +464,24 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         // Edit Data dialog (Ctrl+E, x64dbg's Binary -> Edit). Was 'd'/'D'.
         KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if app.file_info.is_read_only {
-                app.read_only_error(crate::i18n::M::RoEditData);
+            app.state = UIState::DialogEditData;
+            app.hex_view.edit_dialog.reset();
+            let enc1 = app.text_view.table;
+            app.hex_view.edit_dialog.set_enc1(enc1);
+            app.dialog_renderer = Some(crate::hex::edit_dialog::dialog_edit_draw);
+        }
+        // Disassembly Comment Encoding: Alt+E opens picker dialog, Alt+Shift+E quick-cycles
+        KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::ALT) && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                app.disasm_comment_encoding = app.disasm_comment_encoding.next();
+                let msg = format!("Disasm comment encoding: {}", app.disasm_comment_encoding.as_str());
+                App::log(app, msg.clone());
+                app.status_info = Some(msg);
+                app.view_generation = app.view_generation.wrapping_add(1);
             } else {
-                app.state = UIState::DialogEditData;
-                app.hex_view.edit_dialog.reset();
-                let enc1 = app.text_view.table;
-                app.hex_view.edit_dialog.set_enc1(enc1);
-                app.dialog_renderer = Some(crate::hex::edit_dialog::dialog_edit_draw);
+                open_disasm_encoding_dialog(app);
             }
+            return Ok(false);
         }
         // Xrefs are Ctrl+R, handled in `global/events.rs`; the bare 'r' is gone.
         KeyCode::Esc => {
@@ -505,7 +505,7 @@ mod disasm_key_tests {
     /// One fixture file per call: loading maps the file, and these tests run in
     /// parallel, so sharing a path made the write fail while another test still
     /// had it mapped.
-    fn app_with_code() -> App {
+    pub(crate) fn app_with_code() -> App {
         static FIXTURE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let id = FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
@@ -797,17 +797,14 @@ mod disasm_key_tests {
 pub fn open_assemble_dialog(app: &mut App) {
     use iced_x86::{Decoder, DecoderOptions};
 
-    if app.file_info.is_read_only {
-        app.read_only_error(crate::i18n::M::RoAssemble);
-        return;
-    }
     let offset = app.hex_view.offset;
-    let filesize = app.file_info.size;
+    let filesize = app.file_info.size.min(app.file_info.buffer_len());
     let bitness = app.bitness();
     let ip = app.get_va(offset);
-    let buffer = app.file_info.get_buffer_ref();
-    let slice_end = (offset + MAX_INSTR_BYTES).min(filesize);
-    let slice = &buffer[offset.min(slice_end)..slice_end];
+    let mut code_bytes = [0u8; MAX_INSTR_BYTES];
+    let read_len = (filesize.saturating_sub(offset)).min(MAX_INSTR_BYTES);
+    app.read_effective_slice(offset, &mut code_bytes[..read_len]);
+    let slice = &code_bytes[..read_len];
     let decoder = Decoder::with_ip(bitness, slice, ip, DecoderOptions::NONE);
     let mut formatter = iced_x86::IntelFormatter::new();
     formatter.options_mut().set_first_operand_char_index(0);
@@ -826,5 +823,139 @@ pub fn open_assemble_dialog(app: &mut App) {
     app.assemble_input = tui_input::Input::new(clean_initial);
     app.assemble_selection_all = true;
     app.dialog_renderer = Some(crate::disasm::assemble::dialog_assemble_draw);
+}
+
+pub fn open_disasm_encoding_dialog(app: &mut App) {
+    app.state = UIState::DialogDisasmEncoding;
+    app.dialog_renderer = Some(dialog_disasm_encoding_draw);
+    let cur_idx = app.disasm_comment_encoding.to_index();
+    app.list_state.select(Some(cur_idx));
+}
+
+pub fn dialog_disasm_encoding_draw(app: &mut App, frame: &mut Frame) {
+    let mut dialog = crate::widgets::ListChoice::new();
+    dialog.set_title(" Select Disassembly Comment Encoding ".to_string());
+    dialog.choices = crate::disasm::DisasmCommentEncoding::ALL
+        .iter()
+        .map(|e| e.display_label().to_string())
+        .collect();
+    dialog.render(app, frame);
+}
+
+pub fn dialog_disasm_encoding_events(app: &mut App, key: KeyEvent) -> Result<bool> {
+    let total = crate::disasm::DisasmCommentEncoding::ALL.len();
+    match key.code {
+        KeyCode::Esc => {
+            app.state = UIState::Normal;
+            app.dialog_renderer = None;
+        }
+        KeyCode::Enter => {
+            let sel = app.list_state.selected().unwrap_or(0);
+            let enc = crate::disasm::DisasmCommentEncoding::from_index(sel);
+            app.disasm_comment_encoding = enc;
+            app.view_generation = app.view_generation.wrapping_add(1);
+            let msg = format!("Disasm comment encoding: {}", enc.as_str());
+            App::log(app, msg.clone());
+            app.status_info = Some(msg);
+
+            app.state = UIState::Normal;
+            app.dialog_renderer = None;
+        }
+        KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::ALT) => {
+            if app.list_state.selected() == Some(total.saturating_sub(1)) {
+                app.list_state.select_first();
+            } else {
+                app.list_state.select_next();
+            }
+        }
+        KeyCode::Down => {
+            if app.list_state.selected() == Some(total.saturating_sub(1)) {
+                app.list_state.select_first();
+            } else {
+                app.list_state.select_next();
+            }
+        }
+        KeyCode::Up => {
+            if app.list_state.selected() == Some(0) {
+                app.list_state.select_last();
+            } else {
+                app.list_state.select_previous();
+            }
+        }
+        KeyCode::PageUp | KeyCode::Home => {
+            app.list_state.select_first();
+        }
+        KeyCode::PageDown | KeyCode::End => {
+            app.list_state.select_last();
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod disasm_encoding_events_tests {
+    use super::*;
+    use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    #[test]
+    fn alt_e_opens_dialog_and_enter_selects_encoding() {
+        let mut app = disasm_key_tests::app_with_code();
+        app.editor_view = crate::editor::AppView::Disasm;
+        assert_eq!(app.disasm_comment_encoding, crate::disasm::DisasmCommentEncoding::Auto);
+
+        // Alt+E opens dialog
+        let key_alt_e = KeyEvent {
+            code: KeyCode::Char('e'),
+            modifiers: KeyModifiers::ALT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let _ = disasm_mode_events(&mut app, key_alt_e);
+        assert_eq!(app.state, UIState::DialogDisasmEncoding);
+        assert!(app.dialog_renderer.is_some());
+        assert_eq!(app.list_state.selected(), Some(0)); // Auto
+
+        // Down key moves to index 1 (UTF-16LE)
+        let key_down = KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let _ = dialog_disasm_encoding_events(&mut app, key_down);
+        assert_eq!(app.list_state.selected(), Some(1));
+
+        // Enter selects UTF-16LE
+        let key_enter = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let _ = dialog_disasm_encoding_events(&mut app, key_enter);
+        assert_eq!(app.state, UIState::Normal);
+        assert!(app.dialog_renderer.is_none());
+        assert_eq!(app.disasm_comment_encoding, crate::disasm::DisasmCommentEncoding::Utf16Le);
+    }
+
+    #[test]
+    fn alt_shift_e_cycles_encoding_directly() {
+        let mut app = disasm_key_tests::app_with_code();
+        app.editor_view = crate::editor::AppView::Disasm;
+        assert_eq!(app.disasm_comment_encoding, crate::disasm::DisasmCommentEncoding::Auto);
+
+        let key_alt_shift_e = KeyEvent {
+            code: KeyCode::Char('e'),
+            modifiers: KeyModifiers::ALT | KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let _ = disasm_mode_events(&mut app, key_alt_shift_e);
+        assert_eq!(app.disasm_comment_encoding, crate::disasm::DisasmCommentEncoding::Utf16Le);
+
+        let _ = disasm_mode_events(&mut app, key_alt_shift_e);
+        assert_eq!(app.disasm_comment_encoding, crate::disasm::DisasmCommentEncoding::Utf8);
+    }
 }
 

@@ -21,14 +21,10 @@ pub fn run_section_tool(app: &mut App, row: usize) {
     match row {
         0 => crate::header::formats::pe::section_tools::align_offset_to_va(app),
         1 => {
-            if app.file_info.is_read_only {
-                app.read_only_error(crate::i18n::M::RoSectionTools);
-            } else {
-                app.header_view.section_size_dialog.open("0x1000");
-                app.state = UIState::DialogSectionSize;
-                app.dialog_renderer =
-                    Some(crate::header::formats::pe::section_tools::draw_section_size_dialog);
-            }
+            app.header_view.section_size_dialog.open("0x1000");
+            app.state = UIState::DialogSectionSize;
+            app.dialog_renderer =
+                Some(crate::header::formats::pe::section_tools::draw_section_size_dialog);
         }
         2 => crate::header::formats::pe::section_tools::open_dump_section_dialog(app),
         3 => crate::header::formats::pe::section_tools::prompt_delete_last_section(app),
@@ -362,7 +358,7 @@ pub fn view_header_pe_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                         let idx = app.header_view.detail_index;
                         if let Some(Some((_, dd))) = data_dirs.get(idx)
                             && dd.virtual_address > 0
-                            && let Some(ofs) = app.va_to_offset(dd.virtual_address as u64)
+                            && let Some(ofs) = app.va_to_offset(app.get_image_base().wrapping_add(dd.virtual_address as u64))
                         {
                             target_offset = Some(ofs);
                         }
@@ -382,7 +378,8 @@ pub fn view_header_pe_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 5 => {
                     let idx = app.header_view.detail_index;
                     if let Some(imp) = pe_ref.imports.get(idx) {
-                        target_offset = Some(imp.offset);
+                        let va = app.get_image_base().wrapping_add(imp.offset as u64);
+                        target_offset = app.va_to_offset(va);
                     }
                 }
                 _ => {}

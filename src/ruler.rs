@@ -84,6 +84,8 @@ pub fn ruler_draw(app: &mut App, frame: &mut Frame, area: Rect) {
     if app.editor_view == crate::editor::AppView::Disasm {
         // Shared with disasm::draw so the ruler and the table can't drift apart.
         let va_len = crate::disasm::draw::va_col_width(app);
+        let func_len = crate::disasm::draw::FUNC_COL_WIDTH;
+        let jump_len = crate::disasm::draw::JUMP_COL_WIDTH;
         let bytes_len = crate::disasm::draw::BYTES_COL_WIDTH;
         let disasm_len = crate::disasm::draw::DISASM_COL_WIDTH;
 
@@ -92,6 +94,8 @@ pub fn ruler_draw(app: &mut App, frame: &mut Frame, area: Rect) {
             .constraints(vec![
                 Constraint::Length(va_len),
                 Constraint::Length(1), // separator 1
+                Constraint::Length(func_len), // function bracket column (1)
+                Constraint::Length(jump_len), // jump column (2)
                 Constraint::Length(bytes_len),
                 Constraint::Length(1), // separator 2
                 Constraint::Length(disasm_len), // instruction column
@@ -103,6 +107,9 @@ pub fn ruler_draw(app: &mut App, frame: &mut Frame, area: Rect) {
         let addr_title = "Address";
         let addr_str = format!("{:^width$}", addr_title, width = va_len as usize);
         let addr_para = Paragraph::new(addr_str).style(header_style);
+
+        let func_para = Paragraph::new(" ").style(header_style);
+        let jump_para = Paragraph::new("  ").style(header_style);
 
         let bytes_title = "Hex dump";
         let bytes_str = format!(" {:<width$}", bytes_title, width = (bytes_len - 1) as usize);
@@ -125,11 +132,13 @@ pub fn ruler_draw(app: &mut App, frame: &mut Frame, area: Rect) {
 
         frame.render_widget(addr_para, disasm_header_layout[0]);
         frame.render_widget(sep1, disasm_header_layout[1]);
-        frame.render_widget(bytes_para, disasm_header_layout[2]);
-        frame.render_widget(sep2, disasm_header_layout[3]);
-        frame.render_widget(disasm_para, disasm_header_layout[4]);
-        frame.render_widget(sep3, disasm_header_layout[5]);
-        frame.render_widget(comment_para, disasm_header_layout[6]);
+        frame.render_widget(func_para, disasm_header_layout[2]);
+        frame.render_widget(jump_para, disasm_header_layout[3]);
+        frame.render_widget(bytes_para, disasm_header_layout[4]);
+        frame.render_widget(sep2, disasm_header_layout[5]);
+        frame.render_widget(disasm_para, disasm_header_layout[6]);
+        frame.render_widget(sep3, disasm_header_layout[7]);
+        frame.render_widget(comment_para, disasm_header_layout[8]);
         return;
     }
 

@@ -16,6 +16,7 @@ mod initfile;
 mod input_history;
 mod reader;
 mod ruler;
+mod scrollbar;
 mod text;
 mod text_field;
 mod themes;

@@ -29,6 +29,10 @@ pub fn revert_range(app: &mut App, start: usize, end: usize) -> usize {
         .changed_history
         .retain(|ofs| *ofs < start || *ofs > end);
 
+    if count > 0 {
+        app.view_generation = app.view_generation.wrapping_add(1);
+    }
+
 
     // A half-typed byte inside the reverted range no longer exists.
     if app
@@ -84,6 +88,7 @@ fn record_edit_internal(app: &mut App, offset: usize, new: u8, clear_redo: bool)
     if !app.hex_view.changed_bytes.contains_key(&offset) {
         app.hex_view.changed_history.push(offset);
     }
+    app.hex_view.disabled_bytes.remove(&offset);
     app.hex_view
         .changed_bytes
         .insert(offset, new);
@@ -218,15 +223,11 @@ pub fn edit_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         KeyCode::Char('e') | KeyCode::Char('E')
             if key.modifiers.contains(KeyModifiers::CONTROL) =>
         {
-            if app.file_info.is_read_only {
-                app.read_only_error(crate::i18n::M::RoEditData);
-            } else {
-                app.state = UIState::DialogEditData;
-                app.hex_view.edit_dialog.reset();
-                let enc1 = app.text_view.table;
-                app.hex_view.edit_dialog.set_enc1(enc1);
-                app.dialog_renderer = Some(super::edit_dialog::dialog_edit_draw);
-            }
+            app.state = UIState::DialogEditData;
+            app.hex_view.edit_dialog.reset();
+            let enc1 = app.text_view.table;
+            app.hex_view.edit_dialog.set_enc1(enc1);
+            app.dialog_renderer = Some(super::edit_dialog::dialog_edit_draw);
         }
 
         // Backspace also steps left, which is not a movement key elsewhere.

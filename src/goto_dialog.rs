@@ -109,6 +109,13 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
             return Ok(false);
         }
 
+        // Ctrl+A: Select all text
+        if is_ctrl && (key.code == KeyCode::Char('a') || key.code == KeyCode::Char('A')) {
+            app.goto_selection_all = true;
+            app.goto_selection_anchor = None;
+            return Ok(false);
+        }
+
         // Ctrl+V: Paste text from clipboard
         if is_ctrl && (key.code == KeyCode::Char('v') || key.code == KeyCode::Char('V'))
             && let Ok(cb) = &mut app.clipboard
@@ -185,7 +192,7 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
                 app.state = UIState::Normal;
                 app.dialog_renderer = None;
             }
-            KeyCode::Up if is_ctrl || key.modifiers.contains(KeyModifiers::NONE) => {
+            KeyCode::Up if is_ctrl || key.modifiers.is_empty() => {
                 app.goto_selection_all = false;
                 app.goto_selection_anchor = None;
                 let cur = app.goto_input.value().to_string();
@@ -195,7 +202,7 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
                 }
                 return Ok(false);
             }
-            KeyCode::Down if is_ctrl || key.modifiers.contains(KeyModifiers::NONE) => {
+            KeyCode::Down if is_ctrl || key.modifiers.is_empty() => {
                 app.goto_selection_all = false;
                 app.goto_selection_anchor = None;
                 let cur = app.goto_input.value().to_string();
@@ -259,12 +266,12 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
                 app.goto_selection_anchor = None;
                 tui_input::backend::crossterm::EventHandler::handle_event(&mut app.goto_input, event);
             }
-            KeyCode::Char(c) if app.goto_selection_all => {
+            KeyCode::Char(c) if app.goto_selection_all && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 app.goto_selection_all = false;
                 app.goto_selection_anchor = None;
                 app.goto_input = tui_input::Input::new(c.to_string());
             }
-            KeyCode::Char(c) if app.goto_selection_anchor.is_some() => {
+            KeyCode::Char(c) if app.goto_selection_anchor.is_some() && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 if let Some(anchor) = app.goto_selection_anchor {
                     let cursor = app.goto_input.cursor();
                     let val = app.goto_input.value();
@@ -297,11 +304,13 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
                 }
             }
             _ => {
-                if app.goto_selection_all {
-                    app.goto_selection_all = false;
-                }
-                if app.goto_selection_anchor.is_some() {
-                    app.goto_selection_anchor = None;
+                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                    if app.goto_selection_all {
+                        app.goto_selection_all = false;
+                    }
+                    if app.goto_selection_anchor.is_some() {
+                        app.goto_selection_anchor = None;
+                    }
                 }
                 tui_input::backend::crossterm::EventHandler::handle_event(&mut app.goto_input, event);
             }
