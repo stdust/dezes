@@ -274,29 +274,11 @@ impl App {
         image_base.wrapping_add(offset as u64)
     }
 
-    pub fn va_to_offset(&self, va: u64) -> Option<usize> {
-        // Validated against what is actually readable, not `file_info.size`.
-        //
-        // `size` comes from the directory entry and can exceed the mapping, so
-        // the old checks handed back offsets that every subsequent read clamps
-        // away - a Follow or an Xref jump landed on an empty viewport instead of
-        // reporting that the target isn't in the file.
+    /// Converts a Relative Virtual Address (RVA) to a raw file offset.
+    pub fn rva_to_offset(&self, rva: u64) -> Option<usize> {
         let limit = self.file_info.buffer_len() as u64;
 
-        // Same single source as `get_va`, so the two stay each other's inverse
-        // when the base is overridden.
-        let image_base = self.get_image_base();
-
         if let Some(pe) = &self.header_view.pe {
-            let old_base = self.header_image_base();
-            let rva = if self.is_in_image(va, image_base) {
-                va - image_base
-            } else if self.image_base_override.is_some() && self.is_in_image(va, old_base) {
-                va - old_base
-            } else {
-                return None;
-            };
-
             for section in &pe.sections {
                 let sec_rva = section.virtual_address as u64;
                 let sec_vsize = (section.virtual_size as u64).max(section.size_of_raw_data as u64);
@@ -322,6 +304,64 @@ impl App {
                 return Some(rva as usize);
             }
             return None;
+        }
+
+        if let Some(elf) = &self.header_view.elf {
+            let base_vaddr = elf
+                .phdrs
+                .iter()
+                .filter(|ph| ph.p_type == goblin::elf::program_header::PT_LOAD)
+                .map(|ph| ph.p_vaddr)
+                .min()
+                .unwrap_or(0);
+            let target_va = base_vaddr.wrapping_add(rva);
+            for ph in &elf.phdrs {
+                if ph.p_type != goblin::elf::program_header::PT_LOAD {
+                    continue;
+                }
+                let p_vaddr = ph.p_vaddr;
+                let p_filesz = ph.p_filesz;
+                if target_va >= p_vaddr && target_va < p_vaddr + ph.p_memsz.max(p_filesz) {
+                    if target_va >= p_vaddr + p_filesz {
+                        return None;
+                    }
+                    let offset = ph.p_offset + (target_va - p_vaddr);
+                    if offset < limit {
+                        return Some(offset as usize);
+                    }
+                    return None;
+                }
+            }
+            return None;
+        }
+
+        None
+    }
+
+    pub fn va_to_offset(&self, va: u64) -> Option<usize> {
+        // Validated against what is actually readable, not `file_info.size`.
+        //
+        // `size` comes from the directory entry and can exceed the mapping, so
+        // the old checks handed back offsets that every subsequent read clamps
+        // away - a Follow or an Xref jump landed on an empty viewport instead of
+        // reporting that the target isn't in the file.
+        let limit = self.file_info.buffer_len() as u64;
+
+        // Same single source as `get_va`, so the two stay each other's inverse
+        // when the base is overridden.
+        let image_base = self.get_image_base();
+
+        if self.header_view.pe.is_some() {
+            let old_base = self.header_image_base();
+            let rva = if self.is_in_image(va, image_base) {
+                va - image_base
+            } else if self.image_base_override.is_some() && self.is_in_image(va, old_base) {
+                va - old_base
+            } else {
+                return None;
+            };
+
+            return self.rva_to_offset(rva);
         }
 
         if let Some(elf) = &self.header_view.elf {
@@ -909,6 +949,7 @@ pub struct App {
     pub disasm_string_ref_dialog: crate::disasm::string_ref_dialog::StringRefDialog,
     pub disasm_xref_dialog: crate::disasm::xref_dialog::XrefDialog,
     pub goto_input: Input,
+    pub goto_mode: crate::goto_dialog::GotoMode,
     /// Character a Shift-selection in the image-base box started from, or `None`.
     pub base_anchor: Option<usize>,
     pub goto_selection_all: bool,
@@ -1048,6 +1089,7 @@ impl App {
             disasm_string_ref_dialog: crate::disasm::string_ref_dialog::StringRefDialog::new(),
             disasm_xref_dialog: crate::disasm::xref_dialog::XrefDialog::new(),
             goto_input: Input::default(),
+            goto_mode: crate::goto_dialog::GotoMode::default(),
             base_anchor: None,
             goto_selection_all: false,
             goto_selection_anchor: None,

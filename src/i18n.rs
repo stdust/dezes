@@ -198,6 +198,8 @@ pub enum M {
     ErrAddressOutOfBounds,
     ErrInvalidAddressExpr,
     ErrInvalidNumericValue,
+    ErrRvaNotMapped,
+    ErrRvaNotSupported,
     ErrNothingToCopy,
     ErrClipboardAccess,
     ErrAltMSelectionNeeded,
@@ -368,6 +370,7 @@ impl M {
         M::StringsFooterKeys, M::StringEditFooterKeys, M::RefsFooterKeys, M::XrefFooterKeys,
         M::LblAllEncodings,
         M::ErrAddressOutOfBounds, M::ErrInvalidAddressExpr, M::ErrInvalidNumericValue,
+        M::ErrRvaNotMapped, M::ErrRvaNotSupported,
         M::ErrNothingToCopy, M::ErrClipboardAccess, M::ErrAltMSelectionNeeded,
         M::ErrNoSectionPicked, M::ErrNoRoomForSectionHeader, M::LblSectionNameMax8,
         M::LblFileBase, M::ErrNothingToAssemble, M::ErrFileReadOnly, M::ErrAssemblePastEof,
@@ -781,6 +784,16 @@ impl M {
                 "Invalid numeric value: '{}'",
                 "잘못된 숫자 값: '{}'",
                 "无效的数值：'{}'",
+            ],
+            M::ErrRvaNotMapped => [
+                "RVA 0x{} cannot be mapped to file (unmapped or uninitialized)",
+                "RVA 0x{} 은 파일 오프셋에 매핑되지 않습니다 (미매핑 또는 미초기화)",
+                "RVA 0x{} 无法映射到文件（未映射或未初始化）",
+            ],
+            M::ErrRvaNotSupported => [
+                "RVA is only supported for PE and ELF files",
+                "RVA는 PE 및 ELF 파일에서만 지원됩니다",
+                "RVA 仅支持 PE 和 ELF 文件",
             ],
             M::ErrNothingToCopy => [
                 "Nothing to copy",

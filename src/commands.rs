@@ -273,42 +273,128 @@ pub fn address_to_offset(app: &App, value: u64) -> Option<usize> {
     }
 }
 
-fn try_goto(app: &mut App, raw_offset: &str) {
-    let trimmed = raw_offset.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    let has_keyword = lower.contains("base") || lower.contains("oep") || lower.contains("cur");
-    let is_relative = (trimmed.starts_with('+') || trimmed.starts_with('-')) && !has_keyword;
+pub fn resolve_goto_target(
+    app: &App,
+    raw_input: &str,
+    default_mode: crate::goto_dialog::GotoMode,
+) -> std::result::Result<(usize, String), String> {
+    let trimmed = raw_input.trim();
+    if trimmed.is_empty() {
+        return Err(crate::i18n::fill(
+            crate::i18n::M::ErrInvalidAddressExpr.tr(app.config.lang),
+            &[raw_input],
+        ));
+    }
 
-    if is_relative {
-        if let Some(delta) = eval_address_signed_expression(app, trimmed) {
+    let lower = trimmed.to_ascii_lowercase();
+
+    // Check for explicit prefix
+    let (effective_mode, expr) = if lower.starts_with("rva:") {
+        (crate::goto_dialog::GotoMode::Rva, trimmed[4..].trim())
+    } else if lower.starts_with("rva ") {
+        (crate::goto_dialog::GotoMode::Rva, trimmed[4..].trim())
+    } else if lower.starts_with("r:") {
+        (crate::goto_dialog::GotoMode::Rva, trimmed[2..].trim())
+    } else if lower.starts_with("fo:") {
+        (crate::goto_dialog::GotoMode::Offset, trimmed[3..].trim())
+    } else if lower.starts_with("offset:") {
+        (crate::goto_dialog::GotoMode::Offset, trimmed[7..].trim())
+    } else if lower.starts_with("ofs:") {
+        (crate::goto_dialog::GotoMode::Offset, trimmed[4..].trim())
+    } else if lower.starts_with("o:") {
+        (crate::goto_dialog::GotoMode::Offset, trimmed[2..].trim())
+    } else if lower.starts_with("va:") {
+        (crate::goto_dialog::GotoMode::Auto, trimmed[3..].trim())
+    } else if lower.starts_with("v:") {
+        (crate::goto_dialog::GotoMode::Auto, trimmed[2..].trim())
+    } else {
+        (default_mode, trimmed)
+    };
+
+    let limit = app.file_info.size.min(app.file_info.buffer_len());
+
+    // Relative check: +delta or -delta (without keywords)
+    let expr_lower = expr.to_ascii_lowercase();
+    let has_keyword = expr_lower.contains("base") || expr_lower.contains("oep") || expr_lower.contains("cur");
+    let is_relative = (expr.starts_with('+') || expr.starts_with('-')) && !has_keyword;
+
+    if is_relative && effective_mode != crate::goto_dialog::GotoMode::Rva {
+        if let Some(delta) = eval_address_signed_expression(app, expr) {
             let cur = app.hex_view.offset as i64;
             let target = cur.wrapping_add(delta);
-            if target >= 0 && (target as usize) < app.file_info.buffer_len() {
-                app.dialog_renderer = None;
-                app.state = UIState::Normal;
-                app.goto(target as usize);
-                return;
-            }
-        }
-    } else if let Some(val) = eval_address_expression(app, raw_offset) {
-        if let Some(ofs) = address_to_offset(app, val) {
-            if ofs < app.file_info.buffer_len() {
-                app.dialog_renderer = None;
-                app.state = UIState::Normal;
-                app.goto(ofs);
-                return;
+            if target >= 0 && (target as usize) < limit {
+                let ofs = target as usize;
+                return Ok((ofs, format!("offset 0x{:X} (relative {:+})", ofs, delta)));
+            } else {
+                return Err(crate::i18n::fill(
+                    crate::i18n::M::ErrAddressOutOfBounds.tr(app.config.lang),
+                    &[&format!("{:X}", target)],
+                ));
             }
         }
     }
 
-    command_error(
-        app,
-        format!(
-            "Invalid range or address expression: {}; maximum offset for this file is 0x{:X}",
-            raw_offset,
-            app.file_info.size.saturating_sub(1)
-        ),
-    );
+    let Some(val) = eval_address_expression(app, expr) else {
+        return Err(crate::i18n::fill(
+            crate::i18n::M::ErrInvalidAddressExpr.tr(app.config.lang),
+            &[raw_input],
+        ));
+    };
+
+    match effective_mode {
+        crate::goto_dialog::GotoMode::Rva => {
+            if app.header_view.pe.is_none() && app.header_view.elf.is_none() {
+                return Err(crate::i18n::M::ErrRvaNotSupported.tr(app.config.lang).to_string());
+            }
+            match app.rva_to_offset(val) {
+                Some(ofs) if ofs < limit => {
+                    Ok((ofs, format!("RVA 0x{:X} (offset 0x{:X})", val, ofs)))
+                }
+                _ => {
+                    Err(crate::i18n::fill(
+                        crate::i18n::M::ErrRvaNotMapped.tr(app.config.lang),
+                        &[&format!("{:X}", val)],
+                    ))
+                }
+            }
+        }
+        crate::goto_dialog::GotoMode::Offset => {
+            let ofs = val as usize;
+            if ofs < limit {
+                Ok((ofs, format!("file offset 0x{:X}", ofs)))
+            } else {
+                Err(crate::i18n::fill(
+                    crate::i18n::M::ErrAddressOutOfBounds.tr(app.config.lang),
+                    &[&format!("{:X}", val)],
+                ))
+            }
+        }
+        crate::goto_dialog::GotoMode::Auto => {
+            let target_offset = address_to_offset(app, val).unwrap_or(val as usize);
+            if target_offset < limit {
+                Ok((target_offset, format!("address 0x{:X} (offset 0x{:X})", val, target_offset)))
+            } else {
+                Err(crate::i18n::fill(
+                    crate::i18n::M::ErrAddressOutOfBounds.tr(app.config.lang),
+                    &[&format!("{:X}", val)],
+                ))
+            }
+        }
+    }
+}
+
+fn try_goto(app: &mut App, raw_offset: &str) {
+    match resolve_goto_target(app, raw_offset, crate::goto_dialog::GotoMode::Auto) {
+        Ok((target_offset, desc)) => {
+            app.dialog_renderer = None;
+            app.state = UIState::Normal;
+            app.goto(target_offset);
+            App::log(app, format!("Jumped to {}", desc));
+        }
+        Err(err_msg) => {
+            command_error(app, err_msg);
+        }
+    }
 }
 
 fn tr(app: &App, message: M) -> String {
@@ -1791,6 +1877,58 @@ mod keyword_tests {
         let mut app = app_at(0x40);
         parse_command(&mut app, ":cmt 0x10 \"check cur and base\"");
         assert_eq!(app.hex_view.comments.get(&0x10), Some(&"check cur and base".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_goto_target_modes_and_prefixes() {
+        let app = app_at(0x20);
+
+        // Relative offset
+        let res = resolve_goto_target(&app, "+0x10", crate::goto_dialog::GotoMode::Auto).expect("relative");
+        assert_eq!(res.0, 0x30);
+
+        // Explicit File Offset prefix
+        let res = resolve_goto_target(&app, "fo:0x50", crate::goto_dialog::GotoMode::Rva).expect("fo");
+        assert_eq!(res.0, 0x50);
+
+        let res = resolve_goto_target(&app, "offset:0x70", crate::goto_dialog::GotoMode::Auto).expect("offset");
+        assert_eq!(res.0, 0x70);
+
+        // Explicit Offset mode
+        let res = resolve_goto_target(&app, "0x80", crate::goto_dialog::GotoMode::Offset).expect("mode offset");
+        assert_eq!(res.0, 0x80);
+
+        // For raw binary (no PE/ELF), RVA returns error
+        let err = resolve_goto_target(&app, "rva:0x100", crate::goto_dialog::GotoMode::Auto);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_pe_rva_goto_resolution() {
+        let mut app = App::new();
+        app.config.database = false;
+        let Ok(exe) = std::env::current_exe() else { return };
+        if app.load_file(exe.to_str().expect("path"), 0, true).is_err() {
+            return;
+        }
+        let Some(pe) = &app.header_view.pe else { return };
+        let Some(sec) = pe.sections.first() else { return };
+
+        let sec_rva = sec.virtual_address as u64;
+        let expected_offset = sec.pointer_to_raw_data as usize;
+
+        // Test with rva: prefix
+        let (ofs, desc) = resolve_goto_target(&app, &format!("rva:0x{:X}", sec_rva), crate::goto_dialog::GotoMode::Auto).expect("rva prefix");
+        assert_eq!(ofs, expected_offset);
+        assert!(desc.contains("RVA"));
+
+        // Test with r: prefix
+        let (ofs, _) = resolve_goto_target(&app, &format!("r:0x{:X}", sec_rva), crate::goto_dialog::GotoMode::Auto).expect("r prefix");
+        assert_eq!(ofs, expected_offset);
+
+        // Test in Rva mode without prefix
+        let (ofs, _) = resolve_goto_target(&app, &format!("0x{:X}", sec_rva), crate::goto_dialog::GotoMode::Rva).expect("Rva mode");
+        assert_eq!(ofs, expected_offset);
     }
 }
 

@@ -7,6 +7,40 @@ use ratatui::{
 use std::io::Result;
 use crate::{app::App, editor::UIState, util::center_widget};
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum GotoMode {
+    #[default]
+    Auto,
+    Rva,
+    Offset,
+}
+
+impl GotoMode {
+    pub fn next(self) -> Self {
+        match self {
+            GotoMode::Auto => GotoMode::Rva,
+            GotoMode::Rva => GotoMode::Offset,
+            GotoMode::Offset => GotoMode::Auto,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            GotoMode::Auto => GotoMode::Offset,
+            GotoMode::Rva => GotoMode::Auto,
+            GotoMode::Offset => GotoMode::Rva,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GotoMode::Auto => "Auto",
+            GotoMode::Rva => "RVA",
+            GotoMode::Offset => "Offset",
+        }
+    }
+}
+
 fn safe_slice_parts(text: &str, start_pos: usize, end_pos: usize) -> (&str, &str, &str) {
     let char_indices: Vec<usize> = text.char_indices().map(|(idx, _)| idx).collect();
     let total_chars = char_indices.len();
@@ -21,7 +55,7 @@ fn safe_slice_parts(text: &str, start_pos: usize, end_pos: usize) -> (&str, &str
 }
 
 pub fn dialog_goto_draw(app: &mut App, frame: &mut Frame) {
-    let width = 32.min(frame.area().width.saturating_sub(4)).max(25);
+    let width = 36.min(frame.area().width.saturating_sub(4)).max(28);
     let height = 3;
     let mut dialog_area = center_widget(width, height, frame.area());
     dialog_area.y = dialog_area.y.saturating_sub(4);
@@ -30,6 +64,12 @@ pub fn dialog_goto_draw(app: &mut App, frame: &mut Frame) {
 
     let input_text = app.goto_input.value();
     let cursor_pos = app.goto_input.cursor();
+
+    let title = format!(
+        " {} [{}] (Tab) ",
+        crate::i18n::M::GotoTitle.tr(app.config.lang).trim(),
+        app.goto_mode.label()
+    );
 
     let paragraph = if app.goto_selection_all && !input_text.is_empty() {
         use ratatui::text::{Line, Span};
@@ -40,7 +80,7 @@ pub fn dialog_goto_draw(app: &mut App, frame: &mut Frame) {
             .style(app.config.theme.dialog)
             .block(
                 Block::bordered()
-                    .title(crate::i18n::M::GotoTitle.tr(app.config.lang))
+                    .title(title)
                     .title_alignment(Alignment::Center),
             )
     } else if let Some(anchor) = app.goto_selection_anchor {
@@ -56,7 +96,7 @@ pub fn dialog_goto_draw(app: &mut App, frame: &mut Frame) {
             .style(app.config.theme.dialog)
             .block(
                 Block::bordered()
-                    .title(crate::i18n::M::GotoTitle.tr(app.config.lang))
+                    .title(title)
                     .title_alignment(Alignment::Center),
             )
     } else {
@@ -64,7 +104,7 @@ pub fn dialog_goto_draw(app: &mut App, frame: &mut Frame) {
             .style(app.config.theme.dialog)
             .block(
                 Block::bordered()
-                    .title(crate::i18n::M::GotoTitle.tr(app.config.lang))
+                    .title(title)
                     .title_alignment(Alignment::Center),
             )
     };
@@ -212,36 +252,33 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
                 }
                 return Ok(false);
             }
+            KeyCode::Tab => {
+                app.goto_mode = app.goto_mode.next();
+                return Ok(false);
+            }
+            KeyCode::BackTab => {
+                app.goto_mode = app.goto_mode.prev();
+                return Ok(false);
+            }
             KeyCode::Enter => {
                 app.goto_selection_all = false;
                 app.goto_selection_anchor = None;
                 let raw_input = app.goto_input.value().trim();
-                if let Some(addr) = crate::commands::eval_address_expression(app, raw_input) {
-                    app.goto_history.push(raw_input.to_string());
-                    let filesize = app.file_info.size;
-                    let target_offset = crate::commands::address_to_offset(app, addr)
-                        .unwrap_or(addr as usize);
-
-                    if target_offset < filesize {
+                if raw_input.is_empty() {
+                    return Ok(false);
+                }
+                app.goto_history.push(raw_input.to_string());
+                match crate::commands::resolve_goto_target(app, raw_input, app.goto_mode) {
+                    Ok((target_offset, desc)) => {
                         app.goto(target_offset);
-                        App::log(app, format!("Jumped to address 0x{:X} (offset 0x{:X})", addr, target_offset));
+                        App::log(app, format!("Jumped to {}", desc));
                         app.state = UIState::Normal;
                         app.dialog_renderer = None;
-                    } else {
-                        crate::beep!();
-                        let msg = crate::i18n::fill(
-                            crate::i18n::M::ErrAddressOutOfBounds.tr(app.config.lang),
-                            &[&format!("{:X}", addr)],
-                        );
-                        app.error(msg);
                     }
-                } else {
-                    crate::beep!();
-                    let msg = crate::i18n::fill(
-                        crate::i18n::M::ErrInvalidAddressExpr.tr(app.config.lang),
-                        &[raw_input],
-                    );
-                    app.error(msg);
+                    Err(err_msg) => {
+                        crate::beep!();
+                        app.error(err_msg);
+                    }
                 }
             }
             KeyCode::Home => {
@@ -377,5 +414,36 @@ mod tests {
         assert_eq!(app.goto_input.value(), "0x1000");
         let _ = dialog_goto_events(&mut app, &ctrl_down);
         assert_eq!(app.goto_input.value(), "0x2000");
+    }
+
+    #[test]
+    fn test_goto_mode_toggle_tab() {
+        let mut app = App::new();
+        assert_eq!(app.goto_mode, GotoMode::Auto);
+
+        let tab = Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        let backtab = Event::Key(KeyEvent {
+            code: KeyCode::BackTab,
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+
+        let _ = dialog_goto_events(&mut app, &tab);
+        assert_eq!(app.goto_mode, GotoMode::Rva);
+
+        let _ = dialog_goto_events(&mut app, &tab);
+        assert_eq!(app.goto_mode, GotoMode::Offset);
+
+        let _ = dialog_goto_events(&mut app, &tab);
+        assert_eq!(app.goto_mode, GotoMode::Auto);
+
+        let _ = dialog_goto_events(&mut app, &backtab);
+        assert_eq!(app.goto_mode, GotoMode::Offset);
     }
 }
