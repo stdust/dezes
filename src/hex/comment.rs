@@ -1,6 +1,7 @@
 use ratatui::{
     Frame,
     layout::Alignment,
+    text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
 };
 
@@ -158,8 +159,12 @@ pub fn comment_show_draw(app: &mut App, frame: &mut Frame) {
     if let Some(cmt) = app.hex_view.comments.get(&app.hex_view.offset)
         && app.state == UIState::Normal
     {
-        // format comment
-        let para = Paragraph::new(format!(";{}", cmt)).style(app.config.theme.main);
+        // format comment with comment theme color on indicator
+        let line = Line::from(vec![
+            Span::styled(";", app.config.theme.comment),
+            Span::styled(cmt, app.config.theme.main),
+        ]);
+        let para = Paragraph::new(line);
 
         frame.render_widget(Clear, app.command_area);
         frame.render_widget(para, app.command_area);

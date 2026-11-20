@@ -15,6 +15,7 @@ pub struct Theme {
     pub error: Style,
     pub editing: Style,
     pub dialog: Style,
+    pub comment: Style,
 }
 
 impl Theme {
@@ -62,6 +63,7 @@ impl Theme {
         write_style(&mut content, "topbar", &self.topbar);
         write_style(&mut content, "error", &self.error);
         write_style(&mut content, "editing", &self.editing);
+        write_style(&mut content, "comment", &self.comment);
 
         fs::write(path, content)
     }
@@ -140,6 +142,8 @@ impl Theme {
             "error_bg" => self.error = self.error.bg(color),
             "editing_fg" => self.editing = self.editing.fg(color),
             "editing_bg" => self.editing = self.editing.bg(color),
+            "comment_fg" => self.comment = self.comment.fg(color),
+            "comment_bg" => self.comment = self.comment.bg(color),
             _ => return false,
         }
         true
@@ -158,7 +162,7 @@ impl Theme {
     /// `themes/dark.theme` keeps the broken value. Repairing on load is what
     /// actually clears it, and it costs one comparison per style.
     fn repair_unreadable_styles(&mut self, fallback: &Theme) {
-        let pairs: [(&mut Style, &Style); 10] = [
+        let pairs: [(&mut Style, &Style); 11] = [
             (&mut self.main, &fallback.main),
             (&mut self.dimmed, &fallback.dimmed),
             (&mut self.offsets, &fallback.offsets),
@@ -169,6 +173,7 @@ impl Theme {
             (&mut self.error, &fallback.error),
             (&mut self.editing, &fallback.editing),
             (&mut self.dialog, &fallback.dialog),
+            (&mut self.comment, &fallback.comment),
         ];
 
         for (style, default) in pairs {
@@ -221,6 +226,10 @@ pub fn get_default_dark() -> Theme {
             .fg(Color::from_u32(DARK_BG))
             .bg(Color::Rgb(255, 215, 0))
             .add_modifier(Modifier::RAPID_BLINK),
+        comment: Style::new()
+            .fg(Color::from_u32(0x4EC9B0))
+            .bg(Color::from_u32(DARK_BG))
+            .add_modifier(Modifier::BOLD),
     }
 }
 
@@ -260,6 +269,10 @@ pub fn get_default_light() -> Theme {
             .fg(Color::from_u32(0xffffff))
             .bg(Color::from_u32(0xffcc00))
             .add_modifier(Modifier::RAPID_BLINK),
+        comment: Style::new()
+            .fg(Color::from_u32(0x008080))
+            .bg(Color::from_u32(0xeeeeee))
+            .add_modifier(Modifier::BOLD),
     }
 }
 
@@ -301,6 +314,10 @@ pub fn get_default_gray() -> Theme {
             .fg(Color::from_u32(0xF5F1E8))
             .bg(Color::from_u32(0xC05A52))
             .add_modifier(Modifier::RAPID_BLINK),
+        comment: Style::new()
+            .fg(Color::from_u32(0x007A7A))
+            .bg(Color::from_u32(0xD6D6D2))
+            .add_modifier(Modifier::BOLD),
     }
 }
 
@@ -412,7 +429,7 @@ pub fn find_theme_path(name: &str) -> Option<std::path::PathBuf> {
 /// Must track the match arms in that function. `main_keys_are_all_recognised`
 /// in the tests below fails if an entry here stops having an effect, which is
 /// what keeps the two from drifting.
-const MAIN_KEYS: [&str; 20] = [
+const MAIN_KEYS: [&str; 22] = [
     "main_fg",
     "main_bg",
     "offsets_fg",
@@ -433,6 +450,8 @@ const MAIN_KEYS: [&str; 20] = [
     "error_bg",
     "editing_fg",
     "editing_bg",
+    "comment_fg",
+    "comment_bg",
 ];
 
 /// The theme key a `:set` option name refers to.
@@ -443,6 +462,7 @@ pub fn resolve_color_key(name: &str) -> Option<&'static str> {
     match name {
         "bg" => Some("main_bg"),
         "fg" => Some("main_fg"),
+        "comment" => Some("comment_fg"),
         other => MAIN_KEYS.iter().copied().find(|key| *key == other),
     }
 }
@@ -539,6 +559,7 @@ mod theme_key_tests {
                 loaded.error,
                 loaded.editing,
                 loaded.dialog,
+                loaded.comment,
             ];
             let applied = styles.iter().any(|s| {
                 s.fg.map(|c| Theme::color_to_hex(c) == sentinel).unwrap_or(false)

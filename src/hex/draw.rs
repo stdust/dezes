@@ -233,6 +233,22 @@ fn cell_style(app: &App, offset: usize, byte: u8, selection_active: bool, main_s
         style = style.bg(Color::from_u32(bg));
     }
 
+    if app.hex_view.comments.contains_key(&offset)
+        && !in_selection
+        && !crate::hex::search::in_match(app, offset)
+    {
+        let comment_style = app.config.theme.comment;
+        let current_bg = style.bg;
+        style = style.patch(comment_style);
+        if let Some(bg) = block_bg(&app.hex_view.blocks, offset) {
+            style = style.bg(Color::from_u32(bg));
+        } else if comment_style.bg == main_style.bg {
+            if let Some(bg) = current_bg {
+                style = style.bg(bg);
+            }
+        }
+    }
+
     if app.hex_view.changed_bytes.contains_key(&offset) && !in_selection {
         style = app.config.theme.changed_bytes;
     }
@@ -673,6 +689,7 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                 && (0..byte_len).any(|k| app.hex_view.selection.contains(offset + k));
             let is_changed = (0..byte_len).any(|k| app.hex_view.changed_bytes.contains_key(&(offset + k)));
             let is_matched = (0..byte_len).any(|k| crate::hex::search::in_match(app, offset + k));
+            let is_commented = (0..byte_len).any(|k| app.hex_view.comments.contains_key(&(offset + k)));
 
             if is_cursor_on_char {
                 span_style = cell_hl_style;
@@ -684,6 +701,9 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                 // Search hits are marked in the text columns too, so a match is
                 // visible whichever column the eye is on.
                 span_style = app.config.theme.byte_highlight;
+            } else if is_commented {
+                let comment_style = app.config.theme.comment;
+                span_style = span_style.patch(comment_style);
             }
 
             if let Some(bg) = block_bg(&app.hex_view.blocks, offset) {
@@ -802,6 +822,20 @@ mod highlight_width_tests {
         // band ends where the selection ends.
         assert_eq!(bgs[11], main_bg);
         assert_eq!(bgs[2], main_bg, "the byte before the selection is untouched");
+    }
+
+    #[test]
+    fn test_commented_byte_is_highlighted() {
+        let mut app = fixture_app();
+        app.hex_view.comments.insert(0x05, "sample note".to_string());
+        app.hex_view.offset = 0x20;
+
+        let main_style = app.config.theme.main;
+        let style_plain = super::cell_style(&app, 0x04, 0x04, false, main_style);
+        let style_comment = super::cell_style(&app, 0x05, 0x05, false, main_style);
+
+        assert_eq!(style_comment.fg, app.config.theme.comment.fg);
+        assert_ne!(style_comment.fg, style_plain.fg);
     }
 
     /// Renders a page whose byte `0x05` is Alt+H highlighted and returns the
