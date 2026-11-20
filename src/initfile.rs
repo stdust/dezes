@@ -29,7 +29,7 @@ pub fn is_safe_startup_command(line: &str) -> bool {
     let mut words = raw.split_whitespace();
     let head = words.next().unwrap_or("").to_ascii_lowercase();
 
-    if matches!(head.as_str(), "w" | "write" | "wb" | "o" | "open") {
+    if matches!(head.as_str(), "w" | "write" | "wb" | "wblock" | "o" | "open") {
         return false;
     }
     if head == "log" && let Some(sub) = words.next() && sub.eq_ignore_ascii_case("save") {

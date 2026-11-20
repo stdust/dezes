@@ -206,10 +206,10 @@ pub fn draw_patches_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
     let header_cells = [
         Cell::from(vec![
             Line::from(vec![
-                Span::styled(" No.", bold_header),
+                Span::styled(" No. ", bold_header),
                 Span::styled("│", sep_style),
             ]),
-            Line::from(Span::styled("────┼", sep_style)),
+            Line::from(Span::styled("─────┼", sep_style)),
         ]),
         Cell::from(vec![
             Line::from(vec![
@@ -295,7 +295,7 @@ pub fn draw_patches_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
                 row_style.fg(disabled_fg)
             };
             vec![
-                Cell::new(format!(" {:>2} │", idx + 1)).style(row_style),
+                Cell::new(format!(" {:>3} │", idx + 1)).style(row_style),
                 Cell::new(format!(" {} │", dot_char)).style(dot_style),
                 Cell::new(format!(" {:<width$} │", addr_str, width = addr_col_len)).style(row_style),
                 Cell::new(format!(" {} -> {}", orig_hex, patch_hex)).style(row_style),
@@ -311,7 +311,7 @@ pub fn draw_patches_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
 
             vec![
                 Cell::from(Line::from(vec![
-                    Span::styled(format!(" {:>2} ", idx + 1), row_style),
+                    Span::styled(format!(" {:>3} ", idx + 1), row_style),
                     Span::styled("│", sep_style),
                 ])).style(row_style),
                 Cell::from(Line::from(vec![
@@ -338,7 +338,7 @@ pub fn draw_patches_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 
     let widths = [
-        Constraint::Length(5),
+        Constraint::Length(6),
         Constraint::Length(4),
         Constraint::Length((addr_col_len + 3) as u16),
         Constraint::Min(32),
@@ -445,11 +445,15 @@ pub fn dialog_patches_events(app: &mut App, event: &Event) -> Result<bool> {
                             app.hex_view.disabled_bytes.insert(ofs, b);
                         }
                     }
+                    app.hex_view.changed_history.retain(|&o| o < offset || o >= offset.saturating_add(size));
                     App::log(app, format!("Disabled patch at 0x{:X} ({} byte(s))", offset, size));
                 } else {
                     for ofs in offset..offset.saturating_add(size) {
                         if let Some(b) = app.hex_view.disabled_bytes.remove(&ofs) {
                             app.hex_view.changed_bytes.insert(ofs, b);
+                            if !app.hex_view.changed_history.contains(&ofs) {
+                                app.hex_view.changed_history.push(ofs);
+                            }
                         }
                     }
                     App::log(app, format!("Enabled patch at 0x{:X} ({} byte(s))", offset, size));
@@ -465,10 +469,14 @@ pub fn dialog_patches_events(app: &mut App, event: &Event) -> Result<bool> {
                 for (ofs, b) in app.hex_view.changed_bytes.drain() {
                     app.hex_view.disabled_bytes.insert(ofs, b);
                 }
+                app.hex_view.changed_history.clear();
                 App::log(app, "Disabled all patches".to_string());
             } else {
                 for (ofs, b) in app.hex_view.disabled_bytes.drain() {
                     app.hex_view.changed_bytes.insert(ofs, b);
+                    if !app.hex_view.changed_history.contains(&ofs) {
+                        app.hex_view.changed_history.push(ofs);
+                    }
                 }
                 App::log(app, "Enabled all patches".to_string());
             }

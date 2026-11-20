@@ -227,10 +227,9 @@ pub fn draw_find_dialog(app: &mut App, frame: &mut Frame) {
 
 pub fn dialog_find_events(app: &mut App, event: &Event) -> Result<bool> {
     if let Event::Key(key) = event {
-        // Ctrl+V paste handling for text fields (single-line normalized)
+        // Ctrl+V paste handling (single-line normalized)
         if (key.code == KeyCode::Char('v') || key.code == KeyCode::Char('V'))
             && key.modifiers.contains(KeyModifiers::CONTROL)
-            && app.hex_view.find_dialog.focus != EditDialogFocus::Hex
         {
             if let Ok(clipboard) = app.clipboard.as_mut()
                 && let Ok(pasted_text) = clipboard.get_text()
@@ -238,8 +237,16 @@ pub fn dialog_find_events(app: &mut App, event: &Event) -> Result<bool> {
                 let clean = pasted_text
                     .replace("\r\n", " ")
                     .replace(['\r', '\n', '\t'], " ");
-                for c in clean.chars() {
-                    app.hex_view.find_dialog.active_input_mut().handle(tui_input::InputRequest::InsertChar(c));
+                if app.hex_view.find_dialog.focus == EditDialogFocus::Hex {
+                    for c in clean.chars() {
+                        if c.is_ascii_hexdigit() || c == 'x' || c == 'X' || c == ' ' || c == '?' {
+                            app.hex_view.find_dialog.active_input_mut().handle(tui_input::InputRequest::InsertChar(c));
+                        }
+                    }
+                } else {
+                    for c in clean.chars() {
+                        app.hex_view.find_dialog.active_input_mut().handle(tui_input::InputRequest::InsertChar(c));
+                    }
                 }
                 let enc1 = app.text_view.table;
                 app.hex_view.find_dialog.sync_from_focus(enc1);
@@ -354,7 +361,8 @@ pub fn dialog_find_events(app: &mut App, event: &Event) -> Result<bool> {
             // prefix, and "?" wildcards - anything else is silently dropped,
             // matching the old hex-only search field's behavior.
             KeyCode::Char(c)
-                if app.hex_view.find_dialog.focus == EditDialogFocus::Hex
+                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && app.hex_view.find_dialog.focus == EditDialogFocus::Hex
                     && !(c.is_ascii_hexdigit() || c == 'x' || c == 'X' || c == ' ' || c == '?') =>
             {
                 return Ok(false);

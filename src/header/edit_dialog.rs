@@ -193,12 +193,17 @@ pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<
                         ),
                     );
                     app.update_file_headers_scoped(scope);
+
+                    app.state = UIState::Normal;
+                    app.goto_input = tui_input::Input::default();
+                    app.goto_selection_all = false;
                 } else {
-                    let clean_str = input_str.trim().trim_start_matches("0x").trim_start_matches("0X");
-                    let parsed_val = if input_str.trim().starts_with("0x") || input_str.trim().starts_with("0X") {
-                        u64::from_str_radix(clean_str, 16).ok()
+                    let trimmed = input_str.trim();
+                    let parsed_val = if let Some(dec_str) = trimmed.strip_suffix(['t', 'T']) {
+                        dec_str.trim().parse::<u64>().ok()
                     } else {
-                        input_str.trim().parse::<u64>().or_else(|_| u64::from_str_radix(clean_str, 16)).ok()
+                        let clean_str = trimmed.trim_start_matches("0x").trim_start_matches("0X");
+                        u64::from_str_radix(clean_str, 16).ok()
                     };
 
                     if let Some(val) = parsed_val {
@@ -255,8 +260,8 @@ pub fn handle_dialog_header_edit_events(app: &mut App, event: &Event) -> Result<
                 if app.header_view.edit_name == "Name" || app.header_view.edit_name.ends_with(".Name") {
                     let val_before = app.goto_input.value().to_string();
                     crate::text_field::handle_key(app, header_edit_field, event);
-                    if app.goto_input.value().chars().count() > 8 {
-                        app.goto_input = tui_input::Input::new(val_before.chars().take(8).collect::<String>());
+                    if app.goto_input.value().len() > 8 {
+                        app.goto_input = tui_input::Input::new(val_before);
                         app.goto_selection_anchor = None;
                     }
                 } else {

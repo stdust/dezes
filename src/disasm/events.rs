@@ -464,11 +464,7 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         // Edit Data dialog (Ctrl+E, x64dbg's Binary -> Edit). Was 'd'/'D'.
         KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.state = UIState::DialogEditData;
-            app.hex_view.edit_dialog.reset();
-            let enc1 = app.text_view.table;
-            app.hex_view.edit_dialog.set_enc1(enc1);
-            app.dialog_renderer = Some(crate::hex::edit_dialog::dialog_edit_draw);
+            crate::hex::edit_dialog::open_edit_dialog(app);
         }
         // Disassembly Comment Encoding: Alt+E opens picker dialog, Alt+Shift+E quick-cycles
         KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::ALT) && !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -815,7 +811,7 @@ pub fn open_assemble_dialog(app: &mut App) {
     let mut initial_text = String::new();
     let clean_initial = if let Some(instr) = decoder.into_iter().next() {
         formatter.format(&instr, &mut initial_text);
-        crate::disasm::draw::clean_instruction_text(app, &instr, &initial_text)
+        initial_text
     } else {
         String::new()
     };

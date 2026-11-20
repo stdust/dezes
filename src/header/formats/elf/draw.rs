@@ -245,7 +245,20 @@ fn draw_section_header(app: &mut App, frame: &mut Frame, area: Rect) {
             ]));
         }
 
-        let widths = [Constraint::Ratio(1, 8); 8];
+        let widths = [
+            Constraint::Length(4),   // Idx
+            Constraint::Min(12),     // Name
+            Constraint::Length(8),   // NameIdx
+            Constraint::Length(10),  // Type
+            Constraint::Length(8),   // Flags
+            Constraint::Length(10),  // Addr
+            Constraint::Length(10),  // Offset
+            Constraint::Length(10),  // Size
+            Constraint::Length(8),   // Link
+            Constraint::Length(8),   // Info
+            Constraint::Length(8),   // Align
+            Constraint::Length(8),   // EntSize
+        ];
 
         let header_table = Table::new(rows, widths)
             .column_spacing(1)

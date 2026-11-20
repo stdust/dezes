@@ -32,14 +32,18 @@ pub fn handle_global_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.last_primary_view = ret;
                 }
             } else if app.editor_view == AppView::Text {
-                let target = if app.prev_editor_view == AppView::Text || app.prev_editor_view == AppView::Header {
-                    app.last_primary_view
+                if app.text_view.selection_anchor.is_some() {
+                    app.text_view.selection_anchor = None;
                 } else {
-                    app.prev_editor_view
-                };
-                app.editor_view = target;
-                app.last_primary_view = target;
-                app.prev_editor_view = target;
+                    let target = if app.prev_editor_view == AppView::Text || app.prev_editor_view == AppView::Header {
+                        app.last_primary_view
+                    } else {
+                        app.prev_editor_view
+                    };
+                    app.editor_view = target;
+                    app.last_primary_view = target;
+                    app.prev_editor_view = target;
+                }
             } else if app.editor_view == AppView::Disasm && app.disasm_selection_anchor.is_some() {
                 app.disasm_selection_anchor = None;
             } else {

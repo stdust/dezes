@@ -8,50 +8,56 @@ use ratatui::{
 use crate::app::App;
 
 pub fn get_visual_lines(app: &App) -> Vec<String> {
-    let buffer = app.file_info.get_buffer_ref();
-    if buffer.is_empty() {
-        return vec![String::new()];
-    }
-    let start = app.reader.page_start.min(buffer.len());
-    let width = app.text_view.area_width.max(1) as usize;
-    let height = app.text_view.area_height.max(1) as usize;
-    let limit = (height * width).min(buffer.len() - start);
-    let (text, _) = app.text_view.table.decode_without_bom_handling(&buffer[start..start + limit]);
+    app.with_effective_buffer(|buffer| {
+        if buffer.is_empty() {
+            return vec![String::new()];
+        }
+        let start = app.reader.page_start.min(buffer.len());
+        let width = app.text_view.area_width.max(1) as usize;
+        let height = app.text_view.area_height.max(1) as usize;
+        let limit = (height * width * 4).min(buffer.len() - start);
+        let (text, _) = app.text_view.table.decode_without_bom_handling(&buffer[start..start + limit]);
 
-    let mut visual_lines = Vec::new();
-    for raw_line in text.split('\n') {
-        let raw_line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
-        let cleaned: String = raw_line
-            .chars()
-            .map(|c| if c.is_ascii_control() && c != '\t' { ' ' } else { c })
-            .collect();
-
-        if cleaned.is_empty() {
-            visual_lines.push(String::new());
-        } else {
-            let mut cur = String::new();
-            let mut cur_w = 0;
-            use unicode_width::UnicodeWidthChar;
-            for ch in cleaned.chars() {
-                let ch_w = ch.width().unwrap_or(1);
-                if cur_w + ch_w > width && !cur.is_empty() {
-                    visual_lines.push(cur);
-                    cur = String::new();
-                    cur_w = 0;
-                }
-                cur.push(ch);
-                cur_w += ch_w;
+        let mut visual_lines = Vec::new();
+        use unicode_width::UnicodeWidthChar;
+        for raw_line in text.split('\n') {
+            if visual_lines.len() >= height {
+                break;
             }
-            if !cur.is_empty() {
-                visual_lines.push(cur);
+            let raw_line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+            let cleaned: String = raw_line
+                .chars()
+                .map(|c| if c.is_ascii_control() && c != '\t' { ' ' } else { c })
+                .collect();
+
+            if cleaned.is_empty() {
+                visual_lines.push(String::new());
+            } else {
+                let mut cur = String::new();
+                let mut cur_w = 0;
+                for ch in cleaned.chars() {
+                    let ch_w = ch.width().unwrap_or(1);
+                    if cur_w + ch_w > width && !cur.is_empty() {
+                        visual_lines.push(std::mem::take(&mut cur));
+                        if visual_lines.len() >= height {
+                            break;
+                        }
+                        cur_w = 0;
+                    }
+                    cur.push(ch);
+                    cur_w += ch_w;
+                }
+                if !cur.is_empty() && visual_lines.len() < height {
+                    visual_lines.push(cur);
+                }
             }
         }
-    }
 
-    if visual_lines.is_empty() {
-        visual_lines.push(String::new());
-    }
-    visual_lines
+        if visual_lines.is_empty() {
+            visual_lines.push(String::new());
+        }
+        visual_lines
+    })
 }
 
 pub fn text_contents_draw(app: &mut App, frame: &mut Frame, area: Rect) {

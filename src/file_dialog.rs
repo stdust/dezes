@@ -474,14 +474,17 @@ pub fn dialog_file_events(app: &mut App, event: &Event) -> Result<bool> {
                         app.file_dialog = FileDialogState::new(new_dir);
                     } else {
                         let path_str = item.path.to_string_lossy().to_string();
-                        match app.load_file(&path_str, 0, false) {
+                        let clean_path = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+                        match app.load_file(clean_path, 0, false) {
                             Ok(_) => {
                                 app.state = UIState::Normal;
                                 app.dialog_renderer = None;
                                 App::log(app, format!("Opened file '{}'", item.name));
                             }
                             Err(e) => {
-                                App::log(app, format!("Error opening '{}': {}", item.name, e));
+                                let err_msg = format!("Error opening '{}': {}", item.name, e);
+                                app.last_error = crate::app::Dz6Error { message: err_msg.clone() };
+                                App::log(app, err_msg);
                             }
                         }
                     }

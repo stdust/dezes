@@ -289,7 +289,8 @@ pub fn draw_hex_contents(app: &mut App, frame: &mut Frame, area: Rect) {
         let idx_in_line = i % bpl;
         let is_last_in_group = idx_in_line == 7 || idx_in_line == bpl - 1;
 
-        let hl_style = cell_style(app, offset, *byte, selection_active, main_style);
+        let effective_byte = changed.copied().unwrap_or(*byte);
+        let hl_style = cell_style(app, offset, effective_byte, selection_active, main_style);
 
         // A style that paints its own background must not spill into the column
         // separator *unless* the next byte is painted the same colour.
@@ -306,7 +307,8 @@ pub fn draw_hex_contents(app: &mut App, frame: &mut Frame, area: Rect) {
         } else {
             match bytes.get(i + 1) {
                 Some(next) => {
-                    let next_style = cell_style(app, offset + 1, *next, selection_active, main_style);
+                    let next_effective = app.hex_view.changed_bytes.get(&(offset + 1)).copied().unwrap_or(*next);
+                    let next_style = cell_style(app, offset + 1, next_effective, selection_active, main_style);
                     if next_style.bg == hl_style.bg {
                         hl_style
                     } else {

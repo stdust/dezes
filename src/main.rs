@@ -330,7 +330,11 @@ fn main() {
 #[macro_export]
 macro_rules! beep {
     () => {
-        print!("\x07")
+        {
+            use std::io::Write;
+            print!("\x07");
+            let _ = std::io::stdout().flush();
+        }
     };
 }
 

@@ -225,9 +225,12 @@ fn tab_symbols_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 && let Some(elf) = app.header_view.elf.as_ref()
                 && let Some(sym) = elf.symtab.get(idx)
             {
-                let ofs = sym.st_value as usize;
-                app.goto(ofs);
-                app.editor_view = AppView::Hex;
+                let target_ofs = app.va_to_offset(sym.st_value)
+                    .or_else(|| if (sym.st_value as usize) < app.file_info.size { Some(sym.st_value as usize) } else { None });
+                if let Some(ofs) = target_ofs {
+                    app.goto(ofs);
+                    app.editor_view = AppView::Hex;
+                }
             }
         }
         KeyCode::Char('G') => {

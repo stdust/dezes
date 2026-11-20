@@ -269,7 +269,7 @@ pub fn dialog_about_events(app: &mut App, key: KeyEvent) -> Result<bool> {
     let max_scroll = max_about_scroll(rows, box_height);
 
     match key.code {
-        KeyCode::Esc | KeyCode::Enter | KeyCode::F(8) => {
+        KeyCode::Esc | KeyCode::Enter | KeyCode::F(10) => {
             app.dialog_renderer = None;
             app.state = UIState::Normal;
             app.about_scroll_offset = 0;

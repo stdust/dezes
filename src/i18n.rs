@@ -799,9 +799,9 @@ impl M {
                 "索引 {} 处没有节 - 请先在节标签页中选择",
             ],
             M::ErrNoRoomForSectionHeader => [
-                "No room for another section header (SizeOfHeaders = 0x{:X} leaves no padding after the last entry)",
-                "새 섹션 헤더를 추가할 공간이 없습니다 (SizeOfHeaders = 0x{:X} 패딩 부족)",
-                "没有空间添加新节头 (SizeOfHeaders = 0x{:X} 缺少填充)",
+                "No room for another section header (SizeOfHeaders = 0x{} leaves no padding after the last entry)",
+                "새 섹션 헤더를 추가할 공간이 없습니다 (SizeOfHeaders = 0x{} 패딩 부족)",
+                "没有空间添加新节头 (SizeOfHeaders = 0x{} 缺少填充)",
             ],
             M::LblSectionNameMax8 => [
                 " Section Name (max 8 chars) ",
@@ -809,9 +809,9 @@ impl M {
                 " 节名称 (最多 8 字符) ",
             ],
             M::LblFileBase => [
-                " (file: {:X}) ",
-                " (파일: {:X}) ",
-                " (文件: {:X}) ",
+                " (file: {}) ",
+                " (파일: {}) ",
+                " (文件: {}) ",
             ],
             M::ErrNothingToAssemble => [
                 "nothing to assemble",
@@ -824,9 +824,9 @@ impl M {
                 "文件为只读",
             ],
             M::ErrAssemblePastEof => [
-                "{} byte(s) at 0x{:X} would run past the end of the file (0x{:X})",
-                "0x{:X} 의 {} 바이트가 파일 끝(0x{:X})을 벗어납니다",
-                "0x{:X} 处的 {} 字节超出文件末尾 (0x{:X})",
+                "At 0x{}, {} byte(s) would run past the end of the file (0x{})",
+                "0x{} 의 {} 바이트가 파일 끝(0x{})을 벗어납니다",
+                "0x{} 处的 {} 字节超出文件末尾 (0x{})",
             ],
             M::ErrNotAnAddress => [
                 "'{}' is not an address",

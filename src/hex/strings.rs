@@ -315,6 +315,7 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
             if is_double_click && is_in_list {
                 app.last_left_click = None;
                 open_string_edit(app);
+                return Ok(true);
             } else if total > 0 {
                 let selected = app.list_state.selected().unwrap_or(0).min(total.saturating_sub(1));
 
@@ -638,10 +639,9 @@ pub fn open_string_edit(app: &mut App) {
 
     let is_utf16 = initial_encoding == StringEncoding::Utf16;
     let term_size = if is_utf16 { 2 } else { 1 };
-    let extra_zeros = {
-        let buffer = app.file_info.get_buffer_ref();
+    let extra_zeros = app.with_effective_buffer(|buffer| {
         count_trailing_zeros(buffer, found.offset + found.size, is_utf16)
-    };
+    });
     let total_capacity = found.size + extra_zeros;
     let budget = total_capacity.saturating_sub(term_size);
 
@@ -664,7 +664,6 @@ pub fn open_string_edit(app: &mut App) {
 fn commit_string_edit(app: &mut App) {
     let text = app.hex_view.string_edit.input.value().to_string();
     let budget = app.hex_view.string_edit.budget;
-    let total_capacity = app.hex_view.string_edit.total_capacity.max(budget);
     let offset = app.hex_view.string_edit.offset;
     let encoding = app.hex_view.string_edit.encoding;
 
@@ -692,7 +691,9 @@ fn commit_string_edit(app: &mut App) {
         }
     }
     let null_term_len = if encoding == StringEncoding::Utf16 { 2 } else { 1 };
-    let end_cap = (bytes.len() + null_term_len).max(total_capacity);
+    let row = app.hex_view.string_edit.row;
+    let orig_cap = app.strings.get(row).map(|s| s.size + null_term_len).unwrap_or(bytes.len() + null_term_len);
+    let end_cap = (bytes.len() + null_term_len).max(orig_cap);
     let padding = end_cap.saturating_sub(bytes.len());
     for i in bytes.len()..end_cap {
         if let Some(target_ofs) = offset.checked_add(i) {
@@ -700,7 +701,6 @@ fn commit_string_edit(app: &mut App) {
         }
     }
 
-    let row = app.hex_view.string_edit.row;
     let use_va = app.editor_view == crate::editor::AppView::Disasm || app.hex_view.show_va;
     let addr = if use_va { app.get_va(offset) } else { offset as u64 };
     if let Some(found) = app.strings.get_mut(row) {
@@ -973,23 +973,12 @@ impl Commands {
             crate::disasm::sections::xref_sections(app, buf_len)
         };
 
-        let buffer = app.file_info.get_buffer();
         let mut out = Vec::new();
-
-        if encoding == StringEncoding::Ascii {
-            scan_ascii(buffer, min, cap, re, &mut out);
-        } else if data.is_empty() {
-            let range = 0..buf_len;
-            match encoding {
-                StringEncoding::Ascii => unreachable!(),
-                StringEncoding::Utf8 => scan_utf8(buffer, range, min, cap, re, &mut out),
-                StringEncoding::Cp949 => scan_dbcs(buffer, range, &CP949, min, cap, re, &mut out),
-                StringEncoding::Cp936 => scan_dbcs(buffer, range, &CP936, min, cap, re, &mut out),
-                StringEncoding::Utf16 => scan_utf16(buffer, range, min, cap, re, &mut out),
-            }
-        } else {
-            for s in &data {
-                let range = s.start..s.end;
+        app.with_effective_buffer(|buffer| {
+            if encoding == StringEncoding::Ascii {
+                scan_ascii(buffer, min, cap, re, &mut out);
+            } else if data.is_empty() {
+                let range = 0..buf_len;
                 match encoding {
                     StringEncoding::Ascii => unreachable!(),
                     StringEncoding::Utf8 => scan_utf8(buffer, range, min, cap, re, &mut out),
@@ -997,11 +986,22 @@ impl Commands {
                     StringEncoding::Cp936 => scan_dbcs(buffer, range, &CP936, min, cap, re, &mut out),
                     StringEncoding::Utf16 => scan_utf16(buffer, range, min, cap, re, &mut out),
                 }
-                if out.len() >= cap {
-                    break;
+            } else {
+                for s in &data {
+                    let range = s.start..s.end;
+                    match encoding {
+                        StringEncoding::Ascii => unreachable!(),
+                        StringEncoding::Utf8 => scan_utf8(buffer, range, min, cap, re, &mut out),
+                        StringEncoding::Cp949 => scan_dbcs(buffer, range, &CP949, min, cap, re, &mut out),
+                        StringEncoding::Cp936 => scan_dbcs(buffer, range, &CP936, min, cap, re, &mut out),
+                        StringEncoding::Utf16 => scan_utf16(buffer, range, min, cap, re, &mut out),
+                    }
+                    if out.len() >= cap {
+                        break;
+                    }
                 }
             }
-        }
+        });
 
         app.strings = out;
     }

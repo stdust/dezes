@@ -208,10 +208,12 @@ pub fn text_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                     let last_start = len.saturating_sub(screen);
                     app.reader.page_start = last_start;
                     app.hex_view.offset = len.saturating_sub(1);
-                    let delta = app.text_view.lines_to_show.saturating_sub(app.text_view.area_height as usize);
+                    let new_lines = crate::text::draw::get_visual_lines(app);
+                    let last_idx = new_lines.len().saturating_sub(1);
+                    app.text_view.lines_to_show = new_lines.len();
+                    let delta = new_lines.len().saturating_sub(app.text_view.area_height as usize);
                     app.text_view.scroll_offset = (delta as u16, 0);
-                    let last_idx = num_lines.saturating_sub(1);
-                    app.text_view.cursor = (last_idx, line_char_count(&lines, last_idx));
+                    app.text_view.cursor = (last_idx, line_char_count(&new_lines, last_idx));
                 }
             } else {
                 app.text_view.cursor.1 = line_char_count(&lines, app.text_view.cursor.0);

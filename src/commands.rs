@@ -232,9 +232,11 @@ pub fn address_to_offset(app: &App, value: u64) -> Option<usize> {
 
 fn try_goto(app: &mut App, raw_offset: &str) {
     let trimmed = raw_offset.trim();
-    let offset_direction = if trimmed.starts_with('+') && !trimmed.contains("base") && !trimmed.contains("oep") && !trimmed.contains("cur") {
+    let lower = trimmed.to_ascii_lowercase();
+    let has_keyword = lower.contains("base") || lower.contains("oep") || lower.contains("cur");
+    let offset_direction = if trimmed.starts_with('+') && !has_keyword {
         OffsetType::Forward
-    } else if trimmed.starts_with('-') && !trimmed.contains("base") && !trimmed.contains("oep") && !trimmed.contains("cur") {
+    } else if trimmed.starts_with('-') && !has_keyword {
         OffsetType::Backward
     } else {
         OffsetType::Absolute

@@ -59,6 +59,7 @@ struct Hint {
     short: Option<Label>,
     /// True for actions a read-only file refuses, so they can be dimmed before
     /// the user finds out by pressing them.
+    #[allow(dead_code)]
     needs_write: bool,
 }
 
@@ -327,7 +328,7 @@ fn build_line(app: &App, page: HintPage, budget: usize) -> (Vec<Span<'static>>, 
     // always on screen.
     let key_style = app.config.theme.offsets;
     let dim = app.config.theme.dimmed;
-    let read_only = app.file_info.is_read_only;
+    let _read_only = app.file_info.is_read_only;
 
     let lang = app.config.lang;
 
@@ -365,10 +366,9 @@ fn build_line(app: &App, page: HintPage, budget: usize) -> (Vec<Span<'static>>, 
         if i > 0 {
             spans.push(Span::styled(SEPARATOR, dim));
         }
-        // A dimmed slot means "this file is read-only, that action is refused" -
-        // the same information the status bar's `Read Only` marker carries, but at
-        // the point of use.
-        let disabled = read_only && hint.needs_write;
+        // In-memory editing and Save As / Replace are allowed even on read-only files,
+        // so editing hints remain enabled.
+        let disabled = false;
         spans.push(Span::styled(
             hint.key,
             if disabled { dim } else { key_style },

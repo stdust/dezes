@@ -237,12 +237,16 @@ pub fn add_new_section(app: &mut App, requested_size: u32) -> std::result::Resul
         let current_len = app.file_info.buffer_len() as u64;
         let new_raw_offset = align_up(prev_raw_end.max(current_len), file_alignment);
 
-        if new_va > u32::MAX as u64 || new_raw_offset > u32::MAX as u64 || raw_size > u32::MAX as u64 {
-            return Err(crate::i18n::M::ErrSectionTooBig.tr(lang).to_string());
-        }
-
         let new_size_of_image =
             align_up((new_va + raw_size.max(requested_size as u64)).max(size_of_image), section_alignment);
+
+        if new_va > u32::MAX as u64
+            || new_raw_offset > u32::MAX as u64
+            || raw_size > u32::MAX as u64
+            || new_size_of_image > u32::MAX as u64
+        {
+            return Err(crate::i18n::M::ErrSectionTooBig.tr(lang).to_string());
+        }
 
         Plan {
             new_sec_base,
@@ -255,6 +259,24 @@ pub fn add_new_section(app: &mut App, requested_size: u32) -> std::result::Resul
             new_size_of_image,
         }
     };
+
+    let current_len = app.file_info.buffer_len() as u64;
+    let target_len = plan.new_raw_offset + plan.raw_size;
+    let extension_len = target_len.saturating_sub(current_len);
+    if extension_len > 0 {
+        const MAX_SECTION_EXTENSION: u64 = 1024 * 1024 * 1024; // 1GB limit
+        if extension_len > MAX_SECTION_EXTENSION {
+            return Err(format!("Requested section size is too large ({} bytes > 1GB)", extension_len));
+        }
+        let mut ext_vec = Vec::new();
+        if ext_vec.try_reserve_exact(extension_len as usize).is_err() {
+            return Err("Failed to allocate memory for section extension (OOM)".to_string());
+        }
+        ext_vec.resize(extension_len as usize, 0u8);
+        if let Err(e) = app.file_info.stage_extension(&ext_vec) {
+            return Err(format!("Failed to stage extension: {}", e));
+        }
+    }
 
     let mut name_bytes = [0u8; 8];
     name_bytes[..4].copy_from_slice(b".new");
@@ -272,35 +294,6 @@ pub fn add_new_section(app: &mut App, requested_size: u32) -> std::result::Resul
     write_u16(app, plan.coff_off + coff::NUMBER_OF_SECTIONS, plan.number_of_sections + 1);
 
     write_u32(app, plan.opt_off + opt::SIZE_OF_IMAGE, plan.new_size_of_image as u32);
-
-    let current_len = app.file_info.buffer_len() as u64;
-    let target_len = plan.new_raw_offset + plan.raw_size;
-    let extension_len = target_len.saturating_sub(current_len);
-    if extension_len > 0 {
-        const MAX_SECTION_EXTENSION: u64 = 1024 * 1024 * 1024; // 1GB limit
-        if extension_len > MAX_SECTION_EXTENSION {
-            let msg = format!("Requested section size is too large ({} bytes > 1GB)", extension_len);
-            App::log(app, msg.clone());
-            app.header_view.tools_last_message = Some(msg);
-            crate::beep!();
-            return Ok(());
-        }
-        let mut ext_vec = Vec::new();
-        if ext_vec.try_reserve_exact(extension_len as usize).is_err() {
-            let msg = "Failed to allocate memory for section extension (OOM)".to_string();
-            App::log(app, msg.clone());
-            app.header_view.tools_last_message = Some(msg);
-            crate::beep!();
-            return Ok(());
-        }
-        ext_vec.resize(extension_len as usize, 0u8);
-        if let Err(e) = app.file_info.stage_extension(&ext_vec) {
-            App::log(app, format!("Failed to stage extension: {}", e));
-            app.header_view.tools_last_message = Some(format!("Error: {}", e));
-            crate::beep!();
-            return Ok(());
-        }
-    }
 
     let msg = crate::i18n::fill(
         crate::i18n::M::DoneSectionAdded.tr(app.config.lang),
@@ -334,12 +327,6 @@ pub fn draw_section_size_dialog(app: &mut App, frame: &mut Frame) {
     let dialog = &app.header_view.section_size_dialog;
     let input_text = dialog.input.value();
 
-    let mut body = String::new();
-    if let Some(err) = &dialog.error_message {
-        body.push_str(err);
-        body.push('\n');
-    }
-
     let block = Block::bordered()
         .title(crate::i18n::M::AddSectionTitle.tr(app.config.lang))
         .title_alignment(Alignment::Center);
@@ -347,7 +334,12 @@ pub fn draw_section_size_dialog(app: &mut App, frame: &mut Frame) {
     let paragraph = if dialog.selection_all && !input_text.is_empty() {
         use ratatui::text::{Line, Span};
         let line = Line::from(vec![Span::styled(input_text.to_string(), app.config.theme.highlight)]);
-        Paragraph::new(vec![Line::raw(body.clone()), line])
+        let lines = if let Some(err) = &dialog.error_message {
+            vec![Line::raw(err.clone()), line]
+        } else {
+            vec![line]
+        };
+        Paragraph::new(lines)
             .style(app.config.theme.dialog)
             .block(block)
     } else if dialog.selection_anchor.is_some() {
@@ -358,13 +350,22 @@ pub fn draw_section_size_dialog(app: &mut App, frame: &mut Frame) {
             app.config.theme.dialog,
             app.config.theme.highlight,
         );
-        Paragraph::new(vec![Line::raw(body.clone()), line])
+        let lines = if let Some(err) = &dialog.error_message {
+            vec![Line::raw(err.clone()), line]
+        } else {
+            vec![line]
+        };
+        Paragraph::new(lines)
             .style(app.config.theme.dialog)
             .block(block)
     } else {
-        Paragraph::new(format!("{}{}", body, input_text))
-            .style(app.config.theme.dialog)
-            .block(block)
+        Paragraph::new(if let Some(err) = &dialog.error_message {
+            format!("{}\n{}", err, input_text)
+        } else {
+            input_text.to_string()
+        })
+        .style(app.config.theme.dialog)
+        .block(block)
     };
 
     frame.render_widget(paragraph, dialog_area);
@@ -726,12 +727,6 @@ pub fn draw_dump_section_dialog(app: &mut App, frame: &mut Frame) {
     let dialog = &app.header_view.dump_dialog;
     let input_text = dialog.input.value();
 
-    let mut body = String::new();
-    if let Some(err) = &dialog.error_message {
-        body.push_str(err);
-        body.push('\n');
-    }
-
     let block = Block::bordered()
         .title(" Dump Section to File ")
         .title_alignment(Alignment::Center);
@@ -739,7 +734,12 @@ pub fn draw_dump_section_dialog(app: &mut App, frame: &mut Frame) {
     let paragraph = if dialog.selection_all && !input_text.is_empty() {
         use ratatui::text::{Line, Span};
         let line = Line::from(vec![Span::styled(input_text.to_string(), app.config.theme.highlight)]);
-        Paragraph::new(vec![Line::raw(body.clone()), line])
+        let lines = if let Some(err) = &dialog.error_message {
+            vec![Line::raw(err.clone()), line]
+        } else {
+            vec![line]
+        };
+        Paragraph::new(lines)
             .style(app.config.theme.dialog)
             .block(block)
     } else if dialog.selection_anchor.is_some() {
@@ -750,13 +750,22 @@ pub fn draw_dump_section_dialog(app: &mut App, frame: &mut Frame) {
             app.config.theme.dialog,
             app.config.theme.highlight,
         );
-        Paragraph::new(vec![Line::raw(body.clone()), line])
+        let lines = if let Some(err) = &dialog.error_message {
+            vec![Line::raw(err.clone()), line]
+        } else {
+            vec![line]
+        };
+        Paragraph::new(lines)
             .style(app.config.theme.dialog)
             .block(block)
     } else {
-        Paragraph::new(format!("{}{}", body, input_text))
-            .style(app.config.theme.dialog)
-            .block(block)
+        Paragraph::new(if let Some(err) = &dialog.error_message {
+            format!("{}\n{}", err, input_text)
+        } else {
+            input_text.to_string()
+        })
+        .style(app.config.theme.dialog)
+        .block(block)
     };
 
     frame.render_widget(paragraph, dialog_area);

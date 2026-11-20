@@ -178,10 +178,10 @@ pub fn draw_xref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
     let header_cells = [
         Cell::from(vec![
             Line::from(vec![
-                Span::styled(" No.", bold_header),
+                Span::styled(" No. ", bold_header),
                 Span::styled("│", sep_style),
             ]),
-            Line::from(Span::styled("────┼", sep_style)),
+            Line::from(Span::styled("─────┼", sep_style)),
         ]),
         Cell::from(vec![
             Line::from(vec![
@@ -234,7 +234,7 @@ pub fn draw_xref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
         } else {
             vec![
                 Cell::from(Line::from(vec![
-                    Span::styled(format!(" {:>2} ", idx + 1), row_style),
+                    Span::styled(format!(" {:>3} ", idx + 1), row_style),
                     Span::styled("│", sep_style),
                 ])).style(row_style),
                 Cell::from(Line::from(vec![
@@ -253,7 +253,7 @@ pub fn draw_xref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 
     let widths = [
-        Constraint::Length(5),
+        Constraint::Length(6),
         Constraint::Length((type_col_len + 3) as u16),
         Constraint::Length((addr_col_len + 3) as u16),
         Constraint::Min(0),

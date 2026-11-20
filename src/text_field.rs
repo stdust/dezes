@@ -85,9 +85,9 @@ pub fn render_line<'a>(
 
 /// A horizontally scrolled slice of the value, with any selection highlighted.
 ///
-/// `skip` and `take` are in characters. Boxes that scroll their contents (the
-/// comment box, the boxed field rows) have to highlight the part of the selection
-/// that is actually on screen, not the whole of it.
+/// `skip` and `take` are in visual columns (unicode display width). Boxes that scroll
+/// their contents (the comment box, the bookmark input) have to highlight the part
+/// of the selection that is actually on screen, matching `input.visual_cursor()`.
 pub fn render_window(
     input: &Input,
     anchor: Option<usize>,
@@ -96,26 +96,51 @@ pub fn render_window(
     base: Style,
     highlight: Style,
 ) -> Line<'static> {
-    let visible: Vec<char> = input.value().chars().skip(skip).take(take).collect();
-    let Some((start, end)) = selection(input, anchor) else {
-        return Line::from(Span::styled(visible.into_iter().collect::<String>(), base));
-    };
+    use unicode_width::UnicodeWidthChar;
 
-    // The selection, moved into the window's coordinates and clipped to it.
-    let start = start.saturating_sub(skip).min(visible.len());
-    let end = end.saturating_sub(skip).min(visible.len());
-    if start == end {
-        return Line::from(Span::styled(visible.into_iter().collect::<String>(), base));
+    let sel = selection(input, anchor);
+    let mut current_col = 0usize;
+    let max_col = skip.saturating_add(take);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    let mut cur_text = String::new();
+    let mut cur_style = base;
+
+    for (char_idx, c) in input.value().chars().enumerate() {
+        let w = c.width().unwrap_or(1);
+        let char_col = current_col;
+        current_col += w;
+
+        // Skip characters that end before the window
+        if current_col <= skip {
+            continue;
+        }
+        // Stop if character starts at or after the window end
+        if char_col >= max_col {
+            break;
+        }
+
+        let is_selected = if let Some((start, end)) = sel {
+            char_idx >= start && char_idx < end
+        } else {
+            false
+        };
+        let style = if is_selected { highlight } else { base };
+
+        if style != cur_style {
+            if !cur_text.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut cur_text), cur_style));
+            }
+            cur_style = style;
+        }
+        cur_text.push(c);
     }
 
-    let before: String = visible[..start].iter().collect();
-    let middle: String = visible[start..end].iter().collect();
-    let after: String = visible[end..].iter().collect();
-    Line::from(vec![
-        Span::styled(before, base),
-        Span::styled(middle, highlight),
-        Span::styled(after, base),
-    ])
+    if !cur_text.is_empty() {
+        spans.push(Span::styled(cur_text, cur_style));
+    }
+
+    Line::from(spans)
 }
 
 /// Replaces the selection (or inserts at the cursor) and clears the anchor.

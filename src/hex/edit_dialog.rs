@@ -338,6 +338,9 @@ pub fn open_edit_dialog(app: &mut App) {
             let sel = app.hex_view.selection;
             if was_selection || sel.start != sel.end {
                 Some((sel.start.min(sel.end), sel.start.max(sel.end)))
+            } else if app.editor_view == crate::editor::AppView::Disasm {
+                let len = crate::disasm::nav::instruction_len(app, app.hex_view.offset).unwrap_or(1);
+                Some((app.hex_view.offset, app.hex_view.offset.saturating_add(len.saturating_sub(1))))
             } else {
                 None
             }

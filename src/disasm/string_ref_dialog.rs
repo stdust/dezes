@@ -5,7 +5,6 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
 };
 use ratatui::crossterm::event::{Event, KeyCode, KeyModifiers};
-use regex::Regex;
 use std::io::Result;
 use tui_input::Input;
 
@@ -117,11 +116,7 @@ impl StringRefDialog {
         let pattern = self.filter_input.value().trim();
         self.filtered_indices.clear();
 
-        let compiled_re = if !pattern.is_empty() {
-            Regex::new(&format!("(?i){}", pattern)).ok()
-        } else {
-            None
-        };
+        let compiled_re = crate::hex::strings::build_safe_regex(pattern);
         let lower_pat = pattern.to_lowercase();
 
         for (idx, item) in self.items.iter().enumerate() {
@@ -518,6 +513,7 @@ pub fn dialog_string_ref_events(app: &mut App, event: &Event) -> Result<bool> {
                 // First click already selected the correct row — just open edit.
                 app.last_left_click = None;
                 open_string_ref_edit(app);
+                return Ok(true);
             } else if total > 0 {
                 let dialog = &mut app.disasm_string_ref_dialog;
                 let sel = dialog.selected_index.min(total - 1);
@@ -713,7 +709,8 @@ pub fn dialog_string_ref_events(app: &mut App, event: &Event) -> Result<bool> {
                     crate::commands::Commands::strings(app);
                 } else {
                     app.state = UIState::DialogStrings;
-                    app.dialog_2nd_renderer = Some(crate::hex::strings::dialog_strings_draw);
+                    app.dialog_renderer = Some(crate::hex::strings::dialog_strings_draw);
+                    app.dialog_2nd_renderer = None;
                 }
 
                 if let Some(target_ofs) = selected_string_offset

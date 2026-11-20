@@ -936,7 +936,9 @@ fn get_cached_pdata_functions(app: &App) -> Option<Arc<Vec<(u64, u64)>>> {
 }
 
 struct CallTargetsCache {
-    generation: u64,
+    file_size: usize,
+    changed_bytes_len: usize,
+    image_base: u64,
     bitness: u32,
     targets: Arc<HashSet<u64>>,
 }
@@ -985,17 +987,26 @@ pub fn collect_call_targets(app: &App) -> HashSet<u64> {
 }
 
 pub fn get_cached_call_targets(app: &App) -> Arc<HashSet<u64>> {
+    let file_size = app.file_info.buffer_len();
+    let changed_bytes_len = app.hex_view.changed_bytes.len();
+    let image_base = app.get_image_base();
+    let bitness = app.bitness();
+
     if let Ok(mut guard) = CALL_TARGETS_CACHE.lock() {
         if let Some(cached) = guard.as_ref()
-            && cached.generation == app.view_generation
-            && cached.bitness == app.bitness()
+            && cached.file_size == file_size
+            && cached.changed_bytes_len == changed_bytes_len
+            && cached.image_base == image_base
+            && cached.bitness == bitness
         {
             return Arc::clone(&cached.targets);
         }
         let targets = Arc::new(collect_call_targets(app));
         *guard = Some(CallTargetsCache {
-            generation: app.view_generation,
-            bitness: app.bitness(),
+            file_size,
+            changed_bytes_len,
+            image_base,
+            bitness,
             targets: Arc::clone(&targets),
         });
         targets
@@ -1165,7 +1176,15 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
     let scan_end = (page_start + height * MAX_INSTR_BYTES).min(filesize);
 
     // Auto-scroll check: Calculate visible area end
-    let scan_bytes = &buffer[page_start..scan_end];
+    let scan_bytes_vec: Vec<u8>;
+    let scan_bytes = if (page_start..scan_end).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs)) {
+        let mut b = vec![0u8; scan_end.saturating_sub(page_start)];
+        app.read_effective_slice(page_start, &mut b);
+        scan_bytes_vec = b;
+        &scan_bytes_vec[..]
+    } else {
+        &buffer[page_start..scan_end]
+    };
     let mut scan_decoder = Decoder::with_ip(bitness, scan_bytes, initial_scan_ip, DecoderOptions::NONE);
     let mut visible_end = page_start;
     let mut line_count = 0;
@@ -1442,7 +1461,15 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
                 in_function_at_start = false;
             } else {
                 let lookback_start = page_start.saturating_sub(512);
-                let lookback_bytes = &buffer[lookback_start..page_start];
+                let lb_vec: Vec<u8>;
+                let lookback_bytes = if (lookback_start..page_start).any(|ofs| app.hex_view.changed_bytes.contains_key(&ofs)) {
+                    let mut b = vec![0u8; page_start.saturating_sub(lookback_start)];
+                    app.read_effective_slice(lookback_start, &mut b);
+                    lb_vec = b;
+                    &lb_vec[..]
+                } else {
+                    &buffer[lookback_start..page_start]
+                };
                 let mut lookback_decoder = Decoder::with_ip(
                     bitness,
                     lookback_bytes,
@@ -1458,7 +1485,7 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
                     let lb_next_va = lb_va + lb_len as u64;
                     let lb_ofs = app.va_to_offset(lb_va).unwrap_or(0);
                     let lb_is_pad = lb_instr.code() == iced_x86::Code::Int3
-                        || buffer.get(lb_ofs) == Some(&0xCC);
+                        || app.read_u8(lb_ofs) == Some(0xCC);
                     let lb_is_thunk = is_import_thunk_instr(app, &lb_instr);
                     let lb_is_ct = call_targets.contains(&lb_va);
                     let lb_is_pro = is_prologue(&lb_instr);
@@ -1497,7 +1524,7 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
         }
 
         let is_pad = |instr: &iced_x86::Instruction, ofs: usize| -> bool {
-            instr.code() == iced_x86::Code::Int3 || buffer.get(ofs) == Some(&0xCC)
+            instr.code() == iced_x86::Code::Int3 || app.read_u8(ofs) == Some(0xCC)
         };
 
         let mut brackets = Vec::with_capacity(decoded_instrs.len());
@@ -1533,7 +1560,7 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
                 let n_ofs = ofs + instr.len();
                 let n_va = app.get_va(n_ofs);
                 (
-                    buffer.get(n_ofs) == Some(&0xCC),
+                    app.read_u8(n_ofs) == Some(0xCC),
                     call_targets.contains(&n_va),
                     false,
                     is_import_thunk_at_va(app, n_va),

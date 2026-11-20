@@ -121,10 +121,17 @@ pub fn draw_scrollbar(app: &App, frame: &mut Frame, area: Rect) {
             (total, visible, current)
         }
         AppView::Header => {
-            let total = app.file_info.size;
-            let visible = (track_height * 16).min(total);
-            let current = app.reader.page_start.min(total);
-            (total, visible, current)
+            if app.header_view.pe.is_some() {
+                let total = crate::header::formats::pe::events::max_detail_index_for_mouse(app) + 1;
+                let visible = app.header_view.last_detail_rows.max(1).min(total);
+                let current = app.header_view.detail_index.min(total);
+                (total, visible, current)
+            } else {
+                let total = app.file_info.size;
+                let visible = (track_height * 16).min(total);
+                let current = app.reader.page_start.min(total);
+                (total, visible, current)
+            }
         }
     };
 
@@ -212,9 +219,18 @@ pub fn handle_mouse_click(app: &mut App, mouse_row: u16) {
             let target = (fraction * max_scroll as f64) as usize;
             app.reader.page_start = target;
             app.text_view.cursor = (0, 0);
+            app.text_view.scroll_offset = (0, 0);
             app.hex_view.offset = target;
         }
-        AppView::Header => {}
+        AppView::Header => {
+            if app.header_view.pe.is_some() {
+                let total = crate::header::formats::pe::events::max_detail_index_for_mouse(app) + 1;
+                let visible = app.header_view.last_detail_rows.max(1).min(total);
+                let max_scroll = total.saturating_sub(visible);
+                let target = (fraction * max_scroll as f64) as usize;
+                app.header_view.detail_index = target.min(total.saturating_sub(1));
+            }
+        }
     }
 }
 

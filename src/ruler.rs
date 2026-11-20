@@ -32,6 +32,8 @@ pub fn ruler_draw(app: &mut App, frame: &mut Frame, area: Rect) {
         0
     };
 
+    let mid_sep_len = if bpl > 8 { 1 } else { 0 };
+
     let is_dual = app.hex_view.enc2_table.is_some();
     let enc2_table = app.hex_view.get_enc2_table();
     let enc2_name_len = u16::try_from(enc2_table.name().len() + 2).unwrap_or(u16::MAX);
@@ -44,7 +46,7 @@ pub fn ruler_draw(app: &mut App, frame: &mut Frame, area: Rect) {
                 Constraint::Length(pad_len),
                 Constraint::Length(1),             // separator 1 (│)
                 Constraint::Length(hex_part1_len), // 00..07
-                Constraint::Length(1),             // mid separator (07-08 │)
+                Constraint::Length(mid_sep_len),   // mid separator (07-08 │)
                 Constraint::Length(hex_part2_len), // 08..0F
                 Constraint::Length(1),             // separator 2 (│)
                 Constraint::Length(enc1_width),    // Encoding 1 Header
@@ -61,7 +63,7 @@ pub fn ruler_draw(app: &mut App, frame: &mut Frame, area: Rect) {
                 Constraint::Length(pad_len),
                 Constraint::Length(1),             // separator 1 (│)
                 Constraint::Length(hex_part1_len), // 00..07
-                Constraint::Length(1),             // mid separator (07-08 │)
+                Constraint::Length(mid_sep_len),   // mid separator (07-08 │)
                 Constraint::Length(hex_part2_len), // 08..0F
                 Constraint::Length(1),             // separator 2 (│)
                 Constraint::Length(enc1_width),    // Encoding 1 Header
@@ -199,8 +201,10 @@ pub fn ruler_draw(app: &mut App, frame: &mut Frame, area: Rect) {
     frame.render_widget(addr_para, header_layout[0]);
     frame.render_widget(sep1, header_layout[1]);
     frame.render_widget(hex_para1, header_layout[2]);
-    frame.render_widget(mid_sep, header_layout[3]);
-    frame.render_widget(hex_para2, header_layout[4]);
+    if bpl > 8 {
+        frame.render_widget(mid_sep, header_layout[3]);
+        frame.render_widget(hex_para2, header_layout[4]);
+    }
     frame.render_widget(sep2, header_layout[5]);
     frame.render_widget(enc1_para, header_layout[6]);
     frame.render_widget(sep3, header_layout[7]);

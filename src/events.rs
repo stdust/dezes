@@ -27,17 +27,37 @@ fn hex_column_to_byte(rel_x: usize, bpl: usize) -> usize {
     idx.min(bpl - 1)
 }
 
-/// Byte index within a row for a mouse click at absolute column `col_idx`.
-fn mouse_column_to_byte(col_idx: usize, addr_width: usize, bpl: usize) -> usize {
-    let hex_dump_width = (bpl * 3).saturating_sub(1);
-    let hex_start = addr_width + 1;
+/// Byte index within a row and editing target for a mouse click at absolute column `col_idx`.
+fn mouse_column_to_byte(
+    app: &App,
+    col_idx: usize,
+    addr_width: usize,
+    bpl: usize,
+) -> (usize, crate::editor::EditingTarget) {
+    let addr_col_width = addr_width + 1;
+    let hex_width = bpl * 3;
+    let hex_start = addr_col_width + 1;
+    let enc1_start = hex_start + hex_width + 1;
+    let enc1_width = (app.hex_view.last_ascii_width as usize).max(bpl);
+    let enc2_start = enc1_start + enc1_width + 1;
 
-    if col_idx >= hex_start && col_idx < hex_start + hex_dump_width {
-        hex_column_to_byte(col_idx - hex_start, bpl)
-    } else if col_idx > hex_start + hex_dump_width {
-        (col_idx - (hex_start + hex_dump_width + 1)).min(bpl - 1)
+    if col_idx >= hex_start && col_idx < hex_start + hex_width {
+        (
+            hex_column_to_byte(col_idx - hex_start, bpl),
+            crate::editor::EditingTarget::Hex,
+        )
+    } else if app.hex_view.enc2_table.is_some() && col_idx >= enc2_start {
+        (
+            (col_idx - enc2_start).min(bpl.saturating_sub(1)),
+            crate::editor::EditingTarget::Enc2,
+        )
+    } else if col_idx >= enc1_start {
+        (
+            (col_idx - enc1_start).min(bpl.saturating_sub(1)),
+            crate::editor::EditingTarget::Enc1,
+        )
     } else {
-        0
+        (0, crate::editor::EditingTarget::Hex)
     }
 }
 
@@ -109,6 +129,17 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
             if app.state == UIState::Error {
                 app.dialog_renderer = None;
                 app.state = UIState::Normal;
+            }
+            if key.code == KeyCode::Right && key.modifiers.contains(ratatui::crossterm::event::KeyModifiers::ALT) {
+                if let Some((view, offset)) = app.result_return.take() {
+                    app.state = UIState::Normal;
+                    app.dialog_renderer = None;
+                    app.dialog_2nd_renderer = None;
+                    app.editor_view = view;
+                    app.goto(offset);
+                    app.align_page_for_view();
+                    return Ok(false);
+                }
             }
             match app.state {
                 UIState::Normal | UIState::Error => {
@@ -485,7 +516,7 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         let row_idx = (mouse.row - 1) as usize;
                         let col_idx = mouse.column as usize;
 
-                        let byte_in_row = mouse_column_to_byte(col_idx, addr_width, bpl);
+                        let (byte_in_row, target) = mouse_column_to_byte(app, col_idx, addr_width, bpl);
 
                         let offset = (page_start + row_idx * bpl + byte_in_row).min(app.file_info.size.saturating_sub(1));
 
@@ -496,6 +527,8 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                             false
                         };
 
+                        app.hex_view.editing_target = target;
+                        app.hex_view.selection_target = target;
                         app.hex_view.offset = offset;
                         app.hex_view.cursor.y = row_idx;
                         app.hex_view.cursor.x = byte_in_row;
@@ -521,17 +554,15 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                         let row_idx = (mouse.row - 1) as usize;
                         let col_idx = mouse.column as usize;
 
-                        let byte_in_row = mouse_column_to_byte(col_idx, addr_width, bpl);
+                        let (byte_in_row, target) = mouse_column_to_byte(app, col_idx, addr_width, bpl);
 
                         let offset = (page_start + row_idx * bpl + byte_in_row).min(app.file_info.size.saturating_sub(1));
                         let anchor = app.hex_view.shift_anchor.unwrap_or(app.hex_view.selection.start);
                         app.hex_view.selection.start = anchor.min(offset);
                         app.hex_view.selection.end = anchor.max(offset);
                         app.hex_view.selection.is_mouse = true;
-                        // A mouse drag happens over the byte grid, so it is a hex
-                        // selection regardless of which column last had keyboard
-                        // focus.
-                        app.hex_view.selection_target = crate::editor::EditingTarget::Hex;
+                        app.hex_view.selection_target = target;
+                        app.hex_view.editing_target = target;
                         app.hex_view.offset = offset;
                         app.hex_view.cursor.y = row_idx;
                         app.hex_view.cursor.x = byte_in_row;
@@ -542,17 +573,28 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
                 ratatui::crossterm::event::MouseEventKind::ScrollUp => {
                     let step = bpl * 3;
                     let new_offset = app.reader.page_start.saturating_sub(step);
-                    app.reader.page_start = new_offset;
-                    app.hex_view.offset = new_offset;
+                    let aligned = (new_offset / bpl) * bpl;
+                    app.reader.page_start = aligned;
+                    app.hex_view.offset = aligned;
+                    app.hex_view.cursor.y = 0;
+                    app.hex_view.cursor.x = 0;
                     app.hex_view.selection.start = 0;
                     app.hex_view.selection.end = 0;
                     app.state = UIState::Normal;
                 }
                 ratatui::crossterm::event::MouseEventKind::ScrollDown => {
                     let step = bpl * 3;
-                    let new_offset = (app.reader.page_start + step).min(app.file_info.size.saturating_sub(1));
-                    app.reader.page_start = new_offset;
-                    app.hex_view.offset = new_offset;
+                    let max_page_start = if app.file_info.size > 0 {
+                        (app.file_info.size.saturating_sub(1) / bpl) * bpl
+                    } else {
+                        0
+                    };
+                    let new_offset = (app.reader.page_start + step).min(max_page_start);
+                    let aligned = (new_offset / bpl) * bpl;
+                    app.reader.page_start = aligned;
+                    app.hex_view.offset = aligned;
+                    app.hex_view.cursor.y = 0;
+                    app.hex_view.cursor.x = 0;
                     app.hex_view.selection.start = 0;
                     app.hex_view.selection.end = 0;
                     app.state = UIState::Normal;
@@ -571,6 +613,9 @@ pub fn dispatch_event(app: &mut App, event: Event) -> Result<bool> {
 /// left, the detail table on the right, each inside a bordered box whose first
 /// inner row is the column header.
 fn header_mouse(app: &mut App, mouse: &ratatui::crossterm::event::MouseEvent) {
+    if app.header_view.pe.is_none() {
+        return;
+    }
     use crate::header::header_view::HeaderPane;
     use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
@@ -730,9 +775,10 @@ pub fn handle_replace_pattern_events(app: &mut App, event: &Event) -> Result<boo
                 app.hex_view.replace_dialog.anchor = None;
                 return Ok(false);
             }
-            // Find Next (Enter)
-            KeyCode::Enter => {
-                execute_find(app, true);
+            // Find Next (Enter / F3), Find Previous (Shift+Enter / Shift+F3)
+            KeyCode::Enter | KeyCode::F(3) => {
+                let forward = !key.modifiers.contains(KeyModifiers::SHIFT);
+                execute_find(app, forward);
                 return Ok(false);
             }
             // Replace 1 match (Alt+R)

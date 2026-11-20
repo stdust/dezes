@@ -179,12 +179,14 @@ pub fn draw_modify_dialog(app: &mut App, frame: &mut Frame) {
 
     frame.render_widget(Clear, dialog_area);
 
-    let (range_start, range_end, block_size) = if app.hex_view.selection.end > app.hex_view.selection.start {
-        let s = app.hex_view.selection.start;
-        let e = app.hex_view.selection.end;
-        (s, e, e.saturating_sub(s).saturating_add(1))
-    } else {
-        (app.hex_view.offset, app.hex_view.offset, 1)
+    let (range_start, range_end, block_size) = {
+        let s = app.hex_view.selection.start.min(app.hex_view.selection.end);
+        let e = app.hex_view.selection.start.max(app.hex_view.selection.end);
+        if s != e {
+            (s, e, e.saturating_sub(s).saturating_add(1))
+        } else {
+            (app.hex_view.offset, app.hex_view.offset, 1)
+        }
     };
 
     let dialog_style = app.config.theme.dialog;
@@ -460,10 +462,14 @@ fn modify_field(app: &mut App) -> (&mut Input, &mut Option<usize>) {
 }
 
 pub fn apply_block_modification(app: &mut App) {
-    let (start, end) = if app.hex_view.selection.end > app.hex_view.selection.start {
-        (app.hex_view.selection.start, app.hex_view.selection.end)
-    } else {
-        (app.hex_view.offset, app.hex_view.offset)
+    let (start, end) = {
+        let s = app.hex_view.selection.start.min(app.hex_view.selection.end);
+        let e = app.hex_view.selection.start.max(app.hex_view.selection.end);
+        if s != e {
+            (s, e)
+        } else {
+            (app.hex_view.offset, app.hex_view.offset)
+        }
     };
 
     if start > end || start >= app.file_info.size {
@@ -681,9 +687,10 @@ pub fn apply_block_modification(app: &mut App) {
         }
     }
 
-    app.state = UIState::HexEditing;
     for (offset, new_byte) in bytes {
-        crate::hex::edit::record_edit(app, offset, new_byte);
+        if app.read_u8(offset) != Some(new_byte) {
+            crate::hex::edit::record_edit(app, offset, new_byte);
+        }
     }
     app.hex_view.selection.clear();
 }

@@ -134,10 +134,10 @@ pub fn dialog_names_draw(app: &mut App, frame: &mut Frame) {
     let header_cells = [
         Cell::from(vec![
             Line::from(vec![
-                Span::styled(" No.", bold_header),
+                Span::styled(" No. ", bold_header),
                 Span::styled("│", sep_style),
             ]),
-            Line::from(Span::styled("────┼", sep_style)),
+            Line::from(Span::styled("─────┼", sep_style)),
         ]),
         Cell::from(vec![
             Line::from(vec![
@@ -185,14 +185,14 @@ pub fn dialog_names_draw(app: &mut App, frame: &mut Frame) {
 
         let cells = if is_selected {
             vec![
-                Cell::new(format!(" {:>2} │", idx + 1)).style(row_style),
+                Cell::new(format!(" {:>3} │", idx + 1)).style(row_style),
                 Cell::new(format!(" {:<width$} │", addr_str, width = addr_col_len)).style(row_style),
                 Cell::new(format!(" {}", cmt.comment)).style(row_style),
             ]
         } else {
             vec![
                 Cell::from(Line::from(vec![
-                    Span::styled(format!(" {:>2} ", idx + 1), row_style),
+                    Span::styled(format!(" {:>3} ", idx + 1), row_style),
                     Span::styled("│", sep_style),
                 ])).style(row_style),
                 Cell::from(Line::from(vec![
@@ -207,7 +207,7 @@ pub fn dialog_names_draw(app: &mut App, frame: &mut Frame) {
     }
 
     let widths = [
-        Constraint::Length(5),
+        Constraint::Length(6),
         Constraint::Length((addr_col_len + 3) as u16),
         Constraint::Min(0),
     ];

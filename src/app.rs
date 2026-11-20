@@ -133,6 +133,7 @@ impl FileInfo {
         };
 
         if combined.try_reserve(bytes.len()).is_err() {
+            self.combined_cache = Some(combined);
             return Err("Memory allocation failed while extending buffer".to_string());
         }
         combined.extend_from_slice(bytes);
@@ -258,16 +259,16 @@ impl App {
         }
 
         if let Some(elf) = &self.header_view.elf {
-            // Program headers carry absolute addresses, so an override cannot be
-            // applied on top of them without contradicting the file; it only backs
-            // the fallback for offsets outside every segment.
-            if self.image_base_override.is_none() {
-                for ph in &elf.phdrs {
-                    let file_offset = ph.p_offset as usize;
-                    let file_size = ph.p_filesz as usize;
-                    if offset >= file_offset && offset < file_offset + file_size {
-                        return ph.p_vaddr + (offset - file_offset) as u64;
-                    }
+            let delta = self.rebase_delta();
+            for ph in &elf.phdrs {
+                if ph.p_type != goblin::elf::program_header::PT_LOAD {
+                    continue;
+                }
+                let file_offset = ph.p_offset as usize;
+                let file_size = ph.p_filesz as usize;
+                if offset >= file_offset && offset < file_offset + file_size {
+                    let va = ph.p_vaddr + (offset - file_offset) as u64;
+                    return va.wrapping_add_signed(delta);
                 }
             }
             return image_base.wrapping_add(offset as u64);
@@ -332,16 +333,22 @@ impl App {
         if let Some(elf) = &self.header_view.elf {
             let old_base = self.header_image_base();
             let target_va = if self.is_in_image(va, image_base) {
-                va
+                va.wrapping_add_signed(-self.rebase_delta())
             } else if self.image_base_override.is_some() && self.is_in_image(va, old_base) {
-                (va as i64 + self.rebase_delta()) as u64
+                va
             } else {
                 return None;
             };
             for ph in &elf.phdrs {
+                if ph.p_type != goblin::elf::program_header::PT_LOAD {
+                    continue;
+                }
                 let p_vaddr = ph.p_vaddr;
-                let p_memsz = ph.p_memsz.max(ph.p_filesz);
-                if target_va >= p_vaddr && target_va < p_vaddr + p_memsz {
+                let p_filesz = ph.p_filesz;
+                if target_va >= p_vaddr && target_va < p_vaddr + ph.p_memsz.max(p_filesz) {
+                    if target_va >= p_vaddr + p_filesz {
+                        return None;
+                    }
                     let offset = ph.p_offset + (target_va - p_vaddr);
                     if offset < limit {
                         return Some(offset as usize);
@@ -594,8 +601,12 @@ impl App {
             return false;
         }
         if let Some(elf) = &self.header_view.elf {
+            let delta = (base as i128 - self.header_image_base() as i128) as i64;
             for ph in &elf.phdrs {
-                let p_vaddr = ph.p_vaddr;
+                if ph.p_type != goblin::elf::program_header::PT_LOAD {
+                    continue;
+                }
+                let p_vaddr = ph.p_vaddr.wrapping_add_signed(delta);
                 let p_memsz = ph.p_memsz.max(ph.p_filesz);
                 if addr >= p_vaddr && addr < p_vaddr + p_memsz {
                     return true;
@@ -613,7 +624,7 @@ impl App {
         }
         let old_base = self.header_image_base();
         if self.is_in_image(addr, old_base) {
-            (addr as i64 + delta) as u64
+            addr.wrapping_add_signed(delta)
         } else {
             addr
         }
@@ -626,7 +637,7 @@ impl App {
         }
         let new_base = self.get_image_base();
         if self.is_in_image(addr, new_base) {
-            (addr as i64 - delta) as u64
+            addr.wrapping_add_signed(-delta)
         } else {
             addr
         }
@@ -1261,13 +1272,6 @@ impl App {
         // already be safe by then.
         self.persist_annotations();
 
-        if let Some(f) = path.file_name()
-            && let Some(fname) = f.to_str()
-        {
-            self.file_info.name = String::from(fname);
-            self.file_info.path = String::from(filepath);
-        }
-
         let meta = path.metadata()?;
 
         // Set read-only / running-locked status based on parameter and file writability test without keeping the handle open
@@ -1308,6 +1312,13 @@ impl App {
             self.file_info.mmap = Some(mmap);
         } else {
             return Err(std::io::Error::other("could not open file"));
+        }
+
+        if let Some(f) = path.file_name()
+            && let Some(fname) = f.to_str()
+        {
+            self.file_info.name = String::from(fname);
+            self.file_info.path = String::from(filepath);
         }
 
         self.file_info.clear_staged_extension();
@@ -1822,7 +1833,15 @@ impl App {
             return None;
         }
         let buffer = self.file_info.get_buffer();
-        buffer.get(offset..end)?.try_into().ok()
+        let mut arr: [u8; N] = buffer.get(offset..end)?.try_into().ok()?;
+        if !self.hex_view.changed_bytes.is_empty() {
+            for i in 0..N {
+                if let Some(&b) = self.hex_view.changed_bytes.get(&(offset + i)) {
+                    arr[i] = b;
+                }
+            }
+        }
+        Some(arr)
     }
 
     /// Run `f` over the file contents with the pending edits applied.

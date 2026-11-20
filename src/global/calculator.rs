@@ -88,7 +88,7 @@ fn convert_literal(token: &str, ctx: &HashMapContext) -> Option<String> {
         return None;
     }
 
-    u64::from_str_radix(hex, 16).ok().map(|v| v.to_string())
+    u64::from_str_radix(hex, 16).ok().map(|v| (v as i64).to_string())
 }
 
 /// `50332113` -> `50,332,113`.
@@ -355,19 +355,6 @@ fn load_variables(app: &mut App) {
     // @o -> current offset, @O -> previous offset
     let _ = ctx.set_value("@o".to_string(), as_int(offset));
     let _ = ctx.set_value("@O".to_string(), as_int(last_visited));
-
-    let _ = ctx.set_function(
-        String::from("fu8"),
-        Function::new(|arg| {
-            if let Ok(ofs) = arg.as_int() {
-                Ok(Value::Int(ofs + 10))
-            } else if let Ok(float) = arg.as_number() {
-                Ok(Value::Float(float / 2.0))
-            } else {
-                Err(EvalexprError::expected_number(arg.clone()))
-            }
-        }),
-    );
 }
 
 pub const MAX_CALCULATOR_EXPR_LEN: usize = 1024;
@@ -515,10 +502,10 @@ mod tests {
     #[test]
     fn identifiers_are_left_alone() {
         let c = ctx();
-        for text in ["@B", "@o", "@Q", "i64::MAX", "i64::MIN", "fu8(2)"] {
+        for text in ["@B", "@o", "@Q", "i64::MAX", "i64::MIN"] {
             let rewritten = hex_literals_to_decimal(text, &c);
             assert!(
-                rewritten.starts_with(text.trim_end_matches("(2)")),
+                rewritten.starts_with(text),
                 "'{text}' was rewritten to '{rewritten}'"
             );
         }

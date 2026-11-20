@@ -132,12 +132,17 @@ impl App {
             return Ok(());
         };
 
-        // Nothing to keep: drop any sidecar rather than leaving a stale one, in
-        // both the current and the legacy location.
+        // Nothing to keep: drop any sidecar rather than leaving a stale one.
+        // Only remove the current sidecar and any beside-the-file legacy .dz6 file,
+        // never wipe startup_dir files belonging to other files!
         if self.annotations_are_empty() {
             let _ = fs::remove_file(&target_db);
-            for legacy in self.legacy_database_paths() {
-                let _ = fs::remove_file(legacy);
+            if !self.file_info.path.is_empty() {
+                let dir = Path::new(&self.file_info.path)
+                    .parent()
+                    .unwrap_or(Path::new("."));
+                let beside_legacy = dir.join(format!("{}.{}", self.file_info.name, crate::app::LEGACY_DB_EXT));
+                let _ = fs::remove_file(beside_legacy);
             }
             return Ok(());
         }

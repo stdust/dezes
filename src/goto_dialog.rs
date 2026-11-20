@@ -223,7 +223,6 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
                         .unwrap_or(addr as usize);
 
                     if target_offset < filesize {
-                        app.reader.page_start = target_offset;
                         app.goto(target_offset);
                         App::log(app, format!("Jumped to address 0x{:X} (offset 0x{:X})", addr, target_offset));
                         app.state = UIState::Normal;

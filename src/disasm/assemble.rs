@@ -378,7 +378,15 @@ pub fn stage_assembled_bytes(
     let span = covering_span(app, offset, new_len).unwrap_or(new_len).max(new_len);
 
     if offset.checked_add(span).is_none_or(|end| end > limit) {
-        return Err(crate::i18n::M::ErrAssemblePastEof.tr(app.config.lang).to_string());
+        let msg = crate::i18n::fill(
+            crate::i18n::M::ErrAssemblePastEof.tr(app.config.lang),
+            &[
+                &format!("{:X}", offset),
+                &span.to_string(),
+                &format!("{:X}", limit),
+            ],
+        );
+        return Err(msg);
     }
 
     for (i, &b) in bytes.iter().enumerate() {
@@ -553,7 +561,12 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
     }
 
     let single_clean = clean.trim_start_matches("0x").trim_start_matches("0X");
-    if single_clean.len().is_multiple_of(2) && single_clean.chars().all(|c| c.is_ascii_hexdigit()) {
+    let has_0x = clean.starts_with("0x") || clean.starts_with("0X");
+    let has_digit = single_clean.chars().any(|c| c.is_ascii_digit());
+    if (has_0x || has_digit)
+        && single_clean.len().is_multiple_of(2)
+        && single_clean.chars().all(|c| c.is_ascii_hexdigit())
+    {
         let mut bytes = Vec::new();
         for i in (0..single_clean.len()).step_by(2) {
             if let Ok(b) = u8::from_str_radix(&single_clean[i..i+2], 16) {
@@ -571,9 +584,14 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
 
     let mut hex_bytes = Vec::new();
     let mut all_hex = true;
+    let mut any_digit_or_0x = false;
 
     for tok in &hex_tokens {
+        let is_0x = tok.starts_with("0x") || tok.starts_with("0X");
         let tok_clean = tok.trim_start_matches("0x").trim_start_matches("0X");
+        if is_0x || tok_clean.chars().any(|c| c.is_ascii_digit()) {
+            any_digit_or_0x = true;
+        }
         if tok_clean.len() <= 2
             && tok_clean.chars().all(|c| c.is_ascii_hexdigit())
             && let Ok(b) = u8::from_str_radix(tok_clean, 16)
@@ -585,7 +603,7 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
         break;
     }
 
-    if all_hex && !hex_bytes.is_empty() {
+    if all_hex && any_digit_or_0x && !hex_bytes.is_empty() {
         return Some(hex_bytes);
     }
 

@@ -238,7 +238,7 @@ pub fn fill_selection_with(app: &mut App, value: u8) {
     }
 
     let mut count = 0usize;
-    for offset in app.hex_view.selection {
+    for offset in start..=end {
         crate::hex::edit::record_edit(app, offset, value);
         count += 1;
     }
