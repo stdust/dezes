@@ -71,15 +71,24 @@ impl HexPattern {
     /// `"DEAD??EF"` (spaces are optional, but if you omit them the whole
     /// string must be an even number of characters).
     pub fn parse(input: &str) -> Result<Self, PatternError> {
-        let tokens: Vec<String> = if input.contains(char::is_whitespace) {
-            input.split_whitespace().map(|s| s.to_string()).collect()
-        } else {
-            let chars: Vec<char> = input.chars().collect();
-            if chars.is_empty() || !chars.len().is_multiple_of(2) {
-                return Err(PatternError::InvalidToken(input.to_string()));
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Err(PatternError::EmptyPattern);
+        }
+
+        let mut tokens: Vec<String> = Vec::new();
+        for word in trimmed.split_whitespace() {
+            if word == "??" {
+                tokens.push("??".to_string());
+            } else if word.len() > 2 && word.len().is_multiple_of(2) {
+                let chars: Vec<char> = word.chars().collect();
+                for chunk in chars.chunks(2) {
+                    tokens.push(chunk.iter().collect());
+                }
+            } else {
+                tokens.push(word.to_string());
             }
-            chars.chunks(2).map(|c| c.iter().collect()).collect()
-        };
+        }
 
         if tokens.is_empty() {
             return Err(PatternError::EmptyPattern);
@@ -402,6 +411,8 @@ mod tests {
     fn parse_forms() {
         assert_eq!(pat("DE AD ?? EF").len(), 4);
         assert_eq!(pat("DEAD??EF").len(), 4);
+        assert_eq!(pat(" DEADBEEF ").len(), 4);
+        assert_eq!(pat("DEAD BEEF").len(), 4);
         assert!(HexPattern::parse("").is_err());
         assert!(HexPattern::parse("ABC").is_err());
         assert!(HexPattern::parse("ZZ").is_err());

@@ -134,6 +134,7 @@ pub struct Calculator {
     pub context: HashMapContext,
     pub history: Vec<String>,
     pub history_index: Option<usize>,
+    pub draft: String,
     // history_set is a HashSet to avoid duplicates, although users
     // can bypass that with something like "1+1" != "1 + 1"
     pub history_set: HashSet<String>,
@@ -151,11 +152,16 @@ impl Calculator {
             self.history_set.insert(entry.clone());
         }
         self.history.push(entry);
+        self.draft.clear();
         self.history_index = None;
     }
     pub fn history_up(&mut self) {
         if self.history.is_empty() {
             return;
+        }
+
+        if self.history_index.is_none() {
+            self.draft = self.input.value().to_string();
         }
 
         let len = self.history.len();
@@ -167,7 +173,9 @@ impl Calculator {
         };
 
         self.history_index = Some(new_index);
-        self.input = Input::new(self.history[new_index].clone());
+        let val = self.history[new_index].clone();
+        let cur = val.chars().count();
+        self.input = Input::new(val).with_cursor(cur);
     }
     pub fn history_down(&mut self) {
         if self.history.is_empty() {
@@ -176,13 +184,21 @@ impl Calculator {
 
         let len = self.history.len();
 
-        let new_index = match self.history_index {
-            None => 0,
-            Some(i) => (i + 1).min(len - 1),
-        };
-
-        self.history_index = Some(new_index);
-        self.input = Input::new(self.history[new_index].clone());
+        match self.history_index {
+            None => {}
+            Some(i) if i + 1 >= len => {
+                self.history_index = None;
+                let cur = self.draft.chars().count();
+                self.input = Input::new(std::mem::take(&mut self.draft)).with_cursor(cur);
+            }
+            Some(i) => {
+                let new_index = i + 1;
+                self.history_index = Some(new_index);
+                let val = self.history[new_index].clone();
+                let cur = val.chars().count();
+                self.input = Input::new(val).with_cursor(cur);
+            }
+        }
     }
 }
 
@@ -320,6 +336,19 @@ fn load_variables(app: &mut App) {
 
     // comments (identifiers here come from user input and are often invalid)
     for cmt in &app.hex_view.comment_name_list {
+        let name = cmt.comment.trim();
+        if name.is_empty() {
+            continue;
+        }
+        // Skip names that look like pure hex numbers (e.g. "ff", "deadbeef", "100")
+        if name.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        // Skip reserved keywords
+        let lower = name.to_ascii_lowercase();
+        if matches!(lower.as_str(), "cur" | "base" | "oep" | "i64::max" | "i64::min") {
+            continue;
+        }
         let _ = app
             .calculator
             .context
@@ -485,6 +514,36 @@ mod tests {
         let c = ctx();
         assert_eq!(hex_literals_to_decimal("0x1f", &c), "31");
         assert_eq!(hex_literals_to_decimal("0X1F", &c), "31");
+    }
+
+    #[test]
+    fn comments_matching_hex_do_not_override_numbers() {
+        let mut app = App::new();
+        app.hex_view.comment_name_list.push(crate::hex::comment::Comment {
+            offset: 0x9999,
+            comment: "ff".to_string(),
+        });
+        load_variables(&mut app);
+        assert!(!app.calculator.context.iter_variables().any(|(k, _)| k == "ff"));
+        assert_eq!(evaluate_expression(&mut app, "ff + 1").unwrap(), 0x100);
+    }
+
+    #[test]
+    fn calculator_history_draft_restoration() {
+        let mut calc = Calculator::default();
+        calc.push_history("1 + 1".to_string());
+        calc.push_history("2 + 2".to_string());
+        calc.input = Input::new("my_draft".to_string()).with_cursor(8);
+
+        calc.history_up();
+        assert_eq!(calc.input.value(), "2 + 2");
+        calc.history_up();
+        assert_eq!(calc.input.value(), "1 + 1");
+        calc.history_down();
+        assert_eq!(calc.input.value(), "2 + 2");
+        calc.history_down();
+        assert_eq!(calc.input.value(), "my_draft");
+        assert_eq!(calc.history_index, None);
     }
 
     /// Operators, brackets and spacing survive untouched.

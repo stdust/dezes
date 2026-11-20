@@ -98,11 +98,30 @@ pub fn dialog_encoding_draw(app: &mut App, frame: &mut Frame) {
     dialog.render(app, frame);
 }
 
+pub fn open_encoding_dialog(app: &mut App) {
+    app.state = UIState::DialogEncoding;
+    app.dialog_renderer = Some(dialog_encoding_draw);
+    let cur_enc = app.text_view.table;
+    let idx = ENCODINGS.iter().position(|(_, enc)| *enc == cur_enc).unwrap_or(0);
+    app.list_state.select(Some(idx));
+}
+
 pub fn dialog_encoding2_draw(app: &mut App, frame: &mut Frame) {
     let mut dialog = ListChoice::new();
     dialog.set_title(" Select Encoding 2 (Secondary) ".to_string());
     dialog.choices = enc2_labels();
     dialog.render(app, frame);
+}
+
+pub fn open_encoding2_dialog(app: &mut App) {
+    app.state = UIState::DialogEncoding2;
+    app.dialog_renderer = Some(dialog_encoding2_draw);
+    let cur_enc = app.hex_view.enc2_table;
+    let idx = match cur_enc {
+        None => 0,
+        Some(e) => ENCODINGS.iter().position(|(_, enc)| *enc == e).map(|i| i + 1).unwrap_or(0),
+    };
+    app.list_state.select(Some(idx));
 }
 
 pub fn dialog_encoding_events(app: &mut App, key: KeyEvent) -> Result<bool> {

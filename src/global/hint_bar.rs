@@ -157,6 +157,12 @@ pub fn should_show(app: &App) -> bool {
     if app.dialog_renderer.is_some() {
         return false;
     }
+    if app.editor_view == AppView::Hex
+        && app.state == UIState::Normal
+        && app.hex_view.comments.contains_key(&app.hex_view.offset)
+    {
+        return false;
+    }
     matches!(
         app.state,
         UIState::Normal | UIState::Error | UIState::HexSelection | UIState::HexEditing
@@ -266,7 +272,7 @@ fn plain_hints(app: &App) -> Vec<Hint> {
             ro("F1", M::Help),
             ro("F4", M::HeaderView),
             ro("F6", M::Strings),
-            ro("F7", M::TextView),
+            ro("F7", M::HexView),
             ro("F8", M::Reload),
             ro("F9", M::Open),
             ro("F10", M::About),
@@ -274,7 +280,11 @@ fn plain_hints(app: &App) -> Vec<Hint> {
         ],
         AppView::Header => vec![
             ro("F1", M::Help),
-            ro("F4", M::HexView),
+            if app.last_primary_view == AppView::Disasm {
+                ro("F4", M::DisasmView)
+            } else {
+                ro("F4", M::HexView)
+            },
             ro("F5", M::Refs),
             ro("F6", M::Strings),
             ro("F7", M::TextView),

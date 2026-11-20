@@ -153,13 +153,26 @@ pub fn open_edit_bookmark_dialog(app: &mut App, index: usize) {
 }
 
 fn get_preview_text(app: &App, offset: usize) -> String {
-    let buf = app.file_info.get_buffer_ref();
-    if offset >= buf.len() {
+    let buf_len = app.file_info.buffer_len();
+    if offset >= buf_len {
         return String::new();
     }
-    let end = (offset + 6).min(buf.len());
-    let bytes = &buf[offset..end];
-    let hex_part = bytes
+    let end = (offset + 15).min(buf_len);
+    let mut slice_buf = Vec::with_capacity(15);
+    for ofs in offset..end {
+        if let Some(b) = app.hex_view.changed_bytes.get(&ofs) {
+            slice_buf.push(*b);
+        } else if let Some(b) = app.file_info.get_buffer_ref().get(ofs) {
+            slice_buf.push(*b);
+        } else {
+            break;
+        }
+    }
+    if slice_buf.is_empty() {
+        return String::new();
+    }
+    let hex_len = slice_buf.len().min(6);
+    let hex_part = slice_buf[..hex_len]
         .iter()
         .map(|b| format!("{:02X}", b))
         .collect::<Vec<_>>()
@@ -167,9 +180,8 @@ fn get_preview_text(app: &App, offset: usize) -> String {
 
     let is_disasm = app.editor_view == crate::editor::AppView::Disasm || app.is_executable();
     if is_disasm && app.is_executable() {
-        let bitness = if app.is_64() { 64 } else { 32 };
-        let slice = &buf[offset..buf.len().min(offset + 15)];
-        let decoder = iced_x86::Decoder::with_ip(bitness, slice, app.get_va(offset), iced_x86::DecoderOptions::NONE);
+        let bitness = app.bitness();
+        let decoder = iced_x86::Decoder::with_ip(bitness, &slice_buf, app.get_va(offset), iced_x86::DecoderOptions::NONE);
         if let Some(instr) = decoder.into_iter().next() {
             let mut raw = String::new();
             let mut formatter = iced_x86::IntelFormatter::new();
@@ -506,7 +518,12 @@ pub fn dialog_bookmarks_events(app: &mut App, event: &Event) -> Result<bool> {
         }
         KeyCode::Char('c') | KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if let Some(item) = app.hex_view.bookmarks.get(app.hex_view.bookmark_dialog.selected_index) {
-                let text = format!("0x{:X}\t{}", item.offset, item.label);
+                let addr = if app.hex_view.show_va || app.editor_view == crate::editor::AppView::Disasm {
+                    app.get_va(item.offset)
+                } else {
+                    item.offset as u64
+                };
+                let text = format!("0x{:X}\t{}", addr, item.label);
                 app.copy_to_clipboard(text, "bookmark".to_string());
             }
         }

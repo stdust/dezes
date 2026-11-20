@@ -80,8 +80,22 @@ pub fn exe_dir() -> &'static std::path::Path {
 /// here: a terminal narrower than 9 columns, and the `- 1` when the division
 /// yields 0.
 pub fn max_bytes_per_line(terminal_width: u16) -> usize {
-    let slots = (terminal_width.saturating_sub(9) / 4) as usize;
+    let slots = (terminal_width.saturating_sub(18) / 4) as usize;
     slots.saturating_sub(1).max(1)
+}
+
+#[allow(dead_code)]
+pub fn max_bytes_per_line_for(terminal_width: u16, addr_width: usize, dual_enc: bool, scrollbar: bool) -> usize {
+    let mut fixed = addr_width + 2;
+    if dual_enc {
+        fixed += 1;
+    }
+    if scrollbar {
+        fixed += 1;
+    }
+    let per_byte = if dual_enc { 5 } else { 4 };
+    let avail = (terminal_width as usize).saturating_sub(fixed);
+    (avail / per_byte).max(1)
 }
 
 /// Encodes `text` with `enc`, handling the UTF-16 variants itself.
@@ -340,5 +354,21 @@ pub fn pad_display_width(text: &str, width: usize) -> String {
             cur_w += 1;
         }
         s
+    }
+}
+
+/// Right-aligns text by prepending spaces so that its terminal visual display width is exactly width.
+pub fn pad_display_width_right(text: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let w = text.width();
+    if w <= width {
+        let mut s = String::with_capacity(text.len() + (width - w));
+        for _ in 0..(width - w) {
+            s.push(' ');
+        }
+        s.push_str(text);
+        s
+    } else {
+        pad_display_width(text, width)
     }
 }

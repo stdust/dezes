@@ -400,17 +400,44 @@ fn text_to_exact_pattern(text: &str, encoding: &'static encoding_rs::Encoding, m
     if text.is_empty() {
         return None;
     }
-    let bytes = unescape_to_bytes(text, encoding);
-    if bytes.is_empty() {
-        return None;
-    }
-    Some(bytes.iter().map(|&b| {
-        if match_case {
-            HexPatternByte::Exact(b)
-        } else {
-            HexPatternByte::IgnoreCase(b)
+
+    if match_case {
+        let bytes = unescape_to_bytes(text, encoding);
+        if bytes.is_empty() {
+            return None;
         }
-    }).collect())
+        return Some(bytes.iter().map(|&b| HexPatternByte::Exact(b)).collect());
+    }
+
+    let is_utf16le = encoding == encoding_rs::UTF_16LE;
+    let is_utf16be = encoding == encoding_rs::UTF_16BE;
+    let mut pattern = Vec::new();
+
+    for c in text.chars() {
+        if c.is_ascii_alphabetic() {
+            if is_utf16le {
+                pattern.push(HexPatternByte::IgnoreCase(c as u8));
+                pattern.push(HexPatternByte::Exact(0x00));
+            } else if is_utf16be {
+                pattern.push(HexPatternByte::Exact(0x00));
+                pattern.push(HexPatternByte::IgnoreCase(c as u8));
+            } else {
+                pattern.push(HexPatternByte::IgnoreCase(c as u8));
+            }
+        } else {
+            let s = c.to_string();
+            let char_bytes = unescape_to_bytes(&s, encoding);
+            for b in char_bytes {
+                pattern.push(HexPatternByte::Exact(b));
+            }
+        }
+    }
+
+    if pattern.is_empty() {
+        None
+    } else {
+        Some(pattern)
+    }
 }
 
 fn execute_find(app: &mut App, forward: bool) {

@@ -297,12 +297,14 @@ fn scan_string_references_in(app: &App, buffer: &[u8]) -> Vec<StringRefItem> {
                                 }
                             }
                             OpKind::Memory => {
-                                let disp = instr.memory_displacement64();
-                                if disp != 0 {
-                                    let rebased = app.rebase_va(disp);
-                                    if rebased >= 0x1000 {
-                                        target_va = Some(rebased);
-                                        break;
+                                if instr.memory_base() == iced_x86::Register::None && instr.memory_index() == iced_x86::Register::None {
+                                    let disp = instr.memory_displacement64();
+                                    if disp != 0 {
+                                        let rebased = app.rebase_va(disp);
+                                        if rebased >= 0x1000 && app.va_to_offset(rebased).is_some() {
+                                            target_va = Some(rebased);
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -340,12 +342,14 @@ fn scan_string_references_in(app: &App, buffer: &[u8]) -> Vec<StringRefItem> {
                                 }
                             }
                             OpKind::Memory => {
-                                let disp = instr.memory_displacement64();
-                                if disp != 0 {
-                                    let rebased = app.rebase_va(disp);
-                                    if rebased >= 0x1000 {
-                                        target_va = Some(rebased);
-                                        break;
+                                if instr.memory_base() == iced_x86::Register::None && instr.memory_index() == iced_x86::Register::None {
+                                    let disp = instr.memory_displacement64();
+                                    if disp != 0 {
+                                        let rebased = app.rebase_va(disp);
+                                        if rebased >= 0x1000 && app.va_to_offset(rebased).is_some() {
+                                            target_va = Some(rebased);
+                                            break;
+                                        }
                                     }
                                 }
                             }

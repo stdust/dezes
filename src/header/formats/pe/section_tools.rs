@@ -211,16 +211,20 @@ pub fn add_new_section(app: &mut App, requested_size: u32) -> std::result::Resul
         // Verify that the space for the new section header is actually empty (zeroed padding).
         // If non-zero data exists, adding a section header would overwrite metadata or code.
         let buf = app.file_info.get_buffer_ref();
-        if new_sec_base + field::ENTRY_SIZE <= buf.len() {
-            let has_non_zero = (new_sec_base..new_sec_base + field::ENTRY_SIZE).any(|ofs| {
-                app.hex_view.changed_bytes.get(&ofs).copied().unwrap_or(buf[ofs]) != 0
-            });
-            if has_non_zero {
-                return Err(crate::i18n::fill(
-                    crate::i18n::M::ErrNoRoomForSectionHeader.tr(lang),
-                    &[&format!("{:X}", size_of_headers)],
-                ));
-            }
+        if new_sec_base + field::ENTRY_SIZE > buf.len() {
+            return Err(crate::i18n::fill(
+                crate::i18n::M::ErrNoRoomForSectionHeader.tr(lang),
+                &[&format!("{:X}", size_of_headers)],
+            ));
+        }
+        let has_non_zero = (new_sec_base..new_sec_base + field::ENTRY_SIZE).any(|ofs| {
+            app.hex_view.changed_bytes.get(&ofs).copied().unwrap_or(buf[ofs]) != 0
+        });
+        if has_non_zero {
+            return Err(crate::i18n::fill(
+                crate::i18n::M::ErrNoRoomForSectionHeader.tr(lang),
+                &[&format!("{:X}", size_of_headers)],
+            ));
         }
 
         let (prev_va_end, prev_raw_end) = match pe.sections.last() {
@@ -431,6 +435,14 @@ pub fn dialog_section_size_events(app: &mut App, event: &Event) -> Result<bool> 
                             Some(crate::i18n::M::SizeHexHint.tr(app.config.lang).to_string());
                     }
                 }
+            }
+            KeyCode::Char('v') | KeyCode::Char('V')
+                if app.header_view.section_size_dialog.selection_all && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.header_view.section_size_dialog.selection_all = false;
+                app.header_view.section_size_dialog.selection_anchor = None;
+                app.header_view.section_size_dialog.input = tui_input::Input::default();
+                crate::text_field::handle_key(app, section_size_field, event);
             }
             KeyCode::Char(c) if app.header_view.section_size_dialog.selection_all && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 app.header_view.section_size_dialog.selection_all = false;
@@ -879,6 +891,14 @@ pub fn dialog_dump_section_events(app: &mut App, event: &Event) -> Result<bool> 
                         app.header_view.dump_dialog.error_message = Some(format!("Error: {}", e));
                     }
                 }
+            }
+            KeyCode::Char('v') | KeyCode::Char('V')
+                if app.header_view.dump_dialog.selection_all && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.header_view.dump_dialog.selection_all = false;
+                app.header_view.dump_dialog.selection_anchor = None;
+                app.header_view.dump_dialog.input = tui_input::Input::default();
+                crate::text_field::handle_key(app, dump_section_field, event);
             }
             KeyCode::Char(c) if app.header_view.dump_dialog.selection_all && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 app.header_view.dump_dialog.selection_all = false;

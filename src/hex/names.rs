@@ -413,14 +413,19 @@ fn names_filter_field(app: &mut App) -> (&mut tui_input::Input, &mut Option<usiz
 }
 
 pub fn dialog_names_regex_draw(app: &mut App, frame: &mut Frame) {
-    let para = Paragraph::new(crate::text_field::render_line(
+    let dialog_area = center_widget(frame.area().width / 3, 3, frame.area());
+    let inner_width = dialog_area.width.saturating_sub(4) as usize;
+    let cursor = app.hex_view.names_regex_input.visual_cursor();
+    let scroll = cursor.saturating_sub(inner_width.saturating_sub(1));
+
+    let para = Paragraph::new(crate::text_field::render_window(
         &app.hex_view.names_regex_input,
         app.hex_view.names_filter_anchor,
+        scroll,
+        inner_width,
         app.config.theme.main,
         app.config.theme.highlight,
     ));
-
-    let dialog_area = center_widget(frame.area().width / 3, 3, frame.area());
 
     let block = Block::new()
         .title(crate::i18n::M::RegexTitle.tr(app.config.lang))
@@ -431,8 +436,8 @@ pub fn dialog_names_regex_draw(app: &mut App, frame: &mut Frame) {
 
     frame.render_widget(Clear, dialog_area);
     frame.render_widget(para.block(block), dialog_area);
-    let x = app.hex_view.names_regex_input.visual_cursor();
-    frame.set_cursor_position((dialog_area.x + 2 + x as u16, dialog_area.y + 1));
+    let x = (cursor.saturating_sub(scroll)) as u16;
+    frame.set_cursor_position((dialog_area.x + 2 + x, dialog_area.y + 1));
 }
 
 pub fn dialog_names_regex_events(app: &mut App, event: &Event) -> Result<bool> {

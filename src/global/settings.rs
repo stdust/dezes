@@ -124,6 +124,8 @@ pub const OPTION_NAMES: &[&str] = &[
     "backup",
     "nobackup",
     "view",
+    "block",
+    "disasm_enc",
     "disasm_mem",
     "disasm_reg",
     "disasm_imm",
@@ -282,6 +284,16 @@ pub fn current_settings(app: &App) -> Vec<Setting> {
                 crate::i18n::Lang::Zh => "保存时是否创建Backup-文件名备份文件 (:set backup on|off)",
                 _ => "create Backup-<filename> backup before saving (:set backup on|off)",
             },
+        },
+        Setting {
+            name: "block",
+            value: if app.config.block_base == 10 { "dec".to_string() } else { "hex".to_string() },
+            note: M::NoteBlock.tr(lang),
+        },
+        Setting {
+            name: "disasm_enc",
+            value: app.disasm_comment_encoding.as_str().to_string(),
+            note: M::NoteDisasmEnc.tr(lang),
         },
     ];
 

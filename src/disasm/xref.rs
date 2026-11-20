@@ -64,6 +64,7 @@ pub fn find_xrefs(app: &App, target_va: u64) -> Vec<XrefItem> {
     formatter.options_mut().set_leading_zeroes(false);
 
     let mut raw_text = String::new();
+    let mut code_seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     // One decoder per executable section, each started at that section's VA.
     //
@@ -151,6 +152,9 @@ pub fn find_xrefs(app: &App, target_va: u64) -> Vec<XrefItem> {
         }
 
         if is_match {
+            for b in current_offset..current_offset + len {
+                code_seen.insert(b);
+            }
             raw_text.clear();
             formatter.format(&instr, &mut raw_text);
             let clean_text = crate::disasm::draw::clean_instruction_text(app, &instr, &raw_text);
@@ -173,7 +177,7 @@ pub fn find_xrefs(app: &App, target_va: u64) -> Vec<XrefItem> {
     }
 
     if items.len() < MAX_XREF_ITEMS {
-        find_data_references(app, target_va, buffer, &mut items);
+        find_data_references(app, target_va, buffer, &mut items, code_seen);
     }
 
         items
@@ -228,12 +232,14 @@ fn find_dword(haystack: &[u8], value: u32) -> Vec<usize> {
 /// trustworthy: a full 64-bit pointer (eight bytes have to match, so a coincidence
 /// is vanishingly unlikely) and a 32-bit RVA (four bytes, which a plain integer can
 /// match by accident - `.pdata` and resource directories are full of RVAs).
-fn find_data_references(app: &App, target_va: u64, buffer: &[u8], items: &mut Vec<XrefItem>) {
+fn find_data_references(app: &App, target_va: u64, buffer: &[u8], items: &mut Vec<XrefItem>, mut seen: std::collections::HashSet<usize>) {
     let image_base = app.get_image_base();
     let target_rva = target_va.checked_sub(image_base).and_then(|r| u32::try_from(r).ok());
     let is_64 = app.is_64();
 
-    let mut seen: std::collections::HashSet<usize> = items.iter().map(|i| i.offset).collect();
+    for i in items.iter() {
+        seen.insert(i.offset);
+    }
 
     for section in crate::disasm::sections::xref_sections(app, buffer.len()) {
         let bytes = &buffer[section.start..section.end];

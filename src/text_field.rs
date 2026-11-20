@@ -183,6 +183,7 @@ pub fn handle_key(app: &mut App, field: Field, event: &Event) -> bool {
 
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
 
     if ctrl {
         match key.code {
@@ -247,11 +248,11 @@ pub fn handle_key(app: &mut App, field: Field, event: &Event) -> bool {
     let cursor = input.cursor();
 
     match key.code {
-        KeyCode::Left => {
+        KeyCode::Left if !ctrl => {
             move_cursor(input, anchor, cursor.saturating_sub(1), shift);
             false
         }
-        KeyCode::Right => {
+        KeyCode::Right if !ctrl => {
             move_cursor(input, anchor, (cursor + 1).min(len), shift);
             false
         }
@@ -268,7 +269,7 @@ pub fn handle_key(app: &mut App, field: Field, event: &Event) -> bool {
         KeyCode::Backspace | KeyCode::Delete if selection(input, *anchor).is_some() => {
             replace_selection(input, anchor, "")
         }
-        KeyCode::Char(c) if selection(input, *anchor).is_some() && !ctrl => {
+        KeyCode::Char(c) if selection(input, *anchor).is_some() && !ctrl && !alt => {
             replace_selection(input, anchor, &c.to_string())
         }
         _ => {

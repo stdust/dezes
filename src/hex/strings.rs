@@ -217,9 +217,15 @@ pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
         .style(dialog_style)
         .padding(Padding::horizontal(1));
 
-    let para = Paragraph::new(crate::text_field::render_line(
+    let inner_width = chunks[1].width.saturating_sub(4) as usize;
+    let cursor = app.hex_view.strings_regex_input.visual_cursor();
+    let scroll = cursor.saturating_sub(inner_width.saturating_sub(1));
+
+    let para = Paragraph::new(crate::text_field::render_window(
         &app.hex_view.strings_regex_input,
         app.hex_view.strings_filter_anchor,
+        scroll,
+        inner_width,
         dialog_style,
         app.config.theme.highlight,
     ))
@@ -228,7 +234,7 @@ pub fn dialog_strings_draw(app: &mut App, frame: &mut Frame) {
     frame.render_widget(para, chunks[1]);
 
     if focus {
-        let x = chunks[1].x + 2 + app.hex_view.strings_regex_input.visual_cursor() as u16;
+        let x = chunks[1].x + 2 + (cursor.saturating_sub(scroll)) as u16;
         frame.set_cursor_position((x, chunks[1].y + 1));
     }
 }
@@ -469,6 +475,11 @@ pub fn dialog_strings_events(app: &mut App, event: &Event) -> Result<bool> {
                 let offset = found.offset;
                 let size = found.size;
                 app.last_result = Some(UIState::DialogStrings);
+                if app.editor_view == crate::editor::AppView::Disasm {
+                    app.editor_view = crate::editor::AppView::Hex;
+                    app.last_primary_view = crate::editor::AppView::Hex;
+                    app.prev_editor_view = crate::editor::AppView::Hex;
+                }
                 app.goto(offset);
                 app.hex_view.selection.start = offset;
                 app.hex_view.selection.end = (offset + size.saturating_sub(1))
@@ -1071,6 +1082,8 @@ fn is_one_char_repeated(text: &str) -> bool {
     text.chars().count() >= 3 && chars.all(|c| c == first)
 }
 
+const MAX_CANDIDATE_LEN: usize = 4096;
+
 fn scan_dbcs(
     buffer: &[u8],
     range: std::ops::Range<usize>,
@@ -1088,6 +1101,9 @@ fn scan_dbcs(
 
         let mut end = i;
         while end < len {
+            if end - start >= MAX_CANDIDATE_LEN {
+                break;
+            }
             let b = buffer[end];
             if b < 0x80 {
                 if is_ascii_text(b) {
@@ -1129,7 +1145,6 @@ fn scan_dbcs(
 }
 
 fn scan_ascii(buffer: &[u8], min: usize, cap: usize, re: Option<&Regex>, out: &mut Vec<FoundString>) {
-    const MAX_CANDIDATE_LEN: usize = 4096;
     let mut siz = 0usize;
     let mut candidate = String::new();
 
@@ -1180,6 +1195,9 @@ fn scan_utf8(
         let mut end = i;
 
         while end < len {
+            if end - start >= MAX_CANDIDATE_LEN {
+                break;
+            }
             let b = buffer[end];
             if b < 0x80 {
                 if is_ascii_text(b) {
@@ -1296,6 +1314,9 @@ fn scan_utf16(
         text.clear();
 
         while i + 1 < len {
+            if i - start >= MAX_CANDIDATE_LEN {
+                break;
+            }
             let unit = u16::from_le_bytes([buffer[i], buffer[i + 1]]);
             match char::from_u32(unit as u32) {
                 Some(c) if is_wide_text(c) => {

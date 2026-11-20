@@ -68,6 +68,7 @@ pub enum M {
     Save,
     SaveQuit,
     HexView,
+    DisasmView,
     // Hint bar - edit mode
     Type,
     Column,
@@ -311,6 +312,8 @@ pub enum M {
     NoteScrollbar,
     NoteLang,
     NoteDisasmColor,
+    NoteBlock,
+    NoteDisasmEnc,
 }
 
 pub fn fill(template: &str, args: &[&str]) -> String {
@@ -335,7 +338,7 @@ impl M {
     pub const ALL: &[M] = &[
         M::Help, M::Edit, M::HeaderView, M::Refs, M::Strings, M::TextView, M::About,
         M::Reload, M::ReloadTitle, M::ConfirmReloadPrompt, M::ConfirmReloadOptions, M::FileReloaded,
-        M::Open, M::Save, M::SaveQuit, M::HexView, M::Type, M::Column, M::Case, M::Select, M::Done,
+        M::Open, M::Save, M::SaveQuit, M::HexView, M::DisasmView, M::Type, M::Column, M::Case, M::Select, M::Done,
         M::Copy, M::Modify, M::Color, M::Clear, M::Data, M::Goto, M::Find, M::Replace,
         M::Patches, M::Xref, M::Addr, M::Undo, M::Redo, M::Encoding, M::Encoding2, M::Highlight,
         M::Log, M::Names, M::Bookmarks, M::RevertByte, M::ImageBase, M::DecodeWidth, M::ReadOnly, M::Running,
@@ -343,7 +346,7 @@ impl M {
         M::MinimumLength, M::NoteByteline, M::NoteCtrlchar, M::NoteEnc1, M::NoteEnc2,
         M::NoteAddr, M::NoteBitness, M::NoteView, M::NoteTheme, M::NoteDb, M::NoteDimctrl,
         M::NoteDimzero, M::NoteWrapscan, M::NoteHighlight, M::NoteHintbar, M::NoteScrollbar, M::NoteLang,
-        M::NoteDisasmColor, M::AboutTitle, M::AboutFooter, M::LogTitle, M::LogFooter,
+        M::NoteDisasmColor, M::NoteBlock, M::NoteDisasmEnc, M::AboutTitle, M::AboutFooter, M::LogTitle, M::LogFooter,
         M::CalculatorTitle, M::GotoTitle, M::ModifyBlockTitle, M::OperationTitle,
         M::NamesTitle, M::NoNames, M::StringsTitle, M::RegexTitle, M::FilterRegexTitle,
         M::AssembleTitle, M::AddSectionTitle, M::SelectDriveTitle, M::CommentAtTitle,
@@ -431,6 +434,7 @@ impl M {
             M::Save => ["Save", "저장", "保存"],
             M::SaveQuit => ["Save and quit", "저장하고 종료", "保存并退出"],
             M::HexView => ["Hex", "헥스", "十六"],
+            M::DisasmView => ["Disasm", "디스어셈", "反汇编"],
 
             M::Type => ["Type", "입력", "输入"],
             M::Column => ["Column", "칼럼", "列"],
@@ -1176,6 +1180,8 @@ impl M {
             M::NoteScrollbar => ["scrollbar display", "스크롤 바 표시", "滚动条显示"],
             M::NoteLang => ["interface language", "인터페이스 언어", "界面语言"],
             M::NoteDisasmColor => ["disassembly colour", "디스어셈블 색상", "反汇编颜色"],
+            M::NoteBlock => ["block length radix (hex/dec)", "블록 길이 진법 (hex/dec)", "块长度进制 (hex/dec)"],
+            M::NoteDisasmEnc => ["disassembly string encoding", "디스어셈블 문자열 인코딩", "反汇编字符串编码"],
         }
     }
 }

@@ -357,9 +357,15 @@ pub fn draw_string_ref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
         .border_style(filter_border_style)
         .style(dialog_style);
 
-    let filter_para = Paragraph::new(crate::text_field::render_line(
+    let inner_width = chunks[2].width.saturating_sub(2) as usize;
+    let cursor = dialog.filter_input.visual_cursor();
+    let scroll = cursor.saturating_sub(inner_width.saturating_sub(1));
+
+    let filter_para = Paragraph::new(crate::text_field::render_window(
         &dialog.filter_input,
         dialog.filter_anchor,
+        scroll,
+        inner_width,
         dialog_style,
         app.config.theme.highlight,
     ))
@@ -368,7 +374,7 @@ pub fn draw_string_ref_dialog(app: &mut App, frame: &mut Frame, area: Rect) {
     frame.render_widget(filter_para, chunks[2]);
 
     if dialog.focus_filter {
-        let cursor_x = chunks[2].x + 1 + dialog.filter_input.visual_cursor() as u16;
+        let cursor_x = chunks[2].x + 1 + (cursor.saturating_sub(scroll)) as u16;
         let cursor_y = chunks[2].y + 1;
         frame.set_cursor_position((cursor_x, cursor_y));
     }

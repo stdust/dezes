@@ -365,8 +365,10 @@ pub fn dialog_xref_events(app: &mut App, event: &Event) -> Result<bool> {
                     let sel = app.disasm_xref_dialog.selected_index;
                     let target_offset = app.disasm_xref_dialog.items[sel].offset;
                     let target_va = app.disasm_xref_dialog.items[sel].va;
+                    let ref_type = app.disasm_xref_dialog.items[sel].ref_type;
 
-                    let view = if app.is_executable() {
+                    let is_data_pointer = matches!(ref_type, crate::disasm::xref::XrefType::Ptr | crate::disasm::xref::XrefType::Rva);
+                    let view = if app.is_executable() && !is_data_pointer {
                         crate::editor::AppView::Disasm
                     } else {
                         crate::editor::AppView::Hex
@@ -377,6 +379,12 @@ pub fn dialog_xref_events(app: &mut App, event: &Event) -> Result<bool> {
 
                     if view == crate::editor::AppView::Disasm {
                         app.reader.page_start = target_offset;
+                    } else {
+                        app.hex_view.selection.start = target_offset;
+                        app.hex_view.selection.end = target_offset;
+                        app.hex_view.selection.direction = None;
+                        app.hex_view.selection.is_mouse = false;
+                        app.hex_view.selection_target = crate::editor::EditingTarget::Hex;
                     }
                     app.goto(target_offset);
                     app.align_page_for_view();

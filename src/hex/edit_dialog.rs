@@ -207,6 +207,8 @@ impl EditDialog {
                         && let Ok(bytes) = hex::decode(&raw_hex[..valid_len])
                     {
                         self.update_others_from_bytes(&bytes, EditDialogFocus::Hex);
+                    } else {
+                        self.clear_except(EditDialogFocus::Hex);
                     }
                 }
             }
@@ -288,7 +290,7 @@ fn bytes_to_escaped_string_other(bytes: &[u8], enc: &'static encoding_rs::Encodi
                 continue;
             }
             let slice = &bytes[idx..idx + len];
-            let (decoded_str, _, had_errors) = enc.decode(slice);
+            let (decoded_str, had_errors) = enc.decode_without_bom_handling(slice);
             if !had_errors && decoded_str.chars().count() == 1 {
                 let c = decoded_str.chars().next().unwrap();
                 let cell_char = sanitize_display_char(c);

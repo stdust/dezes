@@ -376,11 +376,9 @@ pub fn select_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::ALT) => {
             if key.modifiers.contains(KeyModifiers::SHIFT) || key.code == KeyCode::Char('E') {
-                app.state = UIState::DialogEncoding2;
-                app.dialog_renderer = Some(crate::text::dialog_encoding::dialog_encoding2_draw);
+                crate::text::dialog_encoding::open_encoding2_dialog(app);
             } else {
-                app.state = UIState::DialogEncoding;
-                app.dialog_renderer = Some(crate::text::dialog_encoding::dialog_encoding_draw);
+                crate::text::dialog_encoding::open_encoding_dialog(app);
             }
         }
         _ => {}

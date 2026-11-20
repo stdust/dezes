@@ -407,9 +407,10 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         // copy the selection (y / Ctrl+C), with Ctrl+Y for redo
         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('c') | KeyCode::Char('C')
-            if key.code == KeyCode::Char('y')
-                || key.code == KeyCode::Char('Y')
-                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+            if !key.modifiers.contains(KeyModifiers::ALT)
+                && (key.code == KeyCode::Char('y')
+                    || key.code == KeyCode::Char('Y')
+                    || key.modifiers.contains(KeyModifiers::CONTROL)) =>
         {
             if key.modifiers.contains(KeyModifiers::CONTROL) && (key.code == KeyCode::Char('y') || key.code == KeyCode::Char('Y')) {
                 perform_redo(app);
@@ -624,11 +625,9 @@ pub fn hex_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         // instead of in the Ctrl range, which is editing and clipboard.
         KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::ALT) => {
             if key.modifiers.contains(KeyModifiers::SHIFT) || key.code == KeyCode::Char('E') {
-                app.state = UIState::DialogEncoding2;
-                app.dialog_renderer = Some(crate::text::dialog_encoding::dialog_encoding2_draw);
+                crate::text::dialog_encoding::open_encoding2_dialog(app);
             } else {
-                app.state = UIState::DialogEncoding;
-                app.dialog_renderer = Some(crate::text::dialog_encoding::dialog_encoding_draw);
+                crate::text::dialog_encoding::open_encoding_dialog(app);
             }
         }
         _ => {}

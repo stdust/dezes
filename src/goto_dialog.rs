@@ -270,7 +270,7 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
                 app.goto_selection_anchor = None;
                 app.goto_input = tui_input::Input::new(c.to_string());
             }
-            KeyCode::Char(c) if app.goto_selection_anchor.is_some() && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            KeyCode::Char(c) if app.goto_selection_anchor.is_some() && app.goto_selection_anchor != Some(app.goto_input.cursor()) && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 if let Some(anchor) = app.goto_selection_anchor {
                     let cursor = app.goto_input.cursor();
                     let val = app.goto_input.value();
@@ -289,7 +289,7 @@ pub fn dialog_goto_events(app: &mut App, event: &Event) -> Result<bool> {
                 app.goto_selection_anchor = None;
                 app.goto_input = tui_input::Input::default();
             }
-            KeyCode::Backspace | KeyCode::Delete if app.goto_selection_anchor.is_some() => {
+            KeyCode::Backspace | KeyCode::Delete if app.goto_selection_anchor.is_some() && app.goto_selection_anchor != Some(app.goto_input.cursor()) => {
                 if let Some(anchor) = app.goto_selection_anchor {
                     let cursor = app.goto_input.cursor();
                     let val = app.goto_input.value();

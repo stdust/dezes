@@ -614,7 +614,7 @@ pub fn draw_hex_ascii(app: &mut App, frame: &mut Frame, area: Rect, is_enc2: boo
                     break;
                 }
                 let slice = &page_bytes[idx..idx + len];
-                let (decoded_str, _, had_errors) = target_encoding.decode(slice);
+                let (decoded_str, had_errors) = target_encoding.decode_without_bom_handling(slice);
 
                 if !had_errors && decoded_str.chars().count() == 1 {
                     let c = decoded_str.chars().next().unwrap();

@@ -393,7 +393,7 @@ pub fn view_header_pe_events(app: &mut App, key: KeyEvent) -> Result<bool> {
 
         // Esc / q: Exit Header View
         KeyCode::Esc | KeyCode::Char('q') => {
-            app.editor_view = AppView::Hex;
+            app.return_to_primary_view();
         }
 
         _ => {}

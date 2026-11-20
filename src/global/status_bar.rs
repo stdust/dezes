@@ -170,19 +170,10 @@ pub fn status_bar_draw(app: &mut App, frame: &mut Frame, area: Rect) {
         ""
     };
 
-    let show_va = app.hex_view.show_va;
-    let is_64 = app.is_64();
+    let show_va = app.hex_view.show_va || app.editor_view == crate::editor::AppView::Disasm;
+    let width = app.get_addr_col_width();
     let cur_addr = if show_va { app.get_va(app.hex_view.offset) } else { app.hex_view.offset as u64 };
-    // Right-aligned in a constant-width field. The original built the same
-    // padding and then `.trim()`ed it away, which is what let this field - and
-    // with it everything to its left in the right-hand block - move every time
-    // the address gained or lost a digit. Keeping the pad preserves the original
-    // digits (no added leading zeros) while pinning the width.
-    let addr_fmt = if is_64 {
-        format!("{:>9X}", cur_addr)
-    } else {
-        format!("{:>8X}", cur_addr)
-    };
+    let addr_fmt = format!("{:>width$X}", cur_addr, width = width);
 
     // Pre-allocated single string buffer optimization (Allocation reduced from 8 to 1)
     // Every slot below has a fixed width, so no field ever moves: the block is

@@ -162,12 +162,6 @@ impl FileInfo {
         if let Some(mut combined) = self.combined_cache.take() {
             combined.truncate(new_size);
             self.combined_cache = Some(combined);
-        } else if let Some(mmap) = self.mmap.as_ref() {
-            let mmap_len = mmap.len() as usize;
-            let mmap_slice = mmap.as_slice_bytes(0, new_size.min(mmap_len) as u64).unwrap_or(&[]);
-            let mut v = Vec::new();
-            v.extend_from_slice(mmap_slice);
-            self.combined_cache = Some(v);
         }
         let phys = self.physical_len();
         if new_size <= phys {
@@ -441,6 +435,34 @@ impl App {
                 }
             }
 
+            let has_sections = elf.header.e_shnum > 0 && !elf.sections.is_empty();
+            if !has_sections {
+                // Stripped ELF: map by program headers (segments)
+                for (idx, ph) in elf.phdrs.iter().enumerate() {
+                    let p_start = ph.p_offset as usize;
+                    let p_size = ph.p_filesz as usize;
+                    if p_size > 0 && offset >= p_start && offset < p_start.saturating_add(p_size) {
+                        let type_name = match ph.p_type {
+                            goblin::elf::program_header::PT_LOAD => {
+                                if (ph.p_flags & goblin::elf::program_header::PF_X) != 0 {
+                                    "LOAD_TEXT"
+                                } else if (ph.p_flags & goblin::elf::program_header::PF_W) != 0 {
+                                    "LOAD_DATA"
+                                } else {
+                                    "LOAD_RODATA"
+                                }
+                            }
+                            goblin::elf::program_header::PT_DYNAMIC => "DYNAMIC",
+                            goblin::elf::program_header::PT_INTERP => "INTERP",
+                            goblin::elf::program_header::PT_NOTE => "NOTE",
+                            goblin::elf::program_header::PT_PHDR => "PHDR",
+                            _ => "SEGMENT",
+                        };
+                        return Some(format!("{}_{}", type_name, idx));
+                    }
+                }
+            }
+
             let ehsize = elf.header.e_ehsize as usize;
             let first_sec_offset = elf
                 .sections
@@ -469,7 +491,16 @@ impl App {
             let sh_table_end = (elf.header.e_shoff as usize).saturating_add(
                 (elf.header.e_shnum as usize).saturating_mul(elf.header.e_shentsize as usize),
             );
-            let max_file_structure_end = max_sec_end.max(sh_table_end);
+            let max_ph_end = elf
+                .phdrs
+                .iter()
+                .map(|p| (p.p_offset as usize).saturating_add(p.p_filesz as usize))
+                .max()
+                .unwrap_or(ehsize);
+            let ph_table_end = (elf.header.e_phoff as usize).saturating_add(
+                (elf.header.e_phnum as usize).saturating_mul(elf.header.e_phentsize as usize),
+            );
+            let max_file_structure_end = max_sec_end.max(sh_table_end).max(max_ph_end).max(ph_table_end);
 
             if offset >= max_file_structure_end && max_file_structure_end > 0 {
                 return Some("Overlay".to_string());
@@ -585,17 +616,14 @@ impl App {
             if addr < base {
                 return false;
             }
-            let size = pe
-                .optional_header
-                .map(|opt| opt.windows_fields.size_of_image as u64)
-                .unwrap_or_else(|| {
-                    pe.sections
-                        .iter()
-                        .map(|s| s.virtual_address as u64 + (s.virtual_size as u64).max(s.size_of_raw_data as u64))
-                        .max()
-                        .unwrap_or(0)
-                });
-            if size > 0 && addr < base + size {
+            let sec_max = pe.sections
+                .iter()
+                .map(|s| s.virtual_address as u64 + (s.virtual_size as u64).max(s.size_of_raw_data as u64))
+                .max()
+                .unwrap_or(0);
+            let opt_size = pe.optional_header.map(|opt| opt.windows_fields.size_of_image as u64).unwrap_or(0);
+            let size = opt_size.max(sec_max);
+            if size > 0 && addr >= base && addr < base.saturating_add(size) {
                 return true;
             }
             return false;
@@ -608,7 +636,7 @@ impl App {
                 }
                 let p_vaddr = ph.p_vaddr.wrapping_add_signed(delta);
                 let p_memsz = ph.p_memsz.max(ph.p_filesz);
-                if addr >= p_vaddr && addr < p_vaddr + p_memsz {
+                if addr >= p_vaddr && addr < p_vaddr.saturating_add(p_memsz) {
                     return true;
                 }
             }
@@ -1373,9 +1401,6 @@ impl App {
             self.file_info.size, self.file_info.size
         ));
 
-        if initial_offset != 0 {
-            self.goto(0);
-        }
         self.goto(initial_offset);
 
         // try to load a database for this file, but continue otherwise
@@ -1405,6 +1430,9 @@ impl App {
 
         if current_view != crate::editor::AppView::Disasm || self.is_executable() {
             self.editor_view = current_view;
+            if current_view == crate::editor::AppView::Disasm {
+                self.align_page_for_view();
+            }
         }
         self.hex_view.show_va = current_va;
 
@@ -1700,6 +1728,14 @@ impl App {
         // Copy original file to target_path: prefer OS-level copy if no staged extensions
         if self.file_info.staged_extension.is_empty() && orig_path.exists() {
             std::fs::copy(orig_path, target_path)?;
+            // If the original file had read-only attributes, ensure target_path is writable
+            if let Ok(metadata) = std::fs::metadata(target_path) {
+                let mut perms = metadata.permissions();
+                if perms.readonly() {
+                    perms.set_readonly(false);
+                    let _ = std::fs::set_permissions(target_path, perms);
+                }
+            }
         } else {
             let orig_buffer = self.file_info.get_buffer();
             std::fs::write(target_path, orig_buffer)?;
@@ -1737,20 +1773,15 @@ impl App {
 
     /// write selected block bytes to a target file path
     pub fn write_block_to_file(&mut self, target_path: &Path) -> io::Result<usize> {
-        let (start, end) = if self.hex_view.selection.end > self.hex_view.selection.start {
+        let (start, end) = if self.hex_view.selection.end >= self.hex_view.selection.start {
             (self.hex_view.selection.start, self.hex_view.selection.end)
-        } else if self.hex_view.selection.start > self.hex_view.selection.end {
-            (self.hex_view.selection.end, self.hex_view.selection.start)
         } else {
-            return Err(io::Error::other("No block selected. Select a block using 'v' first"));
+            (self.hex_view.selection.end, self.hex_view.selection.start)
         };
 
-        // Both bounds tested against the mapping, not `file_info.size`, which can
-        // be larger. Checking only `start` against `size` let a block that begins
-        // past the mapping through, and `actual_end - start` then underflowed.
         let readable = self.file_info.buffer_len();
-        if start >= readable {
-            return Err(io::Error::other("Selected block is outside file boundaries"));
+        if readable == 0 || start >= readable {
+            return Err(io::Error::other("No block selected or block outside file boundaries"));
         }
 
         let actual_end = end.min(readable - 1);

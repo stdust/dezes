@@ -94,10 +94,9 @@ impl Theme {
                 continue;
             }
 
-            let color = Self::parse_color(val);
-            if color == Color::Reset {
+            let Some(color) = crate::disasm::theme::parse_color_str(val) else {
                 continue;
-            }
+            };
 
             theme.apply_color(key, color);
         }

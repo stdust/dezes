@@ -1,4 +1,4 @@
-use crate::{app::App, util::parse_offset, widgets::MessageType};
+use crate::{app::App, widgets::MessageType};
 use ratatui::{
     Frame,
     text::{Line, Span},
@@ -62,12 +62,6 @@ enum Command {
 struct CommandLine {
     #[clap(subcommand)]
     command: Option<Command>,
-}
-#[derive(Debug, PartialEq)]
-enum OffsetType {
-    Backward,
-    Absolute,
-    Forward,
 }
 
 pub fn resolve_keywords(app: &App, input: &str) -> String {
@@ -161,7 +155,12 @@ pub fn parse_single_num(token: &str) -> Option<u64> {
         return num_str.parse::<u64>().ok();
     }
 
-    let hex_clean = clean.strip_prefix("0x").or_else(|| clean.strip_prefix("0X")).unwrap_or(clean);
+    let hex_clean = clean
+        .strip_prefix("0x")
+        .or_else(|| clean.strip_prefix("0X"))
+        .or_else(|| clean.strip_suffix('h'))
+        .or_else(|| clean.strip_suffix('H'))
+        .unwrap_or(clean);
     if let Ok(val) = u64::from_str_radix(hex_clean, 16) {
         return Some(val);
     }
@@ -213,6 +212,50 @@ pub fn eval_address_expression(app: &App, raw_expr: &str) -> Option<u64> {
     Some(current_val)
 }
 
+pub fn eval_address_signed_expression(app: &App, raw_expr: &str) -> Option<i64> {
+    let resolved = resolve_keywords(app, raw_expr);
+    let clean_expr = resolved.trim();
+
+    if clean_expr.is_empty() {
+        return None;
+    }
+
+    let mut current_op = '+';
+    let mut token_buf = String::new();
+    let mut ops_and_tokens: Vec<(char, String)> = Vec::new();
+
+    for ch in clean_expr.chars() {
+        if ch == '+' || ch == '-' {
+            if !token_buf.trim().is_empty() {
+                ops_and_tokens.push((current_op, token_buf.trim().to_string()));
+                token_buf.clear();
+            }
+            current_op = ch;
+        } else {
+            token_buf.push(ch);
+        }
+    }
+    if !token_buf.trim().is_empty() {
+        ops_and_tokens.push((current_op, token_buf.trim().to_string()));
+    }
+
+    if ops_and_tokens.is_empty() {
+        return None;
+    }
+
+    let mut current_val: i64 = 0;
+    for (op, tok) in ops_and_tokens {
+        let val = parse_single_num(&tok)? as i64;
+        if op == '+' {
+            current_val = current_val.wrapping_add(val);
+        } else if op == '-' {
+            current_val = current_val.wrapping_sub(val);
+        }
+    }
+
+    Some(current_val)
+}
+
 pub fn addresses_are_virtual(app: &App) -> bool {
     app.hex_view.show_va || app.editor_view == crate::editor::AppView::Disasm
 }
@@ -234,41 +277,27 @@ fn try_goto(app: &mut App, raw_offset: &str) {
     let trimmed = raw_offset.trim();
     let lower = trimmed.to_ascii_lowercase();
     let has_keyword = lower.contains("base") || lower.contains("oep") || lower.contains("cur");
-    let offset_direction = if trimmed.starts_with('+') && !has_keyword {
-        OffsetType::Forward
-    } else if trimmed.starts_with('-') && !has_keyword {
-        OffsetType::Backward
-    } else {
-        OffsetType::Absolute
-    };
+    let is_relative = (trimmed.starts_with('+') || trimmed.starts_with('-')) && !has_keyword;
 
-    let eval_target = match offset_direction {
-        OffsetType::Forward | OffsetType::Backward => &trimmed[1..],
-        OffsetType::Absolute => raw_offset,
-    };
-    let parsed_val = eval_address_expression(app, eval_target);
-
-    let mut final_ofs: Option<usize> = None;
-
-    if let Some(val) = parsed_val {
-        if offset_direction != OffsetType::Absolute {
-            final_ofs = usize::try_from(val).ok().filter(|n| *n < app.file_info.buffer_len());
-        } else {
-            final_ofs = address_to_offset(app, val);
+    if is_relative {
+        if let Some(delta) = eval_address_signed_expression(app, trimmed) {
+            let cur = app.hex_view.offset as i64;
+            let target = cur.wrapping_add(delta);
+            if target >= 0 && (target as usize) < app.file_info.buffer_len() {
+                app.dialog_renderer = None;
+                app.state = UIState::Normal;
+                app.goto(target as usize);
+                return;
+            }
         }
-    }
-
-    if let Some(mut ofs) = final_ofs {
-        if offset_direction == OffsetType::Forward {
-            ofs = app.hex_view.offset.saturating_add(ofs);
-        } else if offset_direction == OffsetType::Backward {
-            ofs = app.hex_view.offset.saturating_sub(ofs);
-        }
-        if ofs < app.file_info.buffer_len() {
-            app.dialog_renderer = None;
-            app.state = UIState::Normal;
-            app.goto(ofs);
-            return;
+    } else if let Some(val) = eval_address_expression(app, raw_offset) {
+        if let Some(ofs) = address_to_offset(app, val) {
+            if ofs < app.file_info.buffer_len() {
+                app.dialog_renderer = None;
+                app.state = UIState::Normal;
+                app.goto(ofs);
+                return;
+            }
         }
     }
 
@@ -317,33 +346,64 @@ fn parse_switch(value: Option<&str>, current: bool) -> std::result::Result<bool,
 fn quote_colour_literals(line: &str) -> String {
     let mut out = String::with_capacity(line.len() + 8);
     let mut rest = line;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
 
-    while let Some(hash_pos) = rest.find('#') {
-        out.push_str(&rest[..hash_pos]);
-        let after_hash = &rest[hash_pos + 1..];
+    while !rest.is_empty() {
+        if let Some(special_idx) = rest.find(|c| c == '\'' || c == '"' || c == '#') {
+            let (prefix, after) = rest.split_at(special_idx);
+            out.push_str(prefix);
+            let ch = after.chars().next().unwrap();
+            let after_ch = &after[ch.len_utf8()..];
 
-        let digits = after_hash
-            .bytes()
-            .take_while(|b| b.is_ascii_hexdigit())
-            .count();
+            match ch {
+                '\'' => {
+                    if !in_double_quote {
+                        in_single_quote = !in_single_quote;
+                    }
+                    out.push('\'');
+                    rest = after_ch;
+                }
+                '"' => {
+                    if !in_single_quote {
+                        in_double_quote = !in_double_quote;
+                    }
+                    out.push('"');
+                    rest = after_ch;
+                }
+                '#' => {
+                    if in_single_quote || in_double_quote {
+                        out.push('#');
+                        rest = after_ch;
+                    } else {
+                        let digits = after_ch
+                            .bytes()
+                            .take_while(|b| b.is_ascii_hexdigit())
+                            .count();
+                        let remainder = &after_ch[digits..];
+                        let ends_word = remainder.is_empty()
+                            || remainder.chars().next().is_some_and(|c| c.is_whitespace());
 
-        let remainder = &after_hash[digits..];
-        let ends_word = remainder.is_empty()
-            || remainder.chars().next().is_some_and(|c| c.is_whitespace());
-
-        if (digits == 3 || digits == 6) && ends_word {
-            out.push('\'');
-            out.push('#');
-            out.push_str(&after_hash[..digits]);
-            out.push('\'');
-            rest = remainder;
+                        if (digits == 3 || digits == 6) && ends_word {
+                            out.push('\'');
+                            out.push('#');
+                            out.push_str(&after_ch[..digits]);
+                            out.push('\'');
+                            rest = remainder;
+                        } else {
+                            out.push('#');
+                            rest = after_ch;
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
         } else {
-            out.push('#');
-            rest = after_hash;
+            out.push_str(rest);
+            break;
         }
     }
 
-    out.push_str(rest);
     out
 }
 
@@ -466,7 +526,11 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
         return;
     }
 
-    let cmdline_str = quote_colour_literals(raw_trimmed);
+    let cmdline_str = if raw_trimmed.starts_with("set") || raw_trimmed.starts_with(":set") {
+        quote_colour_literals(raw_trimmed)
+    } else {
+        raw_trimmed.to_string()
+    };
     let cmdline = cmdline_str.as_str();
 
     if cmdline.is_empty() {
@@ -631,11 +695,24 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                 }
             }
             Some(Command::Cmt { offset, comment }) => {
-                let resolved_offset = resolve_keywords(app, &offset);
-                if let Ok(mut ofs) = parse_offset(&resolved_offset) {
-                    if resolved_offset.starts_with('+') {
-                        ofs = ofs.saturating_add(app.hex_view.offset);
-                    }
+                let resolved = resolve_keywords(app, &offset);
+                let trimmed = resolved.trim();
+                let ofs_opt = if trimmed.starts_with('+') || trimmed.starts_with('-') {
+                    eval_address_signed_expression(app, trimmed).and_then(|delta| {
+                        let cur = app.hex_view.offset as i64;
+                        let target = cur.wrapping_add(delta);
+                        if target >= 0 && (target as usize) < app.file_info.buffer_len() {
+                            Some(target as usize)
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    eval_address_expression(app, &resolved)
+                        .and_then(|val| address_to_offset(app, val))
+                };
+
+                if let Some(ofs) = ofs_opt {
                     if ofs < app.file_info.buffer_len() {
                         Commands::comment(app, ofs, comment);
                         app.dialog_renderer = None;
@@ -709,6 +786,7 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
                             command_error(app, tr1(app, M::ErrNotByteCount, &val));
                             return;
                         }
+                        app.align_page_for_view();
                         app.dialog_renderer = None;
                     }
                     "ctrlchar" => {
@@ -1265,7 +1343,15 @@ pub fn parse_command(app: &mut App, cmdline_raw: &str) {
             }
         },
         Err(_) => {
-            try_goto(app, cmdline);
+            let first_cmd = args.first().map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+            if matches!(
+                first_cmd.as_str(),
+                "q" | "quit" | "about" | "ver" | "w" | "write" | "wq" | "x" | "wb" | "wblock" | "o" | "open" | "cmt" | "matrix" | "set"
+            ) {
+                command_error(app, format!("Invalid command syntax: {}", cmdline));
+            } else {
+                try_goto(app, cmdline);
+            }
         }
     }
 }
@@ -1441,6 +1527,10 @@ pub fn command_events(app: &mut App, event: &Event) -> Result<bool> {
                     app.command_input.selection_anchor = None;
                 }
             }
+            KeyCode::Char('a') | KeyCode::Char('A') if has_ctrl => {
+                app.command_input.selection_anchor = Some(0);
+                app.command_input.cursor_pos = len;
+            }
             KeyCode::Char('c') | KeyCode::Char('C') if has_ctrl => {
                 if let Some((s, e)) = get_selection(app, cur, len) {
                     let sel_str: String = chars[s..e].iter().collect();
@@ -1466,7 +1556,11 @@ pub fn command_events(app: &mut App, event: &Event) -> Result<bool> {
                 if let Ok(clipboard) = &mut app.clipboard
                     && let Ok(text) = clipboard.get_text()
                 {
-                    let text_clean = text.trim();
+                    let text_clean: String = text
+                        .replace("\r\n", " ")
+                        .replace('\n', " ")
+                        .replace('\r', " ");
+                    let text_clean = text_clean.trim();
                     if let Some((s, e)) = get_selection(app, cur, len) {
                         chars.drain(s..e);
                         let paste_chars: Vec<char> = text_clean.chars().collect();
@@ -2272,6 +2366,22 @@ mod option_name_tests {
 
         super::parse_command(&mut app, "set disasm_enc auto");
         assert_eq!(app.disasm_comment_encoding, crate::disasm::DisasmCommentEncoding::Auto);
+    }
+
+    #[test]
+    fn test_parse_single_num_with_h_suffix() {
+        assert_eq!(super::parse_single_num("100h"), Some(0x100));
+        assert_eq!(super::parse_single_num("20H"), Some(0x20));
+        assert_eq!(super::parse_single_num("0x30"), Some(0x30));
+        assert_eq!(super::parse_single_num("10t"), Some(10));
+    }
+
+    #[test]
+    fn test_eval_address_signed_expression() {
+        let app = crate::app::App::new();
+        assert_eq!(super::eval_address_signed_expression(&app, "-10+20"), Some(16));
+        assert_eq!(super::eval_address_signed_expression(&app, "+30-10"), Some(32));
+        assert_eq!(super::eval_address_signed_expression(&app, "-10"), Some(-16));
     }
 }
 

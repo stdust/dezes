@@ -281,30 +281,28 @@ pub fn edit_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                 }
                 EditingTarget::Enc1 => {
                     let encoded_bytes = crate::util::encode_char(c, app.text_view.table);
-                    let mut ofs = app.hex_view.offset;
-                    for &b in encoded_bytes.iter() {
-                        if ofs < app.file_info.buffer_len() {
-                            record_edit(app, ofs, b);
-                            ofs += 1;
-                        } else {
-                            break;
+                    let ofs = app.hex_view.offset;
+                    if ofs + encoded_bytes.len() <= app.file_info.buffer_len() {
+                        for (i, &b) in encoded_bytes.iter().enumerate() {
+                            record_edit(app, ofs + i, b);
                         }
+                        app.goto(ofs + encoded_bytes.len());
+                    } else {
+                        crate::beep!();
                     }
-                    app.goto(ofs);
                 }
                 EditingTarget::Enc2 => {
                     let enc2 = app.hex_view.get_enc2_table();
                     let encoded_bytes = crate::util::encode_char(c, enc2);
-                    let mut ofs = app.hex_view.offset;
-                    for &b in encoded_bytes.iter() {
-                        if ofs < app.file_info.buffer_len() {
-                            record_edit(app, ofs, b);
-                            ofs += 1;
-                        } else {
-                            break;
+                    let ofs = app.hex_view.offset;
+                    if ofs + encoded_bytes.len() <= app.file_info.buffer_len() {
+                        for (i, &b) in encoded_bytes.iter().enumerate() {
+                            record_edit(app, ofs + i, b);
                         }
+                        app.goto(ofs + encoded_bytes.len());
+                    } else {
+                        crate::beep!();
                     }
-                    app.goto(ofs);
                 }
             }
         }

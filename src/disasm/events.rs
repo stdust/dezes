@@ -160,11 +160,13 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
             && !key.modifiers.contains(KeyModifiers::CONTROL)
             && !key.modifiers.contains(KeyModifiers::ALT));
     if is_copy {
-        let (start_ofs, end_ofs) = if let Some(anchor) = app.disasm_selection_anchor {
+        let (raw_start, raw_end) = if let Some(anchor) = app.disasm_selection_anchor {
             (anchor.min(offset), anchor.max(offset))
         } else {
             (offset, offset)
         };
+        let start_ofs = raw_start;
+        let end_ofs = raw_end.min(raw_start.saturating_add(crate::hex::selection::MAX_SELECTION_COPY_BYTES.saturating_sub(1)));
 
         let slice_end = (end_ofs + MAX_INSTR_BYTES * 8).min(filesize);
         let page_start = start_ofs.min(slice_end);
@@ -429,6 +431,13 @@ pub fn disasm_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
                     (end + len).min(filesize)
                 };
                 let count = fill_end - start;
+                if count > crate::hex::selection::MAX_SELECTION_FILL_BYTES {
+                    app.error(format!(
+                        "Fill selection exceeds maximum limit of {} MB",
+                        crate::hex::selection::MAX_SELECTION_FILL_BYTES / (1024 * 1024)
+                    ));
+                    return Ok(false);
+                }
                 for ofs in start..fill_end {
                     crate::hex::edit::record_edit(app, ofs, value);
                 }

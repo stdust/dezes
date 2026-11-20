@@ -362,7 +362,7 @@ fn covering_span(app: &App, offset: usize, len: usize) -> Option<usize> {
     if span >= len { Some(span) } else { None }
 }
 
-const MAX_PATCH_INSTRUCTIONS: usize = 16;
+const MAX_PATCH_INSTRUCTIONS: usize = 128;
 
 pub fn stage_assembled_bytes(
     app: &mut App,
@@ -479,12 +479,16 @@ fn assemble_alu_op(
     }
 
     // Case 2: Register to Immediate (e.g. sub rsp, 0x28, cmp eax, 1, test al, 0x80)
+    let raw_imm = parse_imm(parts[1])?;
+    if size == RegSize::R64 && (raw_imm < -0x8000_0000 || raw_imm > 0x7FFF_FFFF) {
+        return None;
+    }
     let bits = match size {
         RegSize::R64 | RegSize::R32 => 32,
         RegSize::R16 => 16,
         RegSize::R8 => 8,
     };
-    if let Some(fitted) = parse_imm(parts[1]).and_then(|v| fit_imm(v, bits)) {
+    if let Some(fitted) = fit_imm(raw_imm, bits) {
         let imm_val = fitted as i32;
         let fits_i8 = fitted >= -128 && fitted <= 127;
 
@@ -636,7 +640,14 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
                     }
                 }
             } else {
-                return encode_instruction(&Instruction::with(if is_64 { Code::Retnq } else { Code::Retnd }), bitness);
+                let code = if is_64 {
+                    Code::Retnq
+                } else if bitness == 32 {
+                    Code::Retnd
+                } else {
+                    Code::Retnw
+                };
+                return encode_instruction(&Instruction::with(code), bitness);
             }
         }
         "int3" => return encode_instruction(&Instruction::with(Code::Int3), bitness),
@@ -647,7 +658,16 @@ pub fn parse_assemble_input(input: &str, bitness: u32, ip: u64) -> Option<Vec<u8
         "sti" => return encode_instruction(&Instruction::with(Code::Sti), bitness),
         "cld" => return encode_instruction(&Instruction::with(Code::Cld), bitness),
         "std" => return encode_instruction(&Instruction::with(Code::Std), bitness),
-        "leave" => return encode_instruction(&Instruction::with(if is_64 { Code::Leaveq } else { Code::Leaved }), bitness),
+        "leave" => {
+            let code = if is_64 {
+                Code::Leaveq
+            } else if bitness == 32 {
+                Code::Leaved
+            } else {
+                Code::Leavew
+            };
+            return encode_instruction(&Instruction::with(code), bitness);
+        }
         "syscall" => return encode_instruction(&Instruction::with(Code::Syscall), bitness),
         "sysenter" => return encode_instruction(&Instruction::with(Code::Sysenter), bitness),
         "ud2" => return encode_instruction(&Instruction::with(Code::Ud2), bitness),
@@ -1198,7 +1218,7 @@ pub fn dialog_assemble_events(app: &mut App, event: &Event) -> Result<bool> {
                 app.assemble_selection_anchor = None;
                 app.assemble_input = tui_input::Input::new(c.to_string());
             }
-            KeyCode::Char(c) if app.assemble_selection_anchor.is_some() && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            KeyCode::Char(c) if app.assemble_selection_anchor.is_some() && app.assemble_selection_anchor != Some(app.assemble_input.cursor()) && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 if let Some(anchor) = app.assemble_selection_anchor {
                     let cursor = app.assemble_input.cursor();
                     let val = app.assemble_input.value();
@@ -1217,7 +1237,7 @@ pub fn dialog_assemble_events(app: &mut App, event: &Event) -> Result<bool> {
                 app.assemble_selection_anchor = None;
                 app.assemble_input = tui_input::Input::default();
             }
-            KeyCode::Backspace | KeyCode::Delete if app.assemble_selection_anchor.is_some() => {
+            KeyCode::Backspace | KeyCode::Delete if app.assemble_selection_anchor.is_some() && app.assemble_selection_anchor != Some(app.assemble_input.cursor()) => {
                 if let Some(anchor) = app.assemble_selection_anchor {
                     let cursor = app.assemble_input.cursor();
                     let val = app.assemble_input.value();
@@ -1318,6 +1338,17 @@ mod assemble_tests {
         // cmp al, 0
         let cmp_al = parse_assemble_input("cmp al, 0", 64, 0).expect("cmp al, 0");
         assert_eq!(cmp_al, vec![0x80, 0xF8, 0x00]);
+
+        // 64-bit ALU rejects positive immediates > 0x7FFF_FFFF (e.g. 0x8000_0000)
+        assert!(parse_assemble_input("add rax, 0x80000000", 64, 0).is_none());
+        // 32-bit ALU allows 0x8000_0000
+        assert!(parse_assemble_input("add eax, 0x80000000", 32, 0).is_some());
+
+        // 16-bit ret and leave
+        let ret_16 = parse_assemble_input("ret", 16, 0).expect("ret 16");
+        assert_eq!(ret_16, vec![0xC3]);
+        let leave_16 = parse_assemble_input("leave", 16, 0).expect("leave 16");
+        assert_eq!(leave_16, vec![0xC9]);
 
         // xor eax, 1
         let xor_eax = parse_assemble_input("xor eax, 1", 64, 0).expect("xor eax, 1");

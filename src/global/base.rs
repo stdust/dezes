@@ -151,6 +151,13 @@ pub fn dialog_base_events(app: &mut App, event: &Event) -> Result<bool> {
                 app.state = UIState::Normal;
                 app.dialog_renderer = None;
             }
+            KeyCode::Char('v') | KeyCode::Char('V')
+                if app.base_selection_all && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.base_selection_all = false;
+                app.base_input = tui_input::Input::default();
+                crate::text_field::handle_key(app, base_field, event);
+            }
             KeyCode::Char(c)
                 if app.base_selection_all && !key.modifiers.contains(KeyModifiers::CONTROL) =>
             {

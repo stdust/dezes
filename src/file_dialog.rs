@@ -320,9 +320,9 @@ pub fn draw_file_dialog(app: &mut App, frame: &mut Frame) {
         let formatted_name = crate::util::pad_display_width(&raw_name, name_col_width);
 
         let type_or_size = if item.is_dir {
-            format!("{:>12}", crate::i18n::M::LblSubDir.tr(app.config.lang))
+            crate::util::pad_display_width_right(crate::i18n::M::LblSubDir.tr(app.config.lang), 12)
         } else {
-            format!("{:>12}", format_bytes(item.size))
+            crate::util::pad_display_width_right(&format_bytes(item.size), 12)
         };
 
         let date_str = format!("{:>18}", item.modified_str);

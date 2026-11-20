@@ -286,10 +286,14 @@ fn string_comment_from_text(app: &App, text: &str) -> Option<String> {
 
     for token in tokens {
         for word in token.split(|c: char| !c.is_alphanumeric()) {
+            let has_hex_prefix = word.starts_with("0x") || word.starts_with("0X");
             let digits = word
                 .strip_prefix("0x")
                 .or_else(|| word.strip_prefix("0X"))
                 .unwrap_or(word);
+            if !has_hex_prefix && !word.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                continue;
+            }
             // Five digits is the shortest plausible address; shorter values are
             // ordinary small immediates and probing them is pure noise.
             if digits.len() < 5 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -314,7 +318,7 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
             selected_style
         }
     } else if is_modified {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        main_style.fg(Color::Red).add_modifier(Modifier::BOLD)
     } else {
         main_style
     };
@@ -350,14 +354,19 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
         return Line::from(Span::styled(clean_text, base_style));
     }
 
-    let first_op = tokens[0].to_lowercase();
+    let is_prefix = |w: &str| matches!(w, "lock" | "rep" | "repe" | "repne" | "repnz" | "repz");
+    let has_prefix = tokens.len() > 1 && is_prefix(&tokens[0].to_lowercase());
+    let op_idx = if has_prefix { 1 } else { 0 };
+    let main_op = tokens[op_idx].to_lowercase();
     let mut spans = Vec::new();
 
     let dt = &app.config.disasm_theme;
-    let yellow_bg = dt.jmp_bg;
+    let jmp_bg = dt.jmp_bg;
+    let jmp_fg = dt.jmp_fg;
+    let jcc_bg = dt.jcc_bg;
+    let jcc_fg = dt.jcc_fg;
     let cyan_bg = dt.call_bg;
     let black_fg = dt.call_fg;
-    let red_fg = dt.jcc_fg;
     let blue_fg = dt.push_pop_fg;
     let reg_green_fg = dt.register_fg;
     let magenta_fg = dt.keyword_fg;
@@ -385,22 +394,28 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
         let lower_tok = tok.to_lowercase();
         let mut token_style = base_style;
 
-        if i == 0 {
-            if first_op == "(bad)" || first_op == "bad" {
+        if has_prefix && i == 0 {
+            token_style = token_style.fg(magenta_fg).add_modifier(Modifier::BOLD);
+            spans.push(Span::styled(tok.to_string(), token_style));
+            continue;
+        }
+
+        if i == op_idx {
+            if main_op == "(bad)" || main_op == "bad" {
                 spans.push(Span::styled("???".to_string(), bad_style));
                 continue;
-            } else if first_op == "call" {
+            } else if main_op == "call" {
                 token_style = token_style.bg(cyan_bg).fg(black_fg).add_modifier(Modifier::BOLD);
-            } else if first_op == "jmp" {
-                token_style = token_style.bg(yellow_bg).fg(black_fg).add_modifier(Modifier::BOLD);
-            } else if first_op.starts_with('j') {
-                token_style = token_style.bg(yellow_bg).fg(red_fg).add_modifier(Modifier::BOLD);
-            } else if first_op.starts_with("push") || first_op.starts_with("pop") {
+            } else if main_op == "jmp" {
+                token_style = token_style.bg(jmp_bg).fg(jmp_fg).add_modifier(Modifier::BOLD);
+            } else if main_op.starts_with('j') {
+                token_style = token_style.bg(jcc_bg).fg(jcc_fg).add_modifier(Modifier::BOLD);
+            } else if main_op.starts_with("push") || main_op.starts_with("pop") {
                 token_style = token_style.fg(blue_fg).add_modifier(Modifier::BOLD);
-            } else if first_op.starts_with("ret") {
+            } else if main_op.starts_with("ret") {
                 token_style = token_style.bg(ret_bg).fg(ret_fg).add_modifier(Modifier::BOLD);
             } else if is_modified {
-                token_style = token_style.fg(red_fg).add_modifier(Modifier::BOLD);
+                token_style = token_style.fg(jcc_fg).add_modifier(Modifier::BOLD);
             }
             spans.push(Span::styled(tok.to_string(), token_style));
             continue;
@@ -412,14 +427,14 @@ fn format_x64dbg_line(text: &str, is_modified: bool, is_selected: bool, main_sty
         }
 
         // Jump/call branch target prefix (e.g. "short" in "je short 0x0044C767")
-        if first_op.starts_with('j') && lower_tok == "short" {
+        if main_op.starts_with('j') && lower_tok == "short" {
             let style = base_style.fg(branch_target_fg);
             spans.push(Span::styled(tok.to_string(), style));
             continue;
         }
 
         // Pure branch targets (e.g. call 0x140001000 or jmp 0x140001000)
-        let is_pure_branch_target = (first_op == "call" || first_op.starts_with('j')) && (tok.starts_with("0x") || tok.chars().all(|c| c.is_ascii_hexdigit()));
+        let is_pure_branch_target = (main_op == "call" || main_op.starts_with('j')) && (tok.starts_with("0x") || tok.chars().all(|c| c.is_ascii_hexdigit()));
 
         if is_pure_branch_target {
             let style = base_style.fg(branch_target_fg);
@@ -1154,6 +1169,7 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
     let filesize = filesize.min(buf_len);
 
     if page_start >= filesize || buf_len == 0 {
+        frame.render_widget(ratatui::widgets::Block::default().style(main_style), area);
         return;
     }
 
@@ -1349,7 +1365,7 @@ pub fn draw_disasm_view(app: &mut App, frame: &mut Frame, area: Rect) {
                 highlight_style.add_modifier(Modifier::BOLD)
             }
         } else if is_modified {
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            main_style.fg(Color::Red).add_modifier(Modifier::BOLD)
         } else {
             main_style
         };

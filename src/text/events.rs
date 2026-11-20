@@ -2,7 +2,7 @@ use std::io::Result;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::{app::App, editor::UIState, text};
+use crate::app::App;
 
 /// Bytes of file one screen row of text covers.
 fn row_bytes(app: &App) -> usize {
@@ -276,8 +276,7 @@ pub fn text_mode_events(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         // Alt+E: Encoding dialog
         KeyCode::Char('e') | KeyCode::Char('E') if key.modifiers.contains(KeyModifiers::ALT) => {
-            app.state = UIState::DialogEncoding;
-            app.dialog_renderer = Some(text::dialog_encoding::dialog_encoding_draw);
+            crate::text::dialog_encoding::open_encoding_dialog(app);
         }
         _ => {}
     }
